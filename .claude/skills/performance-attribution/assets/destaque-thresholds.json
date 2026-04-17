@@ -1,0 +1,25 @@
+{
+  "_doc": "Thresholds para detecção automática de destaques de performance. Editáveis sem mexer em código.",
+  "_last_update": "2026-04-16",
+
+  "destaque_positivo": {
+    "dia_bps_minimo": 5.0,
+    "mtd_bps_minimo": 20.0,
+    "pct_do_pnl_total_minimo": 30.0,
+    "_doc": "Passa em QUALQUER um dos três critérios (OR)"
+  },
+
+  "destaque_negativo": {
+    "dia_bps_maximo": -5.0,
+    "mtd_bps_maximo": -20.0,
+    "pct_do_pnl_total_minimo": 30.0,
+    "_doc": "Passa em QUALQUER um (OR). Valores negativos em dia/mtd, positivo em pct (valor absoluto da contribuição como % do detrator total)"
+  },
+
+  "top_n_padrao": 5,
+
+  "min_pnl_total_para_reportar_destaques_bps": 2.0,
+  "_doc_min_pnl": "Se PnL total do fundo for muito pequeno (< 2 bps), não reportar destaques mesmo que passem nos critérios — seria ruído",
+
+  "change_log": []
+}

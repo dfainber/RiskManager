@@ -1,0 +1,53 @@
+{
+  "_doc": "Fontes dos retornos de benchmarks oficiais usados no PA Regime B. Preencher conforme descoberta.",
+  "_last_update": "2026-04-16",
+
+  "IDKA_IPCA_2A": {
+    "descricao": "Índice Anbima de dívida pública com prazo ~2 anos",
+    "benchmark_dos_fundos": ["IDKA_3Y"],
+    "fonte_preferencial": {
+      "tipo": "postgres_ECO_INDEX",
+      "instrument_esperado": "IDKA_IPCA_2A",
+      "confirmado": false
+    },
+    "fonte_alternativa": {
+      "tipo": "api_anbima",
+      "url": "https://www.anbima.com.br/...",
+      "confirmado": false
+    },
+    "status": "a_confirmar"
+  },
+
+  "IDKA_IPCA_10A": {
+    "descricao": "Índice Anbima de dívida pública com prazo ~10 anos",
+    "benchmark_dos_fundos": ["IDKA_10Y"],
+    "fonte_preferencial": {
+      "tipo": "postgres_ECO_INDEX",
+      "instrument_esperado": "IDKA_IPCA_10A",
+      "confirmado": false
+    },
+    "status": "a_confirmar"
+  },
+
+  "CDI": {
+    "descricao": "Taxa DI interbancária",
+    "benchmark_dos_fundos": [],
+    "fonte_preferencial": {
+      "tipo": "postgres_ECO_INDEX",
+      "instrument_esperado": "CDI",
+      "confirmado": true
+    },
+    "status": "ok"
+  },
+
+  "IBOV": {
+    "descricao": "Índice Bovespa",
+    "benchmark_dos_fundos": ["LONG_ONLY"],
+    "fonte_preferencial": {
+      "tipo": "glpg_prices",
+      "name": "IBOV",
+      "confirmado": true
+    },
+    "status": "ok"
+  }
+}

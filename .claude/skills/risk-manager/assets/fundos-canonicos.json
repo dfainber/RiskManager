@@ -1,0 +1,232 @@
+{
+  "_doc": "Referência AUTORITATIVA dos nomes de fundos. AUDITADO contra o banco em 2026-04-17 via 4 queries SQL diretas no GLPG-DB01. Substituiu versão anterior baseada no GLPG_System_Guide.docx.",
+  "_last_update": "2026-04-17",
+  "_source": "Queries diretas no banco GLPG-DB01 (DATA_DEV_DB) — ver change_log",
+  "_warning": "Nomes são MIXED CASE no banco (ex.: 'Galapagos Macro FIM'), NÃO all-caps como o guia sugeria. Usar = com o valor exato abaixo. O campo nome_pa é a chave exata na tabela q_models.REPORT_ALPHA_ATRIBUTION.",
+
+  "fundos_confirmados": {
+
+    "MACRO": {
+      "ticker_interno": "MACRO",
+      "nome_lote45": "Galapagos Macro FIM",
+      "nome_pa": "MACRO",
+      "tree_stress": "Main_Macro_Ativos",
+      "familia": "Multimercado discricionário",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "SubA também existe: 'Galapagos Macro FIM SubA' — ignorar no MVP. Também existe 'Galapagos Macro Access' — fundo espelho, ignorar."
+    },
+
+    "QUANT": {
+      "ticker_interno": "QUANT",
+      "nome_lote45": "Galapagos Quantitativo FIM",
+      "nome_pa": "QUANT",
+      "tree_stress": "Main_Macro_Ativos",
+      "familia": "Multimercado quant",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "SubA também existe: 'Galapagos Quantitativo FIM SubA' — ignorar no MVP. PA key é 'QUANT', não 'SISTEMATICO' e não 'QUANTITATIVO'.",
+      "_correcao_historica": "Versão anterior usava 'GALAPAGOS QUANT FIC FIM' — nome errado. Nome real confirmado em 2026-04-17."
+    },
+
+    "MACRO_Q": {
+      "ticker_interno": "MACRO_Q",
+      "nome_lote45": "Galapagos Global Macro Q",
+      "nome_pa": "GLOBAL",
+      "tree_stress": null,
+      "familia": "Multimercado quant global",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "SubA também existe: 'Galapagos Global Macro Q SubA'. PA key é 'GLOBAL' (confirmado pelo usuário em 2026-04-17). NÃO aparece em LOTE_FUND_STRESS_RPM — verificar se tem stress em outra tabela ou se está consolidado em outro fundo.",
+      "_acao_pendente": "Confirmar se MACRO_Q tem VaR/Stress próprio no banco ou se está embutido em QUANT."
+    },
+
+    "EVOLUTION": {
+      "ticker_interno": "EVOLUTION",
+      "nome_lote45": "Galapagos Evolution FIC FIM CP",
+      "nome_pa": "EVOLUTION",
+      "tree_stress": "Main_Macro_Ativos",
+      "familia": "Multimercado multiestratégia",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_atencao_delay": "Fundo tem 1 dia de delay no banco. Sempre usar D-1 para EVOLUTION.",
+      "_nota": "SubA e SubB também existem. Também existe 'Galapagos Evo Strategy FIM CP' — produto separado, ignorar no MVP."
+    },
+
+    "ALBATROZ": {
+      "ticker_interno": "ALBATROZ",
+      "nome_lote45": "GALAPAGOS ALBATROZ FIRF LP",
+      "nome_pa": "ALBATROZ",
+      "tree_stress": null,
+      "familia": "Renda Fixa ativo",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "Nome no banco é ALL CAPS — exceção entre os fundos. Não aparece em LOTE_FUND_STRESS_RPM (sem VaR próprio ou em tabela diferente)."
+    },
+
+    "IDKA_3Y": {
+      "ticker_interno": "IDKA_3Y",
+      "nome_lote45": "IDKA IPCA 3Y FIRF",
+      "nome_pa": "IDKAIPCAY3",
+      "tree_stress": null,
+      "familia": "Renda Fixa benchmarked",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "Sub I e Sub II existem: 'IDKA IPCA 3Y FIRF Sub I', 'IDKA IPCA 3Y FIRF Sub II'. Usar o agregado. BVaR em LOTE_PARAMETRIC_VAR_TABLE (RELATIVE_VAR). PA disponível desde 2025-08-21."
+    },
+
+    "IDKA_10Y": {
+      "ticker_interno": "IDKA_10Y",
+      "nome_lote45": "IDKA IPCA 10Y FIRF",
+      "nome_pa": "IDKAIPCAY10",
+      "tree_stress": null,
+      "familia": "Renda Fixa benchmarked",
+      "escopo_mvp": true,
+      "confirmado": true,
+      "_nota": "Sub I e Sub II existem. Usar o agregado. PA disponível desde 2025-09-02."
+    }
+  },
+
+  "fundos_fora_escopo_mvp": {
+
+    "BALTRA": {
+      "ticker_interno": "BALTRA",
+      "nome_lote45": "Galapagos Baltra Icatu Qualif Prev FIM CP",
+      "nome_pa": "BALTRA",
+      "confirmado": true,
+      "escopo_mvp": false,
+      "_nota": "PA existe e tem boa cobertura (2024-04-26). Fora do MVP por decisão — entrar na Fase 4."
+    },
+
+    "GLOBAL_FIM": {
+      "ticker_interno": "GLOBAL_FIM",
+      "nome_lote45": "Galapagos Global FIM",
+      "nome_pa": null,
+      "confirmado": "parcial",
+      "escopo_mvp": false,
+      "_nota": "Fundo separado do MACRO_Q. A chave PA='GLOBAL' pertence ao MACRO_Q (Galapagos Global Macro Q), não a este fundo. Fora do MVP."
+    },
+
+    "GFA": {
+      "ticker_interno": "GFA",
+      "nome_lote45": "Frontier Ações (confirmado pelo usuário)",
+      "nome_pa": "GFA",
+      "familia": "Renda Variável Long Only",
+      "confirmado": true,
+      "escopo_mvp": false,
+      "_nota": "Galapagos Frontier Ações — fundo de RV da gestora. Fora do MVP. Entrar na Fase 4 junto com expansão de RV."
+    },
+
+    "FRONTIER_ACOES": {
+      "ticker_interno": "FRONTIER_ACOES",
+      "nome_lote45": "Galapagos Lizard I FIA",
+      "nome_pa": null,
+      "confirmado": "parcial",
+      "escopo_mvp": false,
+      "_nota": "Renda Variável Long Only. Também existe 'Frontier Açoes FIC FI'. Fora do MVP."
+    },
+
+    "DRAGON": {
+      "nome_lote45": "Galapagos Dragon FIM CP",
+      "nome_pa": null,
+      "escopo_mvp": false,
+      "_nota": "Crédito. Também existe 'Galapagos Dragon FIDC'. Fora do MVP."
+    },
+
+    "SEA_LION": {
+      "nome_lote45": "FIC FIDC Galapagos Sea Lion",
+      "nome_pa": null,
+      "escopo_mvp": false
+    },
+
+    "NAZCA": {
+      "nome_lote45": "Galapagos Nazca FIRF",
+      "nome_pa": null,
+      "escopo_mvp": false
+    },
+
+    "IGUANA": {
+      "nome_lote45": "Galapagos Iguana FIRF Liquidez Top CP",
+      "nome_pa": null,
+      "escopo_mvp": false
+    },
+
+    "PELICAN": {
+      "nome_lote45": "Galapagos Pelican FIRF",
+      "nome_pa": null,
+      "escopo_mvp": false
+    }
+  },
+
+  "arvores_stress_confirmadas": {
+    "_fonte": "SELECT DISTINCT TRADING_DESK, TREE FROM LOTE45.LOTE_FUND_STRESS_RPM — 2026-04-17",
+    "_nota": "TREE = 'Main_Macro_Ativos' é a árvore usada em produção. TREE = null existe mas provavelmente são agregados sem breakdown. Usar TREE = 'Main_Macro_Ativos' em todas as queries de VaR.",
+    "trees_em_producao": ["Main_Macro_Ativos"],
+    "fundos_com_stress": [
+      "Galapagos Evolution FIC FIM CP",
+      "Galapagos Macro FIM",
+      "Galapagos Quantitativo FIM",
+      "Barbacena FIRF CP Infraestrutura"
+    ]
+  },
+
+  "chaves_pa_confirmadas": {
+    "_fonte": "SELECT DISTINCT FUNDO FROM q_models.REPORT_ALPHA_ATRIBUTION — 2026-04-17",
+    "mapa": {
+      "MACRO":      { "nome_lote45": "Galapagos Macro FIM",           "cobertura_inicio": "2025-06-03" },
+      "QUANT":      { "nome_lote45": "Galapagos Quantitativo FIM",     "cobertura_inicio": "2025-05-12" },
+      "EVOLUTION":  { "nome_lote45": "Galapagos Evolution FIC FIM CP", "cobertura_inicio": "2023-01-02" },
+      "ALBATROZ":   { "nome_lote45": "GALAPAGOS ALBATROZ FIRF LP",     "cobertura_inicio": "2024-04-26" },
+      "IDKAIPCAY3": { "nome_lote45": "IDKA IPCA 3Y FIRF",              "cobertura_inicio": "2025-08-21" },
+      "IDKAIPCAY10":{ "nome_lote45": "IDKA IPCA 10Y FIRF",             "cobertura_inicio": "2025-09-02" },
+      "BALTRA":     { "nome_lote45": "Galapagos Baltra ...",            "cobertura_inicio": "2024-04-26", "escopo": false },
+      "GLOBAL":     { "nome_lote45": "Galapagos Global Macro Q",        "cobertura_inicio": "2025-05-12", "escopo": true, "_nota": "PA key 'GLOBAL' = MACRO_Q, confirmado pelo usuário" },
+      "GFA":        { "nome_lote45": "???",                             "cobertura_inicio": "2024-04-26", "escopo": false }
+    },
+    "_ausentes": "MACRO_Q não tem entrada em REPORT_ALPHA_ATRIBUTION — sem PA disponível."
+  },
+
+  "armadilhas_confirmadas_pelo_banco": [
+    {
+      "armadilha": "Nomes são mixed case, NÃO all-caps",
+      "exemplo": "'Galapagos Macro FIM', não 'GALAPAGOS MACRO FIC FIM'",
+      "impacto": "Queries antigas com nome errado retornam 0 linhas silenciosamente"
+    },
+    {
+      "armadilha": "TREE = 'Main_Macro_Ativos', não 'Main_Macro_Gestores'",
+      "exemplo": "WHERE TREE = 'Main_Macro_Ativos'",
+      "impacto": "Nome incorreto na versão anterior do design — todas as queries de stress teriam falhado"
+    },
+    {
+      "armadilha": "ALBATROZ é ALL CAPS no banco",
+      "exemplo": "'GALAPAGOS ALBATROZ FIRF LP'",
+      "impacto": "Exceção entre os fundos — tratar separadamente"
+    },
+    {
+      "armadilha": "MACRO_Q não tem PA no banco",
+      "exemplo": "Não existe FUNDO='MACRO_Q' em REPORT_ALPHA_ATRIBUTION",
+      "impacto": "skill performance-attribution deve pular MACRO_Q no Regime A"
+    },
+    {
+      "armadilha": "EVOLUTION com 1 dia de delay",
+      "impacto": "Sempre usar D-1 para EVOLUTION no relatório do dia corrente"
+    },
+    {
+      "armadilha": "ECO_INDEX — filtrar FIELD='YIELD' para CDI correto",
+      "impacto": "CDI errado sem o filtro"
+    }
+  ],
+
+  "change_log": [
+    {
+      "data": "2026-04-17",
+      "mudanca": "Criação inicial baseada no GLPG_System_Guide.docx",
+      "fonte": "Documento oficial"
+    },
+    {
+      "data": "2026-04-17",
+      "mudanca": "Auditoria completa via 4 queries SQL diretas no banco. Nomes corrigidos de MAIÚSCULAS para mixed case. MACRO_Q confirmado como 'Galapagos Global Macro Q'. TREE confirmada como 'Main_Macro_Ativos'. Chaves PA confirmadas. Fundo GFA identificado como pendência.",
+      "fonte": "Queries diretas GLPG-DB01 — Fase 1 do MVP"
+    }
+  ]
+}

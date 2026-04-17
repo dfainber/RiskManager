@@ -1,0 +1,35 @@
+{
+  "fundo": "MACRO",
+  "mes_referencia": "2026-04",
+  "ultima_atualizacao": "2026-04-17",
+  "ajustes": {
+    "LF": {
+      "stop_calculado_bps": 0,
+      "status_calculado": "gancho",
+      "stop_mensal_override_bps": null,
+      "motivo": null,
+      "aprovado_por": null,
+      "data_aprovacao": null,
+      "_nota": "Gancho em abril (março: −92 sobre base −63). Stop = 0 salvo ajuste gerencial. Reset para −63 em maio."
+    },
+    "JD": {
+      "stop_calculado_bps": -93.5,
+      "status_calculado": "ok",
+      "stop_mensal_override_bps": null,
+      "motivo": null,
+      "aprovado_por": null,
+      "data_aprovacao": null,
+      "_nota": "Stop expandido por carry positivo acumulado (Jan +76, Fev +26.5, Mar +60.9)."
+    },
+    "RJ": {
+      "stop_calculado_bps": -28.25,
+      "status_calculado": "ok",
+      "stop_mensal_override_bps": -63,
+      "motivo": "Ajuste gerencial — reset para base",
+      "aprovado_por": "Risk Manager",
+      "data_aprovacao": "2026-04-17",
+      "_nota": "Fórmula daria −28.25 (mar: −55.5 sobre stop −41.3, dentro do stop na maior parte). Management optou por reset para base −63."
+    }
+  },
+  "_instrucoes": "Preencher stop_mensal_override_bps, motivo, aprovado_por e data_aprovacao se houver ajuste gerencial. Deixar null para usar o stop calculado."
+}

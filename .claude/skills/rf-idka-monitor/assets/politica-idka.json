@@ -1,0 +1,59 @@
+{
+  "_doc": "Configurações de política do IDKA Monitor. Atualizar conforme decisões da gestão. Enquanto o valor for null, a skill opera sem o recurso correspondente e marca como 'pendente' no relatório.",
+  "_references": {
+    "pendencias": "references/politica-idka-pendente.md",
+    "metodologia": "references/ano-eq-methodology.md"
+  },
+  "_last_update": "2026-04-16",
+
+  "politica_replica": {
+    "_doc": "Pendência 1: como medir qualidade da réplica",
+    "metodologia": "autoconsistencia",
+    "_opcoes": ["autoconsistencia", "vs_anbima", "hibrida"],
+    "fonte_indice_oficial": null,
+    "tolerancia_gap_ano_eq": null,
+    "tolerancia_gap_bvar_bps": null,
+    "status": "pendente"
+  },
+
+  "identificacao_albatroz": {
+    "_doc": "Pendência 2: como identificar alocação no Albatroz dentro do book RF_LF",
+    "filtros": {
+      "product_class_contains": [],
+      "product_contains": ["Albatroz"],
+      "exact_products": []
+    },
+    "metodologia_dv01": null,
+    "_opcoes": ["look_through", "proxy_estatico", "zero", "nao_calculado"],
+    "threshold_materialidade_pct_pl": 1.0,
+    "status": "pendente"
+  },
+
+  "orcamento_perda_relativa": {
+    "_doc": "Pendência 3: stop mensal de PnL relativo ao benchmark",
+    "metodologia": null,
+    "_opcoes": ["absoluto_bps", "multiplo_bvar", "pct_target_alpha", "historico_empirico"],
+    "parametros_3y": {
+      "stop_mensal_bps": null,
+      "soft_mensal_bps": null
+    },
+    "parametros_10y": {
+      "stop_mensal_bps": null,
+      "soft_mensal_bps": null
+    },
+    "status": "pendente"
+  },
+
+  "criterios_reducao_risco": {
+    "_doc": "Pendência 4: ações de redução quando orçamento está sendo consumido",
+    "escalonamento": [],
+    "_exemplo_formato": [
+      {"utilizacao_pct": 50, "acao": "alerta ao comitê"},
+      {"utilizacao_pct": 75, "acao": "reduzir DV01 ativo em 30%"},
+      {"utilizacao_pct": 100, "acao": "fechar apostas discricionárias"}
+    ],
+    "status": "pendente"
+  },
+
+  "change_log": []
+}

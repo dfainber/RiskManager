@@ -1,0 +1,179 @@
+ CLAUDE.md — Risk Monitor (GLPG)
+
+Este arquivo é carregado automaticamente em toda sessão do Claude Code dentro
+deste repositório. Ele é a **fonte única de verdade** sobre o que o projeto é,
+onde estamos, e quais regras devem ser seguidas.
+
+---
+
+## 1. Propósito
+
+Monitorar o risco de todos os fundos da casa (famílias: **Multimercados, Renda
+Fixa, Crédito, Renda Variável**) em base diária, para alimentar o **Morning
+Call** com uma visão consolidada de:
+
+- Evolução do risco em **VaR** e **Stress**
+- Utilização de risco **ex-post** (orçamento de perda / PnL budget)
+- Aderência de cada fundo ao seu **mandato** e particularidades
+
+O produto final de cada rodada é um briefing curto, acionável, que leve a uma
+decisão do gestor. Se não leva a decisão, o briefing está errado.
+
+---
+
+## 2. Arquitetura de skills
+
+```
+.claude/skills/
+├── risk-monitor/                       # skill-mãe (orquestra + carrega mandatos)
+│   ├── SKILL.md
+│   ├── fundos-canonicos.json           # mapa autoritativo de nomes
+│   └── mandatos/                       # um JSON por fundo com limites
+├── macro-stop-monitor/                 # stops por PM (família Macro)
+├── macro-risk-breakdown/               # decomposição de risco MACRO
+├── evolution-risk-concentration/       # concentração no fundo Evolution
+├── rf-idka-monitor/                    # IDKAs benchmarked (Renda Fixa)
+├── performance-attribution/            # PA transversal às famílias
+└── risk-morning-call/                  # briefing final consolidado
+```
+
+**Regra de ouro:** as sobreposições (ex.: `macro-stop-monitor` vs.
+`macro-risk-breakdown`; PA vs. risk-breakdown) são **complementares, não
+redundantes**. Cada skill dá uma visão distinta dos mesmos fundos. Não
+consolidar à toa.
+
+---
+
+## 3. Fontes de dados (GLPG)
+
+Todo acesso a dados passa pela skill **`glpg-data-fetch`** (já existente). Não
+escrever queries ad-hoc espalhadas pelas skills — sempre chamar a camada de
+acesso.
+
+Schemas e tabelas principais:
+
+| Schema      | Tabela                            | Uso                          |
+|-------------|-----------------------------------|------------------------------|
+| `LOTE45`    | `LOTE_TRADING_DESKS_NAV_SHARE`    | NAV share por mesa/fundo     |
+| `LOTE45`    | `LOTE_FUND_STRESS_RPM`            | VaR/Stress nível fundo (LEVEL=10) e série histórica |
+| `LOTE45`    | `LOTE_BOOK_STRESS_RPM`            | VaR por book/RF (LEVEL=3), fonte para MACRO via Evolution |
+| `LOTE45`    | `LOTE_PRODUCT_EXPO`               | Exposição/delta por produto — usar `TRADING_DESK_SHARE_SOURCE` |
+| `q_models`  | `REPORT_ALPHA_ATRIBUTION`         | PnL por PM (LIVRO) e por instrumento |
+| `q_models`  | `STANDARD_DEVIATION_ASSETS`       | σ por instrumento, BOOK='MACRO' |
+| `q_models`  | `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION` | Drawdowns simulados, retornos históricos |
+
+Outras fontes (Access local, Excel diário) são **secundárias** e só entram
+quando explicitamente necessárias.
+
+---
+
+## 4. Mapa canônico de fundos
+
+O arquivo `risk-monitor/fundos-canonicos.json` é a única referência válida para
+nomes de fundos e mesas. Regras:
+
+- Antes de filtrar por `TRADING_DESK` ou `FUNDO` em qualquer query, **consultar
+  o JSON canônico**.
+- Se o nome no banco mudar, atualizar o JSON — nunca hardcode em skill.
+- **Correção histórica importante:** onde antes se usava `SISTEMATICO` o nome
+  real no banco é **`QUANT`**. Nunca mais escrever `SISTEMATICO` em query.
+
+---
+
+## 5. Onde estamos (fase atual)
+
+| Fase | Duração     | Descrição                                              | Status     |
+|------|-------------|--------------------------------------------------------|------------|
+| 0    | 1–2 dias    | instalar skills + criar pastas + cadastrar mandatos    | ✅ concluída 2026-04-17 |
+| 1    | ½ dia       | auditoria de nomes (4 queries SQL)                     | ✅ concluída 2026-04-17 |
+| 2    | 1 semana    | 1ª execução real, validar contra dashboards existentes | ✅ concluída 2026-04-17 |
+| 3    | 2–4 semanas | calibrar thresholds com uso real                       | **em andamento** |
+| 4    | 1–3 meses   | expansão: RF completo, carrego MACRO, MC em HTML       | pendente   |
+| 5    | 3–6+ meses  | state-of-the-art: análise temporal, alertas proativos  | pendente   |
+
+**Fase 0 — entregues:**
+- 9 skills instaladas em `.claude/skills/`
+- Pastas de dados criadas em `data/` (mandatos, snapshots, morning-calls, macro-stops)
+- Mandatos criados: MACRO, QUANT, EVOLUTION, MACRO_Q
+- Mandatos pendentes: ALBATROZ, IDKA_3Y, IDKA_10Y (aguardam definição de BVaR)
+
+**Fase 1 — entregues:**
+- 4 queries SQL rodadas contra GLPG-DB01 em 2026-04-17
+- `fundos-canonicos.json` atualizado com nomes reais (mixed case, não all-caps)
+- TREE confirmada como `Main_Macro_Ativos` (era `Main_Macro_Gestores` no design doc — correção crítica)
+- PA keys confirmadas; MACRO_Q usa `GLOBAL` como chave PA
+- Armadilhas documentadas no JSON canônico
+
+**Fase 2 — entregues (concluída 2026-04-17):**
+- `glpg_fetch.py` criado em `Risk_Monitor/` (conexão GLPG-DB01 via `.env`)
+- `macro-stop-monitor` executado com dados reais — carrego validado, stops gravados
+- `generate_risk_report.py` operacional — HTML diário em `data/morning-calls/`
+- Seções: Risk Monitor (VaR/Stress 3 fundos), Risk Budget Monitor (stop por PM), Exposição MACRO
+- Exposição MACRO validada: POSIÇÕES (por RF factor) e PM VaR (por gestor), com drill-down
+- Colunas: %NAV, σ, ΔExpo, VaR%, ΔVaR, Margem, DIA — sort em todos os níveis
+- Fonte de exposição confirmada: `LOTE_PRODUCT_EXPO` com `TRADING_DESK_SHARE_SOURCE`
+- σ por instrumento: `q_models.STANDARD_DEVIATION_ASSETS`, BOOK='MACRO'
+- DIA por instrumento: `q_models.REPORT_ALPHA_ATRIBUTION` group by LIVRO+PRODUCT
+- Date picker com lógica BRT (antes 21h → ontem; depois → hoje com aviso)
+
+**Próxima ação concreta (Fase 3):** usar o relatório diariamente, identificar thresholds
+a calibrar (alertas de 80° pct, escala das barras), validar QUANT e EVOLUTION com os
+dashboards originais.
+
+---
+
+## 6. Gaps deliberados (fora do MVP)
+
+Fora de escopo **até a Fase 4 no mínimo**:
+
+- Fundos **BALTRA**
+- Fundos **Long Only**
+- Fundos **FMN**
+- Família **Crédito** (só entra após MVP de Macro + RF estar estável)
+
+Isso é escolha, não descuido. Não expandir escopo sem discutir.
+
+---
+
+## 7. Métrica de sucesso
+
+Única métrica que importa:
+
+> **Quantas vezes por semana o Morning Call leva a uma ação concreta do
+> gestor.**
+
+Não é cobertura, não é número de skills, não é quantidade de gráficos. Se o
+briefing é lido e arquivado sem decisão, o kit está falhando. Iterar até que
+isso mude.
+
+---
+
+## 8. Convenções
+
+**Idioma.** Código, nomes de arquivos, variáveis, e chaves de JSON em **inglês**.
+Documentação, comentários longos e texto do Morning Call em **português**.
+
+**Git.** Commitar depois de cada sub-skill ficar minimamente funcional. Mensagem
+no imperativo, em inglês: `add macro-stop-monitor skill`, `fix QUANT name in
+canonical map`, etc.
+
+**Skills novas.** Seguir o padrão do `skill-creator` em `/mnt/skills/examples/`
+(ou o equivalente local). Toda skill tem `SKILL.md` com frontmatter `name` e
+`description` claros — a `description` é o que faz o Claude saber quando
+disparar a skill, então ser específico vale mais que ser curto.
+
+**SQL.** Sempre parametrizar datas e fundos. Nada de literal de data no meio do
+WHERE. Usar a camada `glpg-data-fetch`.
+
+**Outputs.** O Morning Call final sai em markdown primeiro (Fase 2–3), depois
+migra para HTML (Fase 4). Não perder tempo com estética antes de ter números
+confiáveis.
+
+---
+
+## 9. Como começar uma nova sessão
+
+Prompt sugerido para abrir uma sessão produtiva:
+
+> Leia CLAUDE.md e me diga em qual fase estamos e qual é a próxima ação
+> concreta. Antes de rodar qualquer código contra o GLPG, me mostre o plano.

@@ -1,0 +1,65 @@
+{
+  "fundo": "EVOLUTION",
+  "nome_completo": "Galapagos Evolution FIC FIM CP",
+  "familia": "multimercados",
+  "benchmark": "CDI",
+  "ultima_atualizacao": "2026-04-17",
+  "fonte_limites": "Asset_RiscoMercado_20260415.xlsx + informações do Risk Manager",
+
+  "limites_formais": {
+    "_fonte": "Asset_RiscoMercado_20260415.xlsx — data referência 2026-04-15",
+    "_categoria_no_sistema": "Evolution",
+    "var_parametrico_95_1d": {
+      "hard": "2.50%",
+      "hard_decimal": 0.025,
+      "soft": "1.75%",
+      "soft_decimal": 0.0175,
+      "unidade": "% do PL",
+      "valor_atual_15abr": "-0.36%",
+      "folga_15abr": "2.14%"
+    },
+    "stress": {
+      "hard": "-15%",
+      "hard_decimal": -0.15,
+      "soft": "-10.5%",
+      "soft_decimal": -0.105,
+      "unidade": "% do PL",
+      "valor_atual_15abr": "-4.20%",
+      "folga_15abr": "10.80%"
+    }
+  },
+
+  "orcamento_perda_por_pm": {
+    "_nota": "Evolution é fundo multiestratégia — o orçamento de risco é gerido pelo comitê via limites de VaR/Stress, não por stop individual por PM.",
+    "_regra_carrego": "PENDENTE — não implementar até aprovação da gestão"
+  },
+
+  "estrutura_books": {
+    "_nota": "Evolution é multiestratégia — tem books internos, incluindo um 'Quant Book' que ALOCA no fundo Galapagos Quantitativo FIM (QUANT). NÃO confundir: o Quant Book é uma estratégia dentro do Evolution, o QUANT é um fundo separado com mandato e limites próprios.",
+    "quant_book": {
+      "descricao": "Book interno do Evolution que aloca no fundo QUANT (Galapagos Quantitativo FIM)",
+      "atencao": "Na PA e no breakdown de risco, a contribuição do Quant Book aparece como uma linha dentro do Evolution — não é o QUANT standalone. Tratar separadamente.",
+      "fundo_alocado": "QUANT"
+    }
+  },
+
+  "alertas_especificos": {
+    "bull_market_alignment": {
+      "descricao": "Camada 4 de concentração — verificar se posicionamento está alinhado com regime de mercado",
+      "acao": "Sempre destacar no Morning Call quando disparado"
+    },
+    "credito_cotas_junior": {
+      "descricao": "Parcela de crédito inclui cotas júnior — marcação pode divergir do valor de mercado",
+      "acao": "Validar marcação com equipe de crédito quando CREDITO estiver no top-3 de contribuição do dia"
+    },
+    "delay_dados": {
+      "descricao": "Evolution tem 1 dia de delay no banco",
+      "acao": "Sempre usar D-1 para EVOLUTION ao consultar LOTE_TRADING_DESKS_NAV_SHARE"
+    }
+  },
+
+  "cenarios_stress": ["Evolution"],
+  "cenario_principal": "Evolution",
+
+  "observacoes": "Fundo multiestratégia. Importante: dados no banco têm 1 dia de delay — sempre usar D-1. Parcela de crédito com cotas júnior exige atenção especial na marcação. Bull Market Alignment (camada 4) deve ser sempre destacado no Morning Call quando ativo. SubA e SubB existem no banco — ignorar no MVP, usar apenas o agregado."
+}

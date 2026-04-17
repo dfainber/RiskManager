@@ -1,0 +1,27 @@
+{
+  "_doc": "Mapa de tickers IDKA. No banco aparecem duas formas: a longa (TRADING_DESK em LOTE45) e a curta (FUNDO em q_models). A skill precisa traduzir entre as duas.",
+  "_last_update": "2026-04-16",
+
+  "idka_3y": {
+    "ticker_interno": "IDKA-3Y",
+    "nome_completo": "IDKA IPCA 3Y FIRF",
+    "trading_desk_lote45": "IDKA IPCA 3Y FIRF",
+    "fundo_q_models": "IDKAIPCAY3",
+    "benchmark_oficial": "IDKA IPCA 2A",
+    "ano_eq_target": 3.0,
+    "duration_aproximada": 2.8
+  },
+
+  "idka_10y": {
+    "ticker_interno": "IDKA-10Y",
+    "nome_completo": "IDKA IPCA 10Y FIRF",
+    "trading_desk_lote45": "IDKA IPCA 10Y FIRF",
+    "fundo_q_models": "IDKAIPCAY10",
+    "benchmark_oficial": "IDKA IPCA 10A",
+    "ano_eq_target": 10.0,
+    "duration_aproximada": 7.5
+  },
+
+  "_note_q_models": "Confirmar na primeira execução se q_models.REPORT_ALPHA_ATRIBUTION usa IDKAIPCAY3 ou outra convenção.",
+  "_note_benchmark_oficial": "Os nomes oficiais Anbima precisam de confirmação; o IDKA 2A é o benchmark de ~2 anos para o fundo de 3Y."
+}

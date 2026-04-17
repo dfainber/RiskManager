@@ -1,0 +1,55 @@
+{
+  "_doc": "Mapa LIVRO -> estratégia, extraído diretamente de EVOLUTION_TABLES_GRAPHS.py (função main, variável livros_dict). Atualizar quando novos livros forem adicionados pela gestão. Livros não listados vão para OUTROS.",
+  "_source": "EVOLUTION_TABLES_GRAPHS.py linhas ~208-215",
+  "_last_update": "2026-04-16",
+
+  "MACRO": [
+    "CI",
+    "Macro_JD",
+    "Macro_LF",
+    "Macro_RJ",
+    "Macro_FG",
+    "Macro_QM",
+    "Macro_AC",
+    "Macro_MD",
+    "Giro_Master",
+    "LF_RV-BZ_SS"
+  ],
+
+  "SIST": [
+    "Bracco",
+    "Quant_PA",
+    "SIST_FX",
+    "SIST_GLOBAL",
+    "SIST_COMMO",
+    "SIST_RF"
+  ],
+
+  "FRONTIER": [
+    "FLO",
+    "FMN",
+    "FCO"
+  ],
+
+  "CAIXA": [
+    "Caixa",
+    "Caixa USD",
+    "RV BZ",
+    "",
+    "Taxas e Custos"
+  ],
+
+  "EVO_STRATEGY": [
+    "Macro_DF",
+    "Baltra_DI",
+    "FX"
+  ],
+
+  "CREDITO": [
+    "Crédito",
+    "GIS FI FUNDO IMOBILIÁRIO",
+    "GIS CUSTOS E PROVISÕES"
+  ],
+
+  "_change_log": []
+}

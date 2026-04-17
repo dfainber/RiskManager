@@ -1,0 +1,70 @@
+{
+  "_doc": "Mapa TICKER -> FUNDO em q_models.REPORT_ALPHA_ATRIBUTION. Preencher na primeira execução rodando a query de descoberta em references/queries-pa-regime-a.md. Valores com '???' são placeholders a confirmar.",
+  "_last_update": "2026-04-16",
+
+  "regime_a": {
+    "MACRO": {
+      "fundo_q_models": "MACRO",
+      "trading_desk": "Galapagos Macro FIM",
+      "tipo": "absolute_return",
+      "pms_mapa_livros": "macro-stop-monitor/assets/pms-registry.json",
+      "confirmado": true
+    },
+    "EVOLUTION": {
+      "fundo_q_models": "EVOLUTION",
+      "trading_desk": "Galapagos Evolution FIC FIM CP",
+      "tipo": "multi_estrategia",
+      "estrategias_mapa_livros": "evolution-risk-concentration/assets/livros-map.json",
+      "confirmado": true
+    },
+    "QUANTITATIVO": {
+      "fundo_q_models": "QUANTITATIVO",
+      "trading_desk": "Galapagos Quantitativo FIM",
+      "tipo": "absolute_return_quant",
+      "confirmado": false,
+      "_note": "Confirmar nome exato do FUNDO e TREE"
+    },
+    "MACRO_Q": {
+      "fundo_q_models": "???",
+      "trading_desk": "???",
+      "tipo": "absolute_return_quant",
+      "confirmado": false,
+      "_note": "Fundo novo mencionado pelo usuário. Confirmar TRADING_DESK e FUNDO."
+    },
+    "ALBATROZ": {
+      "fundo_q_models": "???",
+      "trading_desk": "???",
+      "tipo": "renda_fixa_ativa",
+      "confirmado": false,
+      "_note": "Fundo de RF ativo. Confirmar nome completo e estrutura de livros."
+    }
+  },
+
+  "regime_b": {
+    "IDKA_3Y": {
+      "trading_desk": "IDKA IPCA 3Y FIRF",
+      "benchmark": "IDKA IPCA 2A",
+      "fonte_benchmark": "???",
+      "tipo": "benchmarked",
+      "confirmado": false
+    },
+    "IDKA_10Y": {
+      "trading_desk": "IDKA IPCA 10Y FIRF",
+      "benchmark": "IDKA IPCA 10A",
+      "fonte_benchmark": "???",
+      "tipo": "benchmarked",
+      "confirmado": false
+    }
+  },
+
+  "fundos_futuros": [
+    {"ticker": "LONG_ONLY", "nome": "Frontier Ações FIC FI", "tipo": "benchmarked_equity", "_note": "PA via attribution_report_formulae.py (analyst x setor) — integrar como Regime C"},
+    {"ticker": "FMN", "nome": "???", "tipo": "benchmarked_equity_relative", "_note": "Escopo pendente após remoção do Evo Strategy"},
+    {"ticker": "SEA_LION", "tipo": "credito_privado"},
+    {"ticker": "DRAGON", "tipo": "credito_privado"},
+    {"ticker": "NAZCA", "tipo": "credito_privado"},
+    {"ticker": "IGUANA", "tipo": "credito_privado"}
+  ],
+
+  "change_log": []
+}

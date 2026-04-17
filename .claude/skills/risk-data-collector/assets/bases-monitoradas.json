@@ -1,0 +1,101 @@
+{
+  "_doc": "Lista de bases monitoradas pelo risk-data-collector. Editável — adicionar/remover conforme skills mudam.",
+  "_last_update": "2026-04-16",
+
+  "bases": [
+    {
+      "nome": "LOTE45.LOTE_FUND_STRESS_RPM",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_FUND_STRESS_RPM\"",
+      "skills_consumidoras": ["risk-daily-monitor", "macro-risk-breakdown"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "LOTE45.LOTE_BOOK_STRESS_RPM",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_BOOK_STRESS_RPM\"",
+      "skills_consumidoras": ["risk-daily-monitor", "evolution-risk-concentration", "macro-risk-breakdown"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "LOTE45.LOTE_PARAMETRIC_VAR_TABLE",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_PARAMETRIC_VAR_TABLE\"",
+      "skills_consumidoras": ["rf-idka-monitor"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "LOTE45.LOTE_TRADING_DESKS_NAV_SHARE",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_TRADING_DESKS_NAV_SHARE\"",
+      "skills_consumidoras": ["todas"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "LOTE45.LOTE_BOOK_OVERVIEW",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_BOOK_OVERVIEW\"",
+      "skills_consumidoras": ["risk-daily-monitor", "macro-risk-breakdown", "evolution-risk-concentration"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "LOTE45.LOTE_PRODUCT_BOOK_POSITION_PL",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_PRODUCT_BOOK_POSITION_PL\"",
+      "skills_consumidoras": ["rf-idka-monitor"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 1
+    },
+    {
+      "nome": "LOTE45.LOTE_DAILY_BENCHMARK",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM \"LOTE45\".\"LOTE_DAILY_BENCHMARK\"",
+      "skills_consumidoras": ["performance-attribution", "evolution-risk-concentration"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "q_models.REPORT_ALPHA_ATRIBUTION",
+      "query_frescor": "SELECT MAX(\"DATE\") FROM q_models.\"REPORT_ALPHA_ATRIBUTION\"",
+      "skills_consumidoras": ["performance-attribution", "macro-stop-monitor"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION",
+      "query_frescor": "SELECT MAX(\"PORTIFOLIO_DATE\") FROM q_models.\"PORTIFOLIO_DAILY_HISTORICAL_SIMULATION\"",
+      "skills_consumidoras": ["macro-risk-breakdown"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 1
+    },
+    {
+      "nome": "q_models.RISK_DIRECTION_REPORT",
+      "query_frescor": "SELECT MAX(\"VAL_DATE\") FROM q_models.\"RISK_DIRECTION_REPORT\"",
+      "skills_consumidoras": ["evolution-risk-concentration"],
+      "criticidade": "alta",
+      "tolerancia_defasagem_du": 0
+    },
+    {
+      "nome": "ECO_INDEX_CDI",
+      "query_frescor": "SELECT MAX(\"DATE\") FROM \"ECO_INDEX\" WHERE \"INSTRUMENT\" = 'CDI'",
+      "skills_consumidoras": ["performance-attribution"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 1
+    },
+    {
+      "nome": "ECO_INDEX_IPCA",
+      "query_frescor": "SELECT MAX(\"DATE\") FROM \"ECO_INDEX\" WHERE \"INSTRUMENT\" ILIKE '%IPCA%'",
+      "skills_consumidoras": ["rf-idka-monitor"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 1
+    },
+    {
+      "nome": "ECO_INDEX_IDKA",
+      "query_frescor": "SELECT MAX(\"DATE\") FROM \"ECO_INDEX\" WHERE \"INSTRUMENT\" ILIKE '%IDKA%'",
+      "skills_consumidoras": ["performance-attribution", "rf-idka-monitor"],
+      "criticidade": "media",
+      "tolerancia_defasagem_du": 1,
+      "_note": "Fonte Anbima — confirmar se existe neste nome ou outro"
+    }
+  ],
+
+  "change_log": []
+}

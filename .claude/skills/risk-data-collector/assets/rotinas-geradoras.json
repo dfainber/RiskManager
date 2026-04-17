@@ -1,0 +1,74 @@
+{
+  "_doc": "Mapa base → script que a gera. Usado para tentativa de recuperação. SEGURANÇA: nenhum script é executado se não estiver aqui. Todos os paths devem ser absolutos.",
+  "_status": "PARCIAL - preencher com paths reais quando conhecidos",
+  "_last_update": "2026-04-16",
+
+  "rotinas": {
+    "q_models.REPORT_ALPHA_ATRIBUTION": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\DATABASELOTE_REPORT_LONG_FRONTIERS\\DAILY_REPORT_LONG_ONLYv2\\V2\\attribution_report_formulae.py",
+      "comando": ["python", "{script_path}", "{dia_atual}"],
+      "timeout_segundos": 1200,
+      "status": "mapeado_parcialmente",
+      "_note": "Script existe, mas precisa verificar se tem entrypoint de linha de comando ou precisa wrapper"
+    },
+    "LOTE45.LOTE_FUND_STRESS_RPM": {
+      "script_path": null,
+      "comando": null,
+      "timeout_segundos": 600,
+      "status": "nao_mapeado",
+      "_note": "Rotina interna de risco — descobrir path"
+    },
+    "LOTE45.LOTE_BOOK_STRESS_RPM": {
+      "script_path": null,
+      "comando": null,
+      "timeout_segundos": 600,
+      "status": "nao_mapeado"
+    },
+    "LOTE45.LOTE_PARAMETRIC_VAR_TABLE": {
+      "script_path": null,
+      "comando": null,
+      "timeout_segundos": 600,
+      "status": "nao_mapeado"
+    },
+    "MACRO_dashboard": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\MACRO_TABLES_GRAPHS.py",
+      "comando": ["python", "{script_path}", "{dia_atual}"],
+      "timeout_segundos": 900,
+      "status": "mapeado",
+      "_note": "Não gera base do banco — gera dashboard HTML"
+    },
+    "EVOLUTION_dashboard": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\EVOLUTION_TABLES_GRAPHS.py",
+      "comando": ["python", "{script_path}", "{dia_atual}"],
+      "timeout_segundos": 900,
+      "status": "mapeado"
+    },
+    "IDKA_dashboard": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\IDKA_TABLES_GRAPHS.py",
+      "comando": ["python", "{script_path}", "{dia_atual}"],
+      "timeout_segundos": 900,
+      "status": "mapeado"
+    },
+    "SISTEMATICO_dashboard": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\SISTEMATICO_TABLES_GRAPHS.py",
+      "comando": ["python", "{script_path}", "{dia_atual}"],
+      "timeout_segundos": 900,
+      "status": "mapeado"
+    },
+    "LONG_ONLY_xlsx": {
+      "script_path": "F:\\Bloomberg\\Quant\\Rotinas\\DATABASELOTE_REPORT_LONG_FRONTIERS\\DAILY_REPORT_LONG_ONLYv2\\V2\\daily_report_generator_def.py",
+      "comando": ["python", "{script_path}"],
+      "timeout_segundos": 1800,
+      "status": "mapeado",
+      "_note": "Gera XLSX, não tabela de banco"
+    }
+  },
+
+  "_politica": {
+    "nunca_executar_se_status_nao_mapeado": true,
+    "log_toda_execucao": true,
+    "max_tentativas_por_dia": 2
+  },
+
+  "change_log": []
+}

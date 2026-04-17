@@ -1,0 +1,53 @@
+{
+  "fundo": "MACRO",
+  "trading_desk": "Galapagos Macro FIM",
+  "pms_ativos": [
+    {
+      "inicial": "CI",
+      "nome_completo": "PREENCHER",
+      "filtro_banco": "LIVRO contains 'CI' (case insensitive)",
+      "status": "ativo",
+      "mandato_inicio": null
+    },
+    {
+      "inicial": "LF",
+      "nome_completo": "Luiz Felipe",
+      "filtro_banco": "LIVRO contains 'LF'",
+      "status": "ativo",
+      "mandato_inicio": null
+    },
+    {
+      "inicial": "JD",
+      "nome_completo": "Joca Dib",
+      "filtro_banco": "LIVRO contains 'JD'",
+      "status": "ativo",
+      "mandato_inicio": null
+    },
+    {
+      "inicial": "RJ",
+      "nome_completo": "Rodrigo Jafet",
+      "filtro_banco": "LIVRO contains 'RJ'",
+      "status": "ativo",
+      "mandato_inicio": null
+    },
+    {
+      "inicial": "MD",
+      "nome_completo": "PREENCHER",
+      "filtro_banco": "LIVRO = 'Macro_MD'",
+      "status": "ativo",
+      "stop_mensal_bps": null,
+      "stop_anual_bps": null,
+      "_nota": "Book do trader. Limite a definir — monitorar sem semáforo até estabelecer stop.",
+      "mandato_inicio": null
+    }
+  ],
+  "pms_inativos": [
+    {
+      "inicial": "QM",
+      "status": "descontinuado",
+      "_nota": "PM descontinuado — ignorar em todas as queries e no monitor."
+    }
+  ],
+  "ultima_atualizacao": "2026-04-17",
+  "observacao": "Preencher nome_completo e mandato_inicio quando forem confirmados pela gestao."
+}

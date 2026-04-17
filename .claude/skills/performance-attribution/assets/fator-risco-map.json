@@ -1,0 +1,39 @@
+{
+  "_doc": "Mapa GRUPO → FATOR_RISCO extraído da função classificar_fator_risco em EVOLUTION_TABLES_GRAPHS.py. Usado para agrupar PnL por fator de risco unificado.",
+  "_source": "EVOLUTION_TABLES_GRAPHS.py",
+  "_last_update": "2026-04-16",
+
+  "mapeamento_grupo_para_fator": {
+    "_note": "A função original em Python precisa ser portada aqui — os scripts têm lógica condicional (if/elif) que vai virar JSON ou função Python na skill",
+    "_preencher_na_primeira_execucao": true
+  },
+
+  "overrides_produto_especifico": {
+    "PALL": "COMMODITIES",
+    "USDBRLOptionPut Expiration BRL_": "USDBRL",
+    "Provision BOVESPA BRL_": "RV-BZ",
+    "_note": "Extraídos das linhas do script: products.loc[products['PRODUCT'] == 'X', 'FATOR_RISCO'] = 'Y'"
+  },
+
+  "fatores_de_risco_conhecidos": [
+    "RF-BZ",
+    "RF-EM",
+    "RF-DM",
+    "FX-BRL",
+    "FX-EM",
+    "FX-DM",
+    "USDBRL",
+    "RV-BZ",
+    "RV-EM",
+    "RV-DM",
+    "COMMODITIES",
+    "P-Metals",
+    "T10"
+  ],
+
+  "_action_items": [
+    "Portar função classificar_fator_risco do script para Python reutilizável",
+    "Validar que cobertura de PRODUCT_CLASS é 100% (nenhum fica NULL)",
+    "Adicionar novos fatores se a gestão introduzir classes novas"
+  ]
+}

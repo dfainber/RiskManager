@@ -1,0 +1,43 @@
+{
+  "_doc": "Thresholds para detecção automática de destaques de performance. Ajustáveis por fundo. Ver references/queries-pa-regime-a.md.",
+  "_last_update": "2026-04-16",
+
+  "default": {
+    "destaque_positivo_dia_bps": 5.0,
+    "destaque_positivo_mtd_bps": 20.0,
+    "destaque_negativo_dia_bps": -5.0,
+    "destaque_negativo_mtd_bps": -20.0,
+    "dominancia_pct_total": 30.0
+  },
+
+  "overrides_por_fundo": {
+    "QUANTITATIVO": {
+      "_note": "Fundo sistemático pode ter PnL diário mais errático — thresholds mais largos",
+      "destaque_positivo_dia_bps": 8.0,
+      "destaque_negativo_dia_bps": -8.0
+    },
+    "MACRO_Q": {
+      "_note": "Calibrar após 2-4 semanas de observação real"
+    },
+    "IDKA_3Y": {
+      "_note": "RF tem retornos diários menores em magnitude",
+      "destaque_positivo_dia_bps": 2.0,
+      "destaque_positivo_mtd_bps": 8.0,
+      "destaque_negativo_dia_bps": -2.0,
+      "destaque_negativo_mtd_bps": -8.0,
+      "er_persistente_dias": 5,
+      "er_persistente_bps": -2.0
+    },
+    "IDKA_10Y": {
+      "_note": "Duration maior, retornos maiores em magnitude",
+      "destaque_positivo_dia_bps": 4.0,
+      "destaque_positivo_mtd_bps": 15.0,
+      "destaque_negativo_dia_bps": -4.0,
+      "destaque_negativo_mtd_bps": -15.0,
+      "er_persistente_dias": 5,
+      "er_persistente_bps": -4.0
+    }
+  },
+
+  "change_log": []
+}

@@ -1,0 +1,42 @@
+{
+  "_doc": "Thresholds de materialidade para macro-risk-breakdown. Ver references/materialidade.md para justificativa. Valores em bps (basis points) e percentuais inteiros.",
+
+  "var_change": {
+    "absolute_min_bps": 2.0,
+    "relative_var_pct": 10.0,
+    "relative_stop_pct": 5.0
+  },
+
+  "stress_change": {
+    "absolute_min_bps": 2.0,
+    "relative_var_pct": 10.0,
+    "relative_stop_pct": 5.0,
+    "_note": "Pode precisar ser maior que var_change por ordem de grandeza do stress"
+  },
+
+  "delta_change_attribution": {
+    "new_position_threshold_pct": 10.0,
+    "_note": "Se |ΔDelta/Delta_ontem| > X% então 'posição nova'; senão 'mercado'"
+  },
+
+  "always_report": {
+    "sign_flip": true,
+    "new_asset": true,
+    "liquidated_asset": true,
+    "liquidated_min_var_bps": 5.0
+  },
+
+  "top_n": {
+    "breakdown_classes": 5,
+    "breakdown_pms": 5,
+    "shock_absorption": 10
+  },
+
+  "stop_fractions": {
+    "_doc": "Frações do stop mensal para as quais calcular shock absorption",
+    "values": [0.25, 0.50, 1.00]
+  },
+
+  "last_update": "2026-04-16",
+  "change_log": []
+}

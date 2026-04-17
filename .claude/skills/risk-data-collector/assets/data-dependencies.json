@@ -1,0 +1,62 @@
+{
+  "_doc": "Mapa de dependências skill -> fontes de dados. Usado pelo risk-data-collector para verificar frescor e bloqueios. Atualizado conforme GLPG_System_Guide.docx (Abril 2026).",
+  "_last_update": "2026-04-17",
+  "_criticality_values": ["blocker", "important", "optional"],
+
+  "_infraestrutura_existente": {
+    "descricao": "Já existe pipeline rodando que consolida dados a cada 1 minuto",
+    "arquivo_principal": "\\\\fs02\\FS_GALAPAGOS\\Bloomberg\\Quant\\Claude_GLPG_Fetch\\market_data.json",
+    "arquivo_pnl": "\\\\fs02\\FS_GALAPAGOS\\Bloomberg\\Quant\\Claude_GLPG_Fetch\\book_pnl.json",
+    "tasks_scheduler": ["\\GLPG\\DataRefresh (1 min)", "\\GLPG\\Watchdog (10 min)"],
+    "estrategia_coleta": "Preferir ler market_data.json (latência 1 min); fallback para conexão direta ao banco se JSON estiver velho"
+  },
+
+  "_excecoes_de_frescor": {
+    "GALAPAGOS EVOLUTION FIC FIM": {
+      "delay_esperado_dias": 1,
+      "descricao": "Fundo Evolution tem 1 dia de delay documentado no banco (GLPG Guide). D-1 é o 'hoje' normal para este fundo — NÃO tratar como atraso."
+    }
+  },
+
+  "risk-daily-monitor": {
+    "LOTE45.LOTE_FUND_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_BOOK_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_TRADING_DESKS_NAV_SHARE": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_BOOK_OVERVIEW": {"fresh_by": "dia_util", "criticality": "important", "date_column": "VAL_DATE"}
+  },
+
+  "macro-stop-monitor": {
+    "q_models.REPORT_ALPHA_ATRIBUTION": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "DATE", "filter": "FUNDO='MACRO'"}
+  },
+
+  "macro-risk-breakdown": {
+    "LOTE45.LOTE_FUND_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_BOOK_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_BOOK_OVERVIEW": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION": {"fresh_by": "dia_util", "criticality": "important", "date_column": "PORTIFOLIO_DATE"}
+  },
+
+  "evolution-risk-concentration": {
+    "LOTE45.LOTE_BOOK_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_FUND_STRESS_RPM": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_TRADING_DESKS_NAV_SHARE": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "q_models.REPORT_ALPHA_ATRIBUTION": {"fresh_by": "dia_util", "criticality": "important", "date_column": "DATE", "filter": "FUNDO='EVOLUTION'"},
+    "q_models.RISK_DIRECTION_REPORT": {"fresh_by": "dia_util", "criticality": "important", "date_column": "VAL_DATE"}
+  },
+
+  "rf-idka-monitor": {
+    "LOTE45.LOTE_PARAMETRIC_VAR_TABLE": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_PRODUCT_BOOK_POSITION_PL": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_TRADING_DESKS_NAV_SHARE": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_APORTES": {"fresh_by": "dia_util", "criticality": "important", "date_column": "LAST_UPDATE"}
+  },
+
+  "performance-attribution": {
+    "q_models.REPORT_ALPHA_ATRIBUTION": {"fresh_by": "dia_util", "criticality": "blocker", "date_column": "DATE"},
+    "LOTE45.LOTE_TRADING_DESKS_NAV_SHARE": {"fresh_by": "dia_util", "criticality": "important", "date_column": "VAL_DATE"},
+    "LOTE45.LOTE_BOOK_OVERVIEW": {"fresh_by": "dia_util", "criticality": "important", "date_column": "VAL_DATE"},
+    "ECO_INDEX": {"fresh_by": "dia_util", "criticality": "optional", "date_column": "DATE", "_note": "Para IDKA benchmark oficial"}
+  },
+
+  "change_log": []
+}

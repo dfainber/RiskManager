@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -)",
+      "Bash(python3.11 -c \"print\\('test'\\)\")",
+      "Read(//c/Users/diego.fainberg/Anaconda3/**)",
+      "Bash(ls /c/Python*/python.exe)",
+      "Bash(cmd.exe /c \"where python\")",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/tmp_carry_calc.py\")",
+      "Edit(/.claude/skills/macro-stop-monitor/**)",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/tmp_carry2.py\")",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -c ' *)",
+      "Read(//f/Bloomberg/Quant/Rotinas/RELATORIO_EXPO_PNL_AUTOMATICO_HTML/**)",
+      "Read(//f/Bloomberg/Quant/Rotinas/**)",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/generate_risk_report.py\" 2026-04-16)",
+      "Bash(start \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html\")"
+    ]
+  }
+}

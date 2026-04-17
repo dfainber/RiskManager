@@ -1,0 +1,56 @@
+{
+  "_doc": "Mapa oficial de fundos da gestora. Placeholder até o arquivo FUND_KEY_MAP oficial ser disponibilizado pelo usuário (mencionado na sessão de 13/abr como existente). Quando disponibilizado, substituir este conteúdo pelo oficial ou criar referência ao path.",
+  "_status": "PENDENTE_CONFIRMACAO_OFICIAL",
+  "_last_update": "2026-04-16",
+
+  "fundos": {
+    "MACRO": {
+      "nome_oficial": "Galapagos Macro FIM",
+      "chave_interna": "MACRO",
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": "MACRO",
+      "status": "confirmado"
+    },
+    "EVOLUTION": {
+      "nome_oficial": "Galapagos Evolution FIC FIM CP",
+      "chave_interna": "EVOLUTION",
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": "EVOLUTION",
+      "status": "confirmado"
+    },
+    "ALBATROZ": {
+      "nome_oficial": "GALAPAGOS ALBATROZ FIRF LP",
+      "chave_interna": "GLPG_ALBA",
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": null,
+      "status": "pendente_confirmacao",
+      "observacao": "Fundo buscado corretamente no market_data.json conforme sessão de 13/abr (549 linhas com dados até 9/abr)"
+    },
+    "QUANTITATIVO_MACRO_Q": {
+      "nome_oficial": null,
+      "chave_interna": null,
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": null,
+      "status": "pendente_confirmacao",
+      "observacao": "PA própria distinta do MACRO — confirmar nome oficial e valor do campo FUNDO"
+    },
+    "IDKA_3Y": {
+      "nome_oficial": "IDKA IPCA 3Y FIRF",
+      "chave_interna": "IDKA-3Y",
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": "IDKAIPCAY3",
+      "status": "confirmado_via_scripts",
+      "observacao": "Não tem PA oficial — construída via Regime B"
+    },
+    "IDKA_10Y": {
+      "nome_oficial": "IDKA IPCA 10Y FIRF",
+      "chave_interna": "IDKA-10Y",
+      "valor_fundo_em_REPORT_ALPHA_ATRIBUTION": "IDKAIPCAY10",
+      "status": "confirmado_via_scripts",
+      "observacao": "Não tem PA oficial — construída via Regime B"
+    }
+  },
+
+  "_action_items": [
+    "Substituir conteúdo pelo FUND_KEY_MAP oficial quando disponibilizado",
+    "Rodar SELECT DISTINCT FUNDO na primeira execução para confirmar valores",
+    "Popular nome_oficial e chave_interna de QUANTITATIVO_MACRO_Q"
+  ],
+
+  "change_log": []
+}

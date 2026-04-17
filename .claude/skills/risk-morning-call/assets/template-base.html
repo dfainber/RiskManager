@@ -1,0 +1,1028 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Morning Call — {{DATE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ── Design system idêntico ao Cross-Asset Monitor ── */
+  :root{
+    --bg:#0b0d10; --bg-2:#111418;
+    --panel:#14181d; --panel-2:#181d24;
+    --line:#232a33; --line-2:#2d3540;
+    --text:#e7ecf2; --muted:#8892a0;
+    --accent:#0071BB;
+    --up:#26d07c; --up-bg:rgba(38,208,124,.10);
+    --down:#ff5a6a; --down-bg:rgba(255,90,106,.10);
+    --warn:#f5a623; --warn-bg:rgba(245,166,35,.10);
+    --black-bg:rgba(0,0,0,.55);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--text);
+    font-family:'Manrope',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;font-size:14px;}
+  body{
+    background:
+      radial-gradient(1200px 600px at 10% -10%,rgba(0,113,187,.05),transparent 60%),
+      radial-gradient(900px 500px at 110% 10%,rgba(38,208,124,.04),transparent 60%),
+      var(--bg);
+    min-height:100vh;
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums}
+
+  /* ── Header ── */
+  header{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(14px);
+    background:rgba(11,13,16,.82);
+    border-bottom:1px solid var(--line);
+  }
+  .hwrap{max-width:1440px;margin:0 auto;padding:13px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px}
+  .logo{width:36px;height:36px;border-radius:9px;
+    background:linear-gradient(135deg,#0071BB 0%,#183C80 100%);
+    display:grid;place-items:center;flex-shrink:0;
+    box-shadow:0 0 0 1px rgba(0,113,187,.35),0 8px 24px -8px rgba(0,113,187,.4);}
+  .logo svg{width:24px;height:24px}
+  .brand h1{font-size:15px;font-weight:700;letter-spacing:.3px}
+  .brand h1 span{font-weight:400;opacity:.65}
+  .brand p{font-size:10px;color:var(--muted);letter-spacing:.18em;text-transform:uppercase;margin-top:1px}
+
+  .hdate{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:6px 12px;white-space:nowrap}
+  .hdate span{color:var(--muted);font-size:11px;margin-left:6px}
+
+  .completude{display:flex;align-items:center;gap:8px;font-size:11px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 12px}
+  .comp-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+  .comp-dot.ok   {background:var(--up);box-shadow:0 0 7px var(--up)}
+  .comp-dot.warn {background:var(--warn);box-shadow:0 0 7px var(--warn)}
+  .comp-dot.error{background:var(--down);box-shadow:0 0 7px var(--down)}
+  .comp-txt{color:var(--muted)}
+  .comp-txt b{color:var(--text)}
+
+  /* ── Tabs ── */
+  .tabs{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);
+    border-radius:11px;padding:4px;overflow-x:auto;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{white-space:nowrap;padding:7px 14px;font-size:12.5px;font-weight:600;
+    color:var(--muted);background:transparent;border:0;border-radius:8px;cursor:pointer;
+    transition:all .18s ease;letter-spacing:.02em;font-family:inherit}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:#fff;background:linear-gradient(180deg,#1a8fd1,#0071BB)}
+
+  /* ── Main layout ── */
+  main{max-width:1440px;margin:0 auto;padding:18px 22px 40px}
+  .page{display:none;animation:fade .25s ease}
+  .page.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+  /* ── Section ── */
+  .section{margin-bottom:24px}
+  .section-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:0 2px}
+  .section-head h2{
+    font-size:10.5px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--accent);flex-shrink:0}
+  .section-head .sub{font-size:11px;color:var(--muted)}
+  .section-head .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+  /* ── KPI strip ── */
+  .kpi-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+  .kpi-card{
+    flex:1;min-width:130px;
+    background:var(--panel);border:1px solid var(--line);border-radius:11px;
+    padding:12px 16px;display:flex;flex-direction:column;gap:4px;
+    transition:border-color .15s}
+  .kpi-card:hover{border-color:var(--line-2)}
+  .kpi-label{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);white-space:nowrap}
+  .kpi-value{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:600;color:var(--text)}
+  .kpi-sub{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)}
+  .kpi-value.up{color:var(--up)}
+  .kpi-value.down{color:var(--down)}
+  .kpi-value.warn{color:var(--warn)}
+
+  /* ── Semaphore badge ── */
+  .sem{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:10.5px;font-weight:700;font-family:'JetBrains Mono',monospace;
+    padding:3px 8px;border-radius:5px;white-space:nowrap}
+  .sem.green{background:var(--up-bg);color:var(--up);border:1px solid rgba(38,208,124,.25)}
+  .sem.yellow{background:var(--warn-bg);color:var(--warn);border:1px solid rgba(245,166,35,.25)}
+  .sem.red{background:var(--down-bg);color:var(--down);border:1px solid rgba(255,90,106,.25)}
+  .sem.black{background:rgba(255,90,106,.22);color:#ff5a6a;border:1px solid rgba(255,90,106,.5)}
+  .sem.na{background:rgba(255,255,255,.04);color:var(--muted);border:1px solid var(--line)}
+  .sem::before{content:'●';font-size:7px}
+
+  /* ── Fund summary grid ── */
+  .fund-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:20px}
+  .fund-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    overflow:hidden;transition:border-color .15s}
+  .fund-card:hover{border-color:var(--line-2)}
+  .fund-card-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 14px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+  .fund-name{font-size:11.5px;font-weight:700;color:var(--text);letter-spacing:.04em}
+  .fund-family{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-top:1px}
+  .fund-card-body{padding:10px 14px;display:flex;flex-direction:column;gap:6px}
+  .fund-metric-row{display:flex;align-items:center;justify-content:space-between;font-size:11.5px}
+  .fund-metric-label{color:var(--muted)}
+  .fund-metric-val{font-family:'JetBrains Mono',monospace;font-weight:600}
+  .fund-metric-val.up{color:var(--up)}
+  .fund-metric-val.down{color:var(--down)}
+  .fund-metric-val.warn{color:var(--warn)}
+  .fund-metric-val.na{color:var(--muted);font-weight:400}
+
+  /* ── Utilization bar (estilo .mon-row do index.html) ── */
+  .util-row{display:grid;grid-template-columns:80px 1fr 48px;align-items:center;gap:8px;font-size:11px}
+  .util-label{color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .util-label .sub{display:block;font-size:9px;color:var(--muted);margin-top:1px;font-family:'JetBrains Mono',monospace}
+  .util-barwrap{position:relative;height:14px;background:rgba(255,255,255,.03);border-radius:3px}
+  .util-bar{
+    position:absolute;top:2px;bottom:2px;left:0;border-radius:2px;
+    transition:width .5s cubic-bezier(.2,.8,.2,1)}
+  .util-bar.green {background:linear-gradient(90deg,rgba(38,208,124,.35),rgba(38,208,124,.75))}
+  .util-bar.yellow{background:linear-gradient(90deg,rgba(245,166,35,.35),rgba(245,166,35,.75))}
+  .util-bar.red   {background:linear-gradient(90deg,rgba(255,90,106,.35),rgba(255,90,106,.8))}
+  .util-bar.black {background:linear-gradient(90deg,rgba(255,90,106,.6),rgba(255,90,106,1))}
+  .util-pct{font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;text-align:right}
+  .util-pct.green {color:#a8f0c8}
+  .util-pct.yellow{color:#f5cc7a}
+  .util-pct.red   {color:#ffb8c0}
+
+  /* ── Standard table ── */
+  .table-wrap{
+    background:var(--panel);border:1px solid var(--line);border-radius:13px;
+    overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:4px}
+  table{width:100%;border-collapse:collapse}
+  thead th{
+    position:sticky;top:0;z-index:1;
+    background:var(--panel-2);
+    font-size:9.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);text-align:right;padding:10px 14px;
+    border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th:first-child{text-align:left;position:sticky;left:0;z-index:3}
+  thead th:first-child::after{
+    content:'';position:absolute;top:0;right:-10px;bottom:0;width:10px;
+    background:linear-gradient(90deg,rgba(0,0,0,.18),transparent);pointer-events:none}
+  tbody td{
+    padding:10px 14px;font-size:12.5px;
+    border-bottom:1px solid rgba(35,42,51,.5);
+    text-align:right;white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover td{background:rgba(255,255,255,.015)}
+  td.l,thead th.l{text-align:left}
+  td.fund-col{font-weight:600;color:var(--text);text-align:left;
+    position:sticky;left:0;background:var(--panel);z-index:1}
+  tbody tr:hover td.fund-col{background:#16191f}
+  td.fund-col::after{
+    content:'';position:absolute;top:0;right:-10px;bottom:0;width:10px;
+    background:linear-gradient(90deg,rgba(0,0,0,.18),transparent);pointer-events:none}
+
+  /* ── Return cell (barra centro-ancorada idêntica ao index.html) ── */
+  td.ret-cell{padding:5px 10px;min-width:110px}
+  .ret{position:relative;display:block;height:22px;border-radius:5px;
+    background:rgba(255,255,255,.02);overflow:hidden}
+  .ret .axis{position:absolute;left:50%;top:2px;bottom:2px;width:1px;background:rgba(255,255,255,.09)}
+  .ret .bar{position:absolute;top:2px;bottom:2px;border-radius:3px;
+    transition:width .45s cubic-bezier(.2,.8,.2,1)}
+  .ret.up   .bar{left:50%;background:linear-gradient(90deg,rgba(38,208,124,.14),rgba(38,208,124,.62))}
+  .ret.down .bar{right:50%;background:linear-gradient(270deg,rgba(255,90,106,.14),rgba(255,90,106,.62))}
+  .ret .val{position:relative;z-index:1;display:block;height:100%;
+    font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;
+    line-height:22px;padding:0 9px;text-align:right}
+  .ret.up   .val{color:#a8f0c8}
+  .ret.down .val{color:#ffb8c0}
+  .ret.na{background:transparent}
+  .ret.na .val{color:var(--muted);font-weight:400}
+  .ret.na .axis{display:none}
+
+  /* ── Alert box ── */
+  .alert{border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:12px;line-height:1.6}
+  .alert b{font-weight:700}
+  .alert.info{background:rgba(0,113,187,.07);border:1px solid rgba(0,113,187,.25);color:#b8d4f0}
+  .alert.info b{color:#fff}
+  .alert.warn{background:var(--warn-bg);border:1px solid rgba(245,166,35,.3);color:#e8c97a}
+  .alert.warn b{color:#fff}
+  .alert.danger{background:var(--down-bg);border:1px solid rgba(255,90,106,.3);color:#ffb8c0}
+  .alert.danger b{color:#fff}
+  .alert.bma{
+    background:linear-gradient(135deg,rgba(255,90,106,.08),rgba(245,166,35,.06));
+    border:1px solid rgba(255,90,106,.4);color:#ffb8c0}
+  .alert.bma b{color:#ff5a6a}
+
+  /* ── Pontos de atenção ── */
+  .atencao-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+  .atencao-item{
+    display:flex;align-items:flex-start;gap:10px;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:10px 14px;font-size:12px;line-height:1.5;transition:border-color .15s}
+  .atencao-item:hover{border-color:var(--line-2)}
+  .atencao-icon{flex-shrink:0;font-size:14px;line-height:1.4}
+  .atencao-txt{flex:1}
+  .atencao-txt strong{display:block;font-weight:700;color:var(--text);margin-bottom:2px}
+  .atencao-txt span{color:var(--muted)}
+  .atencao-item.crit .atencao-txt strong{color:var(--down)}
+  .atencao-item.crit{border-color:rgba(255,90,106,.25);background:rgba(255,90,106,.04)}
+  .atencao-item.warn .atencao-txt strong{color:var(--warn)}
+  .atencao-item.warn{border-color:rgba(245,166,35,.2);background:rgba(245,166,35,.03)}
+
+  /* ── Degraded data notice ── */
+  .degraded-banner{
+    display:flex;align-items:center;gap:10px;
+    background:rgba(245,166,35,.07);border:1px solid rgba(245,166,35,.28);
+    border-radius:9px;padding:9px 14px;margin-bottom:14px;font-size:11.5px;color:#e8c97a}
+  .degraded-banner svg{flex-shrink:0;width:16px;height:16px;color:var(--warn)}
+
+  /* ── PA table extras ── */
+  .pa-contrib.pos{color:var(--up)}
+  .pa-contrib.neg{color:var(--down)}
+  td.book-cell .book{font-weight:600;color:var(--text)}
+  td.book-cell .pm{font-size:10px;color:var(--muted);display:block;margin-top:2px}
+
+  /* ── Section collapsible ── */
+  .sec-toggle{
+    margin-left:auto;background:none;border:0;cursor:pointer;
+    color:var(--muted);padding:3px 8px;border-radius:6px;
+    font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+    font-family:inherit;display:inline-flex;align-items:center;gap:5px;
+    transition:color .15s,background .15s}
+  .sec-toggle:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .sec-toggle .arrow{display:inline-block;font-size:9px;transition:transform .22s}
+  .section.collapsed .sec-toggle .arrow{transform:rotate(-90deg)}
+  .sec-body{overflow:hidden;max-height:3000px;transition:max-height .35s cubic-bezier(.4,0,.2,1),opacity .25s}
+  .section.collapsed .sec-body{max-height:0;opacity:0}
+
+  /* ── Footer ── */
+  footer{text-align:center;padding:24px;font-size:10px;color:var(--muted);letter-spacing:.08em;
+    border-top:1px solid var(--line)}
+  footer a{color:var(--accent);text-decoration:none}
+
+  /* ── Responsive ── */
+  @media(max-width:900px){
+    .fund-grid{grid-template-columns:repeat(2,1fr)}
+    .kpi-strip{gap:6px}
+    .kpi-card{min-width:100px}
+  }
+  @media(max-width:600px){
+    .fund-grid{grid-template-columns:1fr}
+    main{padding:12px 12px 40px}
+    .hwrap{padding:10px 14px;gap:10px}
+  }
+
+  /* ── Print ── */
+  @media print{
+    :root{
+      --bg:#fff;--bg-2:#f4f5f7;--panel:#fff;--panel-2:#f0f1f4;
+      --line:#d0d4dc;--line-2:#b8bec8;--text:#111318;--muted:#5a6272;
+      --up:#14803c;--down:#c0392b;--warn:#8a6200;
+    }
+    *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+    *,*::before,*::after{animation:none!important;transition:none!important}
+    header{position:static;backdrop-filter:none;background:#fff;border-bottom:2px solid #0071BB}
+    .tabs,.sec-toggle{display:none!important}
+    body{background:#fff!important}
+    main{padding:10px!important;max-width:100%!important}
+    .page{display:block!important}
+    .section.collapsed .sec-body{max-height:3000px!important;opacity:1!important}
+    .section{page-break-inside:avoid;margin-bottom:18px}
+    .table-wrap{overflow:visible!important;border-radius:6px!important}
+    thead th{background:#f2f3f5!important;color:#333!important}
+    tbody td{border-bottom:1px solid #eee!important}
+    .fund-card-head{background:#f2f3f5!important}
+    .alert.bma{background:#fff0f0!important;border-color:#ffaaaa!important;color:#c0392b!important}
+    .degraded-banner{background:#fffbeb!important;border-color:#e9c84a!important;color:#8a6200!important}
+    .sem.green {background:#e8f8ee!important;color:#14803c!important}
+    .sem.yellow{background:#fffbeb!important;color:#8a6200!important}
+    .sem.red   {background:#fff0f0!important;color:#c0392b!important}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     HEADER
+     Placeholders: {{DATE}}, {{GENERATED_AT}}, {{STATUS_CLASS}},
+                   {{SKILLS_OK}}, {{SKILLS_TOTAL}}, {{DEGRADED_LIST}}
+     ============================================================ -->
+<header>
+  <div class="hwrap">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 47 45" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M39.5781 37.6377C36.1678 40.8382 31.8394 42.6304 27.2486 42.6304H27.1174C17.5423 42.5024 9.67243 34.8213 9.67243 25.4758C9.54127 17.9227 14.6567 11.2657 21.8708 8.96135C22.2643 9.72947 22.5266 10.6256 22.6578 11.3937C20.428 12.0338 18.4605 13.186 16.7554 14.8502C14.6567 16.7705 13.3451 19.3309 12.6892 21.8913V22.0193C12.0334 24.5797 12.1646 27.1401 12.9516 29.4444C13.6074 31.6208 14.7879 33.6691 16.493 35.3333C18.4605 37.2536 20.8215 38.6618 23.3136 39.3019C23.4448 39.3019 23.7071 39.43 23.8383 39.43C23.9694 39.43 23.9694 39.43 24.1006 39.43C24.1006 39.43 24.4941 39.558 25.1499 39.558C25.6746 39.686 26.3304 39.686 26.8551 39.686C27.6421 39.686 28.4291 39.686 29.3472 39.558C32.364 39.1739 35.3808 37.8937 37.7418 35.7174C39.8404 33.6691 41.0209 31.3647 41.2833 30.4686C41.6768 29.3164 41.5456 28.0362 41.0209 26.8841C40.4963 25.7319 39.4469 24.8358 38.1353 24.4517C36.8236 24.0676 35.512 24.0676 34.3315 24.7077C31.8394 25.8599 30.79 28.8043 32.1017 31.2367C32.364 31.6208 32.8887 31.8768 33.2822 31.6208C33.6757 31.3647 33.938 30.8527 33.6757 30.4686C32.8887 28.9324 33.5445 27.1401 35.1185 26.372C35.9055 25.9879 36.6925 25.9879 37.4795 26.244C38.2665 26.5 38.9223 27.0121 39.3158 27.7802C39.7093 28.5483 39.7093 29.3164 39.4469 30.0845C39.3158 30.4686 39.1846 30.7246 38.9223 30.9807C34.8562 34.6932 28.4291 34.4372 24.4941 30.4686C24.1006 30.0845 23.5759 30.0845 23.1825 30.4686C22.789 30.8527 22.789 31.3647 23.1825 31.7488C26.5927 35.3333 31.8394 36.3575 36.299 34.6932C34.4627 36.3575 32.2329 37.3816 29.8719 37.7657C27.7732 38.0217 26.0681 36.9976 25.5434 36.7415C22.002 34.4372 20.2968 30.2126 21.3461 25.8599C22.6578 20.4831 28.1667 17.1546 33.6757 18.4348C34.0692 18.5628 34.4627 18.5628 34.725 18.6908C35.9055 19.0749 37.2171 18.6908 37.873 17.5386C38.2665 16.7705 38.3976 16.0024 38.0041 15.3623C38.0041 15.2343 36.6925 11.9058 32.8887 9.08937C39.9716 11.3937 44.9559 17.9227 44.9559 25.4758C44.8247 30.0845 42.9884 34.3092 39.5781 37.6377ZM30.79 6.78503C30.1342 6.65701 29.4784 7.04107 29.2161 7.68116C28.9537 8.32126 29.2161 8.96136 29.8719 9.34541C33.938 11.6498 35.6432 14.5942 36.0366 15.6184C36.1678 15.7464 36.1678 15.8744 36.1678 15.8744C36.299 16.3865 36.1678 16.6425 36.1678 16.7705C36.0366 16.8986 35.7743 17.2826 35.2497 17.1546C34.8562 17.0266 34.4627 16.8986 33.938 16.7705C27.5109 15.3623 20.9526 19.3309 19.3787 25.6039C18.1982 30.3406 20.1657 35.0773 23.9694 37.7657C22.9201 37.5097 21.7396 37.1256 20.6903 36.4855C20.6903 36.4855 20.6903 36.4855 20.5592 36.4855C20.428 36.4855 20.2968 36.3575 20.2968 36.3575C17.6735 34.6932 15.5749 32.2609 14.6567 29.3164C13.2139 24.8358 14.2632 19.715 17.9358 16.1304C19.3787 14.8502 21.0838 13.8261 22.9201 13.186C23.0513 13.9541 23.0513 14.8502 23.0513 15.6184C23.0513 16.1304 23.4448 16.5145 23.9694 16.5145C24.4941 16.5145 24.8876 16.1304 24.8876 15.6184C24.8876 14.3382 24.7564 13.058 24.4941 11.9058C24.2318 10.4976 23.7071 9.08937 23.1825 7.80918C23.0513 7.55314 22.789 7.2971 22.5266 7.16908C22.2643 7.04107 22.002 7.04107 21.7396 7.16908C13.6074 9.47343 7.70496 17.0266 7.70496 25.4758C7.70496 35.8454 16.3619 44.4227 26.9862 44.4227C27.1174 44.4227 27.1174 44.4227 27.1174 44.4227C32.2329 44.4227 37.086 42.5024 40.7586 38.9179C44.5624 35.3333 46.5299 30.4686 46.5299 25.4758C46.661 16.2585 40.1028 8.44928 30.79 6.78503Z" fill="white"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Morning Call <span>Risk &amp; Performance</span></h1>
+        <p>Galapagos Capital — Gestão de Risco</p>
+      </div>
+    </div>
+
+    <div class="hdate mono">{{DATE}} <span>{{GENERATED_AT}}</span></div>
+
+    <div class="completude">
+      <span class="comp-dot {{STATUS_CLASS}}"></span>
+      <span class="comp-txt"><b>{{SKILLS_OK}}/{{SKILLS_TOTAL}}</b> skills completas{{DEGRADED_MSG}}</span>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" onclick="showTab('sumario',this)">Sumário</button>
+      <button class="tab" onclick="showTab('macro',this)">MACRO</button>
+      <button class="tab" onclick="showTab('quant',this)">QUANT</button>
+      <button class="tab" onclick="showTab('evolution',this)">Evolution</button>
+      <button class="tab" onclick="showTab('rf',this)">RF / IDKA</button>
+      <button class="tab" onclick="showTab('pa',this)">PA</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================
+     TAB: SUMÁRIO EXECUTIVO
+     ============================================================ -->
+<section class="page active" id="tab-sumario">
+
+  <!-- Dados degradados (mostrar se houver) -->
+  {{IF_DEGRADED_START}}
+  <div class="degraded-banner">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+    <span><b>Dados parciais:</b> {{DEGRADED_LIST}} — usando valores de D-1.</span>
+  </div>
+  {{IF_DEGRADED_END}}
+
+  <!-- BMA Alert (mostrar apenas quando Camada 4 do Evolution disparar) -->
+  {{IF_BMA_ALERT_START}}
+  <div class="alert bma" style="margin-bottom:18px">
+    <b>⚡ BULL MARKET ALIGNMENT — Evolution</b><br>
+    {{BMA_DESCRIPTION}}
+  </div>
+  {{IF_BMA_ALERT_END}}
+
+  <!-- KPI Strip -->
+  <div class="kpi-strip">
+    <!-- VaR médio da casa -->
+    <div class="kpi-card">
+      <div class="kpi-label">VaR casa (média)</div>
+      <div class="kpi-value {{VAR_CASA_CLASS}} mono">{{VAR_CASA_BPS}} <small style="font-size:13px;opacity:.6">bps</small></div>
+      <div class="kpi-sub">{{VAR_CASA_PERCENTIL}} histórico</div>
+    </div>
+    <!-- PnL dia consolidado -->
+    <div class="kpi-card">
+      <div class="kpi-label">PnL dia (MM)</div>
+      <div class="kpi-value {{PNL_DIA_CLASS}} mono">{{PNL_DIA_BPS}} <small style="font-size:13px;opacity:.6">bps</small></div>
+      <div class="kpi-sub">MACRO + QUANT + EVO</div>
+    </div>
+    <!-- Stop mais consumido -->
+    <div class="kpi-card">
+      <div class="kpi-label">Stop (MACRO — PM crítico)</div>
+      <div class="kpi-value {{STOP_CRIT_CLASS}} mono">{{STOP_CRIT_PCT}}<small style="font-size:13px;opacity:.6">%</small></div>
+      <div class="kpi-sub">{{STOP_CRIT_PM}} — restam {{STOP_CRIT_BPS}} bps</div>
+    </div>
+    <!-- Evolution: Diversification Ratio -->
+    <div class="kpi-card">
+      <div class="kpi-label">EVO — Diversif. Ratio</div>
+      <div class="kpi-value {{DIVRATIO_CLASS}} mono">{{DIVRATIO_VAL}}</div>
+      <div class="kpi-sub">{{DIVRATIO_PERCENTIL}} histórico</div>
+    </div>
+    <!-- IDKA Alpha MTD -->
+    <div class="kpi-card">
+      <div class="kpi-label">IDKA 10Y — ER MTD</div>
+      <div class="kpi-value {{IDKA10_ER_CLASS}} mono">{{IDKA10_ER_BPS}} <small style="font-size:13px;opacity:.6">bps</small></div>
+      <div class="kpi-sub">vs. índice oficial</div>
+    </div>
+  </div>
+
+  <!-- Fund Cards -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Fundos — Performance do dia</h2>
+      <span class="sub">bps · PnL Dia | MTD | semáforo de risco</span>
+    </div>
+    <div class="fund-grid">
+
+      <!-- MACRO -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">MACRO</div><div class="fund-family">Multimercado discricionário</div></div>
+          <span class="sem {{MACRO_SEM_CLASS}}">{{MACRO_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL dia</span>
+            <span class="fund-metric-val {{MACRO_DIA_CLASS}} mono">{{MACRO_DIA_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL MTD</span>
+            <span class="fund-metric-val {{MACRO_MTD_CLASS}} mono">{{MACRO_MTD_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">VaR (bps)</span>
+            <span class="fund-metric-val mono">{{MACRO_VAR}} <span style="font-size:10px;color:var(--muted)">{{MACRO_VAR_PCT}}</span></span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">Top contribuidor</span>
+            <span class="fund-metric-val" style="font-size:11px">{{MACRO_TOP_PA}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- QUANTITATIVO -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">QUANTITATIVO</div><div class="fund-family">Multimercado quant</div></div>
+          <span class="sem {{QUANT_SEM_CLASS}}">{{QUANT_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL dia</span>
+            <span class="fund-metric-val {{QUANT_DIA_CLASS}} mono">{{QUANT_DIA_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL MTD</span>
+            <span class="fund-metric-val {{QUANT_MTD_CLASS}} mono">{{QUANT_MTD_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">VaR (bps)</span>
+            <span class="fund-metric-val mono">{{QUANT_VAR}} <span style="font-size:10px;color:var(--muted)">{{QUANT_VAR_PCT}}</span></span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">Top contribuidor</span>
+            <span class="fund-metric-val" style="font-size:11px">{{QUANT_TOP_PA}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- EVOLUTION -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">EVOLUTION</div><div class="fund-family">Multimercado multiestratégia</div></div>
+          <span class="sem {{EVO_SEM_CLASS}}">{{EVO_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL dia</span>
+            <span class="fund-metric-val {{EVO_DIA_CLASS}} mono">{{EVO_DIA_BPS}} bps <span style="font-size:10px;color:var(--muted)">(D-1)</span></span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL MTD</span>
+            <span class="fund-metric-val {{EVO_MTD_CLASS}} mono">{{EVO_MTD_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">Diversif. Ratio</span>
+            <span class="fund-metric-val mono">{{EVO_DIVRATIO}} <span style="font-size:10px;color:var(--muted)">{{EVO_DIVRATIO_PCT}}</span></span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">Cotas júnior</span>
+            <span class="fund-metric-val {{EVO_CREDITO_CLASS}}" style="font-size:11px">{{EVO_CREDITO_FLAG}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- IDKA 3Y -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">IDKA 3Y</div><div class="fund-family">Renda Fixa benchmarked</div></div>
+          <span class="sem {{IDKA3_SEM_CLASS}}">{{IDKA3_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ER dia</span>
+            <span class="fund-metric-val {{IDKA3_ER_DIA_CLASS}} mono">{{IDKA3_ER_DIA}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ER MTD</span>
+            <span class="fund-metric-val {{IDKA3_ER_MTD_CLASS}} mono">{{IDKA3_ER_MTD}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">BVaR</span>
+            <span class="fund-metric-val mono">{{IDKA3_BVAR}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ANO_EQ</span>
+            <span class="fund-metric-val mono">{{IDKA3_ANO_EQ}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- IDKA 10Y -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">IDKA 10Y</div><div class="fund-family">Renda Fixa benchmarked</div></div>
+          <span class="sem {{IDKA10_SEM_CLASS}}">{{IDKA10_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ER dia</span>
+            <span class="fund-metric-val {{IDKA10_ER_DIA_CLASS}} mono">{{IDKA10_ER_DIA}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ER MTD</span>
+            <span class="fund-metric-val {{IDKA10_ER_MTD_CLASS}} mono">{{IDKA10_ER_MTD}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">BVaR</span>
+            <span class="fund-metric-val mono">{{IDKA10_BVAR}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">ANO_EQ</span>
+            <span class="fund-metric-val mono">{{IDKA10_ANO_EQ}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ALBATROZ -->
+      <div class="fund-card">
+        <div class="fund-card-head">
+          <div><div class="fund-name">ALBATROZ</div><div class="fund-family">Renda Fixa ativo</div></div>
+          <span class="sem {{ALBA_SEM_CLASS}}">{{ALBA_SEM_LABEL}}</span>
+        </div>
+        <div class="fund-card-body">
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL dia</span>
+            <span class="fund-metric-val {{ALBA_DIA_CLASS}} mono">{{ALBA_DIA_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">PnL MTD</span>
+            <span class="fund-metric-val {{ALBA_MTD_CLASS}} mono">{{ALBA_MTD_BPS}} bps</span>
+          </div>
+          <div class="fund-metric-row">
+            <span class="fund-metric-label">Top PA</span>
+            <span class="fund-metric-val" style="font-size:11px">{{ALBA_TOP_PA}}</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /fund-grid -->
+  </div>
+
+  <!-- Pontos de Atenção -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Pontos de Atenção</h2>
+      <span class="sub">gerados automaticamente · verificar antes do Morning Call</span>
+    </div>
+    <div class="sec-body">
+      <ul class="atencao-list" id="atencao-list">
+        <!-- Gerado dinamicamente — exemplo: -->
+        {{ATENCAO_ITEMS}}
+        <!--
+        Exemplo de item:
+        <li class="atencao-item warn">
+          <span class="atencao-icon">⚠</span>
+          <div class="atencao-txt">
+            <strong>MACRO (PM LF) — stop mensal 75% consumido</strong>
+            <span>−47 bps MTD de −63 bps limite. Restam 16 bps. Considere acompanhar posições.</span>
+          </div>
+        </li>
+        -->
+      </ul>
+    </div>
+  </div>
+
+  <!-- Visão horizontal: tabela comparativa -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Visão Horizontal — Risco e Performance</h2>
+      <span class="sub">todos os fundos lado a lado</span>
+    </div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Fundo</th>
+              <th>PnL Dia</th>
+              <th>PnL MTD</th>
+              <th>vs. Bmark</th>
+              <th>VaR (bps)</th>
+              <th>%Limite</th>
+              <th>Stress (bps)</th>
+              <th>Cenário</th>
+              <th>Risco</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{HORIZONTAL_ROWS}}
+            <!--
+            Exemplo de linha:
+            <tr>
+              <td class="fund-col">MACRO</td>
+              <td class="ret-cell"><div class="ret up"><div class="axis"></div><div class="bar" style="width:35%"></div><div class="val">+18 bps</div></div></td>
+              <td class="ret-cell"><div class="ret up"><div class="axis"></div><div class="bar" style="width:42%"></div><div class="val">+42 bps</div></div></td>
+              <td>—</td>
+              <td class="mono">42.1</td>
+              <td class="mono">66%</td>
+              <td class="mono" style="color:var(--down)">−180</td>
+              <td style="font-size:11px;color:var(--muted)">Crise 2008</td>
+              <td><span class="sem yellow">Moderado</span></td>
+            </tr>
+            -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</section><!-- /tab-sumario -->
+
+
+<!-- ============================================================
+     TAB: MACRO
+     ============================================================ -->
+<section class="page" id="tab-macro">
+
+  <!-- Stops por PM -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Orçamento de Perda — PMs</h2>
+      <span class="sub">Stop base: −63 bps/mês · −252 bps/ano</span>
+      {{IF_CARREGO_FLAG}}
+      <div class="right"><span class="sem na">Regra de carrego pendente</span></div>
+      {{END_IF_CARREGO}}
+    </div>
+    <div class="sec-body">
+      <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+        {{MACRO_STOP_ROWS}}
+        <!--
+        Exemplo de linha PM:
+        <div class="util-row">
+          <div class="util-label">CI <div class="sub">+18.2 bps MTD</div></div>
+          <div class="util-barwrap">
+            <div class="util-bar green" style="width:19%"></div>
+          </div>
+          <div class="util-pct green">19%</div>
+        </div>
+        -->
+      </div>
+    </div>
+  </div>
+
+  <!-- VaR breakdown por classe -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Decomposição de Risco</h2>
+      <span class="sub">VaR por classe · top 5 + outros</span>
+    </div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Classe</th>
+              <th>VaR (bps)</th>
+              <th>% do Total</th>
+              <th>Δ D-1 (bps)</th>
+              <th>Material?</th>
+            </tr>
+          </thead>
+          <tbody>{{MACRO_BREAKDOWN_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- VaR breakdown por PM -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Risco por PM</h2>
+      <span class="sub">VaR alocado vs. orçamento disponível</span>
+    </div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">PM</th>
+              <th>VaR atual (bps)</th>
+              <th>PnL dia</th>
+              <th>PnL MTD</th>
+              <th>Stop rest. (bps)</th>
+              <th>% utilizado</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>{{MACRO_PM_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shock absorption -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Shock Absorption</h2>
+      <span class="sub">Top ativos · choque estimado via P1 histórico · regra de 3</span>
+    </div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Ativo</th>
+              <th>Posição (bps DV01)</th>
+              <th>Choque P1 (Δ%)</th>
+              <th>Impacto estimado (bps)</th>
+              <th>% do stop mensal</th>
+            </tr>
+          </thead>
+          <tbody>{{MACRO_SHOCK_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</section><!-- /tab-macro -->
+
+
+<!-- ============================================================
+     TAB: QUANTITATIVO
+     ============================================================ -->
+<section class="page" id="tab-quant">
+
+  <div class="section">
+    <div class="section-head"><h2>QUANTITATIVO — Risco e PA</h2></div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Book / Classe</th>
+              <th>VaR (bps)</th>
+              <th>% Total</th>
+              <th>PnL dia</th>
+              <th>PnL MTD</th>
+            </tr>
+          </thead>
+          <tbody>{{QUANT_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</section><!-- /tab-quant -->
+
+
+<!-- ============================================================
+     TAB: EVOLUTION
+     ============================================================ -->
+<section class="page" id="tab-evolution">
+
+  <!-- BMA alert (condicional) -->
+  {{IF_BMA_ALERT_EVO_START}}
+  <div class="alert bma" style="margin-bottom:18px">
+    <b>⚡ BULL MARKET ALIGNMENT DISPARADO</b><br>
+    {{BMA_CRITERIA_LIST}}
+  </div>
+  {{IF_BMA_ALERT_EVO_END}}
+
+  <!-- VaR por estratégia com barras de percentil -->
+  <div class="section">
+    <div class="section-head">
+      <h2>VaR por Estratégia</h2>
+      <span class="sub">percentil histórico 252d · barras = utilização relativa ao P100</span>
+    </div>
+    <div class="sec-body" style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+      {{EVO_STRATEGY_BARS}}
+      <!--
+      <div class="util-row">
+        <div class="util-label">MACRO <div class="sub">48% peso</div></div>
+        <div class="util-barwrap"><div class="util-bar yellow" style="width:72%"></div></div>
+        <div class="util-pct yellow">P72</div>
+      </div>
+      -->
+    </div>
+  </div>
+
+  <!-- Diversification Ratio -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Diversification Ratio</h2>
+      <span class="sub">VaR real ÷ Σ VaR por estratégia · menor = mais diversificado</span>
+    </div>
+    <div class="sec-body">
+      <div class="kpi-strip" style="max-width:500px">
+        <div class="kpi-card">
+          <div class="kpi-label">Ratio hoje</div>
+          <div class="kpi-value {{EVO_DR_CLASS}} mono">{{EVO_DR_VAL}}</div>
+          <div class="kpi-sub">{{EVO_DR_PERCENTIL}} histórico</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Média 63d</div>
+          <div class="kpi-value mono">{{EVO_DR_MA63}}</div>
+          <div class="kpi-sub">janela 3M</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Correlação rolling -->
+  <div class="section">
+    <div class="section-head">
+      <h2>Correlações entre Estratégias</h2>
+      <span class="sub">Pearson · 21d e 63d · pares principais</span>
+    </div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th class="l">Par</th><th>Corr 21d</th><th>Corr 63d</th><th>Percentil (21d)</th><th>Alerta</th></tr>
+          </thead>
+          <tbody>{{EVO_CORR_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Caveat cotas júnior -->
+  {{IF_CREDITO_CAVEAT_START}}
+  <div class="alert warn">
+    <b>⚠ Caveat — Cotas Júnior de Crédito</b><br>
+    {{CREDITO_CAVEAT_TEXT}}
+    Exposição: <b class="mono">{{CREDITO_EXPOSURE_PCT}}%</b> do PL.
+    VaR contribuído: <b class="mono">{{CREDITO_VAR_BPS}} bps</b>.
+  </div>
+  {{IF_CREDITO_CAVEAT_END}}
+
+</section><!-- /tab-evolution -->
+
+
+<!-- ============================================================
+     TAB: RF / IDKA
+     ============================================================ -->
+<section class="page" id="tab-rf">
+
+  <!-- Visão lado a lado IDKA 3Y vs 10Y -->
+  <div class="section">
+    <div class="section-head"><h2>BVaR — Risco Relativo</h2><span class="sub">RELATIVE_VAR · bps · por book</span></div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Fundo / Book</th>
+              <th>BVaR (bps)</th>
+              <th>Δ D-1</th>
+              <th>Δ vs. média 21d</th>
+            </tr>
+          </thead>
+          <tbody>{{RF_BVAR_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- DV01 e ANO_EQ por vértice -->
+  <div class="section">
+    <div class="section-head"><h2>Exposição Duration — ANO_EQ</h2><span class="sub">AMOUNT × DV01 × 10000 / AUM · anos de exposição IPCA</span></div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Instrumento</th>
+              <th>Fundo</th>
+              <th>Book</th>
+              <th>DV01</th>
+              <th>ANO_EQ</th>
+              <th>Δ vs. Bmark</th>
+            </tr>
+          </thead>
+          <tbody>{{RF_ANO_EQ_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ER MTD -->
+  <div class="section">
+    <div class="section-head"><h2>Excess Return MTD</h2><span class="sub">R_fundo − R_benchmark · dias consecutivos positivos/negativos</span></div>
+    <div class="sec-body">
+      <div class="kpi-strip">
+        <div class="kpi-card">
+          <div class="kpi-label">IDKA 3Y — ER MTD</div>
+          <div class="kpi-value {{IDKA3_ER_MTD_CLASS}} mono">{{IDKA3_ER_MTD}} bps</div>
+          <div class="kpi-sub">{{IDKA3_ER_STREAK}}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">IDKA 10Y — ER MTD</div>
+          <div class="kpi-value {{IDKA10_ER_MTD_CLASS}} mono">{{IDKA10_ER_MTD}} bps</div>
+          <div class="kpi-sub">{{IDKA10_ER_STREAK}}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pendências de política -->
+  <div class="alert info" style="margin-top:8px">
+    <b>Pendências de política RF:</b> (1) metodologia de réplica — operando com Opção A (autoconsistência);
+    (2) look-through do Albatroz no RF_LF — DV01 não calculado;
+    (3) orçamento formal de ER não definido.
+    <a href="#" style="color:var(--accent);margin-left:6px">ver detalhes →</a>
+  </div>
+
+</section><!-- /tab-rf -->
+
+
+<!-- ============================================================
+     TAB: PERFORMANCE ATTRIBUTION
+     ============================================================ -->
+<section class="page" id="tab-pa">
+
+  <!-- Regime A: fundos com PA existente -->
+  <div class="section">
+    <div class="section-head"><h2>PA — Regime A</h2><span class="sub">q_models.REPORT_ALPHA_ATRIBUTION · MACRO · QUANT · MACRO_Q · EVO · ALBATROZ</span></div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Fundo</th>
+              <th class="l">Book / PM</th>
+              <th class="l">Classe</th>
+              <th>PnL dia</th>
+              <th>PnL MTD</th>
+              <th>% do fundo (dia)</th>
+            </tr>
+          </thead>
+          <tbody>{{PA_REGIME_A_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Regime B: IDKAs -->
+  <div class="section">
+    <div class="section-head"><h2>PA — Regime B (IDKAs)</h2><span class="sub">ER = TE_réplica + Alpha_RF_LF + Resíduo</span></div>
+    <div class="sec-body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="l">Fundo</th>
+              <th>ER dia</th>
+              <th>TE_réplica</th>
+              <th>Alpha RF_LF</th>
+              <th>Resíduo</th>
+              <th>Validação</th>
+            </tr>
+          </thead>
+          <tbody>{{PA_REGIME_B_ROWS}}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Destaques automáticos -->
+  <div class="section">
+    <div class="section-head"><h2>Destaques Automáticos</h2><span class="sub">baseado em heuristicas-destaque.json</span></div>
+    <div class="sec-body">
+      <ul class="atencao-list">
+        {{PA_DESTAQUES_ITEMS}}
+      </ul>
+    </div>
+  </div>
+
+</section><!-- /tab-pa -->
+
+</main>
+
+<footer>
+  Morning Call gerado em {{GENERATED_AT}} &middot;
+  Base de dados: {{DATE}} &middot;
+  Manifesto: <a href="{{MANIFEST_PATH}}">snapshots/{{DATE}}_manifest.json</a> &middot;
+  Galapagos Capital — Gestão de Risco
+</footer>
+
+<script>
+  function showTab(id, btn) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + id).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  // Collapsible sections
+  document.querySelectorAll('.sec-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('.section').classList.toggle('collapsed');
+    });
+  });
+
+  // Animate utilization bars on load
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.util-bar').forEach(bar => {
+      const w = bar.style.width;
+      bar.style.width = '0';
+      requestAnimationFrame(() => { bar.style.width = w; });
+    });
+  });
+</script>
+</body>
+</html>

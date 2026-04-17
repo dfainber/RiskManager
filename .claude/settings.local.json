@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -c ' *)",
+      "Edit(/.claude/skills/risk-daily-monitor/**)",
+      "Bash(start \"\" \"F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\data\\\\morning-calls\\\\2026-04-16_risk_monitor.html\")",
+      "Bash(start \"f:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\data\\\\morning-calls\\\\2026-04-16_risk_monitor.html\")"
+    ]
+  }
+}

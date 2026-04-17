@@ -1,0 +1,112 @@
+{
+  "fundo": "MACRO",
+  "nome_completo": "Galapagos Macro FIM",
+  "familia": "multimercados",
+  "benchmark": "CDI",
+  "ultima_atualizacao": "2026-04-17",
+  "fonte_limites": "Asset_RiscoMercado_20260415.xlsx + informações do Risk Manager",
+
+  "limites_formais": {
+    "_fonte": "Asset_RiscoMercado_20260415.xlsx — data referência 2026-04-15",
+    "_categoria_no_sistema": "Quant e Macro V",
+    "var_parametrico_95_1d": {
+      "hard": "3.00%",
+      "hard_decimal": 0.03,
+      "soft": "2.10%",
+      "soft_decimal": 0.021,
+      "unidade": "% do PL",
+      "valor_atual_15abr": "-0.71%",
+      "folga_15abr": "2.29%"
+    },
+    "stress": {
+      "hard": "-30%",
+      "hard_decimal": -0.30,
+      "soft": "-21%",
+      "soft_decimal": -0.21,
+      "unidade": "% do PL",
+      "descricao_regra": "Stress (Quant e Macro V) > -30%",
+      "valor_atual_15abr": "-4.53%",
+      "folga_15abr": "25.47%"
+    }
+  },
+
+  "orcamento_perda_por_pm": {
+    "_nota": "Stop em bps sobre PL do fundo. Carrego implementado conforme Stop.xlsx.",
+    "_ajuste_gerencial": {
+      "descricao": "No início de cada mês, o Risk Manager consulta a gestão sobre ajustes nos stops calculados. O ajuste aprovado substitui o valor da fórmula para aquele mês.",
+      "arquivo": "data/macro-stops/adjustments/adjustments-YYYY-MM.json",
+      "campos": "stop_mensal_override_bps (null = usa fórmula), motivo, aprovado_por, data_aprovacao",
+      "regra": "Se override não-null: usar override. Se null: usar stop calculado pela fórmula de carrego."
+    },
+    "_regra_carrego": {
+      "_fonte": "Regra confirmada diretamente com o Risk Manager em 2026-04-17",
+      "passo1_carry": {
+        "gain": "PnL > 0  →  carry = PnL × 50%  (stop expande: stop_next = -(63 + carry))",
+        "loss_extended": "PnL < 0, stop > 63 (extra = |stop| - 63, ano positivo)  →  consumed = extra_loss×25% + base_loss×50% + beyond_stop_loss×100%",
+        "loss_base": "PnL < 0, stop <= 63  →  consumed = within_stop×50% + beyond_stop×100%",
+        "stop_next": "stop_next = -(63 - consumed); gancho se consumed >= 63"
+      },
+      "passo2_caps": {
+        "se_pnl_ac_negativo": "stop_next = max(stop_calculado, -63, -(128 - |PnL_ac|))",
+        "stop_semestral_bps": -128,
+        "stop_anual_bps": -252,
+        "nota_anual": "Se PnL_YTD <= -252: PM encerrou o ano"
+      },
+      "step3_gancho": {
+        "regra": "se result >= 0: mês de gancho (stop = 0); mês seguinte: reset para -63 (sujeito a caps)",
+        "threshold_base63": "loss de 84 bps a partir do base -63 aciona gancho (= 4/3 × 63)"
+      },
+      "stop_next": "min(result, 0)"
+    },
+    "pms": {
+      "CI": {
+        "tipo": "comite",
+        "stop_mensal_soft_pct": -1.5,
+        "stop_mensal_soft_acao": "reduzir risco — não fechar posições",
+        "stop_mensal_hard_pct": -2.33,
+        "stop_mensal_hard_acao": "stop duro",
+        "stop_anual_bps": null,
+        "_nota": "CI opera com stop em % do PL (não bps). Soft é gatilho de redução de risco, não liquidação."
+      },
+      "LF": {
+        "tipo": "pm_individual",
+        "stop_mensal_bps": -63,
+        "stop_semestral_bps": -128,
+        "stop_anual_bps": -252,
+        "stop_acao": "fechar posição ao atingir"
+      },
+      "JD": {
+        "tipo": "pm_individual",
+        "stop_mensal_bps": -63,
+        "stop_semestral_bps": -128,
+        "stop_anual_bps": -252,
+        "stop_acao": "fechar posição ao atingir"
+      },
+      "RJ": {
+        "tipo": "pm_individual",
+        "stop_mensal_bps": -63,
+        "stop_semestral_bps": -128,
+        "stop_anual_bps": -252,
+        "stop_acao": "fechar posição ao atingir"
+      },
+      "QM": {
+        "tipo": "pm_individual",
+        "stop_mensal_bps": null,
+        "stop_anual_bps": null,
+        "_acao_pendente": "Confirmar regra de stop do QM com o Risk Manager — não monitorar QM até confirmação"
+      },
+      "MD": {
+        "tipo": "pm_individual",
+        "filtro_banco": "LIVRO = 'Macro_MD'",
+        "stop_mensal_bps": null,
+        "stop_anual_bps": null,
+        "_nota": "Book do trader. Monitorar PnL mas sem semáforo de stop até limite ser estabelecido."
+      }
+    }
+  },
+
+  "cenarios_stress": ["Quant e Macro V"],
+  "cenario_principal": "Quant e Macro V",
+
+  "observacoes": "Fundo multimercado discricionário com 5 PMs (CI, LF, JD, RJ, QM). CI opera como comitê com regras de stop diferentes dos demais. Regra de carrego (ajuste do stop pelo PnL do mês anterior) está em revisão pela gestão — não implementar até aprovação formal."
+}

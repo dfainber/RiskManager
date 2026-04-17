@@ -1,0 +1,30 @@
+{
+  "fundo": "TICKER_INTERNO",
+  "nome_completo": "Nome Completo do Fundo",
+  "familia": "multimercados | renda-fixa | credito | renda-variavel",
+  "benchmark": "CDI | IMA-B | Ibovespa | IPCA+X | null",
+  "pl_referencia": 0,
+  "gestor_responsavel": "Nome",
+  "ultima_atualizacao": "YYYY-MM-DD",
+
+  "orcamento_perda": {
+    "anual_pct": 0.0,
+    "mensal_pct": null,
+    "janela_peak_to_trough": null
+  },
+
+  "limites": {
+    "_comentario": "Preencher apenas os limites aplicáveis à família. Ver references/mandato-estrutura.md para o conjunto recomendado por família.",
+    "exemplo_var_99_1d": {"hard": 0.0, "soft": 0.0, "unidade": "%PL"},
+    "exemplo_stress_cenario_principal": {"hard": 0.0, "soft": 0.0, "unidade": "%PL"}
+  },
+
+  "cenarios_stress": [
+    "nome_do_cenario_1",
+    "nome_do_cenario_2"
+  ],
+
+  "cenario_principal": "nome_do_cenario_eleito_worst_case",
+
+  "observacoes": "Peculiaridades em prosa: ativos proibidos, restrições operacionais, particularidades do regulamento."
+}

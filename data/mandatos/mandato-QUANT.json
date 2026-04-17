@@ -1,0 +1,54 @@
+{
+  "fundo": "QUANT",
+  "nome_completo": "Galapagos Quantitativo FIM",
+  "familia": "multimercados",
+  "benchmark": "CDI",
+  "ultima_atualizacao": "2026-04-17",
+  "fonte_limites": "Asset_RiscoMercado_20260415.xlsx + informações do Risk Manager",
+
+  "limites_formais": {
+    "_fonte": "Asset_RiscoMercado_20260415.xlsx — data referência 2026-04-15",
+    "_categoria_no_sistema": "Quant e Macro V",
+    "var_parametrico_95_1d": {
+      "hard": "3.00%",
+      "hard_decimal": 0.03,
+      "soft": "2.10%",
+      "soft_decimal": 0.021,
+      "unidade": "% do PL",
+      "valor_atual_15abr": "-0.86%",
+      "folga_15abr": "2.14%"
+    },
+    "stress": {
+      "hard": "-30%",
+      "hard_decimal": -0.30,
+      "soft": "-21%",
+      "soft_decimal": -0.21,
+      "unidade": "% do PL",
+      "descricao_regra": "Stress (Quant e Macro V) > -30%",
+      "valor_atual_15abr": "-6.77%",
+      "folga_15abr": "23.23%"
+    }
+  },
+
+  "orcamento_perda_por_pm": {
+    "_nota": "QUANT não tem stop absoluto independente confirmado. A regra de gestão de risco é condicional ao Evolution.",
+    "_regra_carrego": "PENDENTE — não implementar até aprovação da gestão",
+    "regra_reducao_risco": {
+      "tipo": "condicional",
+      "gatilho": "Evolution FIC FIM CP cair mais de 2% no mês",
+      "acao": "reduzir risco do QUANT",
+      "_nota": "Não há stop absoluto em bps para o QUANT. A redução de risco é acionada pelo comportamento do Evolution, não por PnL próprio do QUANT."
+    }
+  },
+
+  "cenarios_stress": ["Quant e Macro V"],
+  "cenario_principal": "Quant e Macro V",
+
+  "relacao_evolution": {
+    "_nota": "O fundo QUANT (Galapagos Quantitativo FIM) é um fundo INDEPENDENTE. O Evolution tem um 'Quant Book' interno que ALOCA neste fundo — isso não os torna o mesmo produto.",
+    "quant_book_no_evolution": "O Quant Book do Evolution aparece na PA e no breakdown do Evolution como contribuição de uma estratégia. Não confundir com o PnL/risco do QUANT standalone.",
+    "implicacao_stop": "A regra de reduzir risco do QUANT quando Evolution cai >2% existe justamente por causa dessa alocação — o fundo QUANT impacta o Evolution via Quant Book."
+  },
+
+  "observacoes": "Fundo quantitativo sistemático INDEPENDENTE. Não há orçamento de perda individual em bps confirmado — a gestão de risco é feita pelo limite formal de VaR/Stress e pela regra condicional ao Evolution. Confirmar com Risk Manager se haverá implementação de stop individual no futuro."
+}

@@ -1,0 +1,36 @@
+{
+  "fundo": "MACRO_Q",
+  "nome_completo": "Galapagos Global Macro Q",
+  "familia": "multimercados",
+  "benchmark": "CDI",
+  "ultima_atualizacao": "2026-04-17",
+  "fonte_limites": "Risk Manager",
+
+  "limites_formais": {
+    "_nota": "MACRO_Q não tem limites formais de VaR/Stress por enquanto — apenas stops de performance. Não aparece em LOTE_FUND_STRESS_RPM.",
+    "_acao_pendente": "Verificar se MACRO_Q tem VaR/Stress próprio no banco ou se está consolidado em outra árvore",
+    "var_parametrico_95_1d": {
+      "_status": "NÃO APLICÁVEL POR ENQUANTO — fundo só monitora stop de performance"
+    },
+    "stress": {
+      "_status": "NÃO APLICÁVEL POR ENQUANTO — fundo só monitora stop de performance"
+    }
+  },
+
+  "stops_performance": {
+    "_nota": "Por enquanto, MACRO_Q é monitorado exclusivamente por stop de performance. Não há limite de VaR ou Stress ativo.",
+    "fundo_inteiro": {
+      "tipo": "fundo",
+      "stop_hard_pct": -5.0,
+      "stop_hard_decimal": -0.05,
+      "unidade": "% do PL",
+      "stop_acao": "stop duro",
+      "fonte": "Risk Manager — confirmado 2026-04-17"
+    }
+  },
+
+  "cenarios_stress": [],
+  "cenario_principal": null,
+
+  "observacoes": "Fundo global macro quantitativo. PA key no banco é 'GLOBAL' (confirmado). Por enquanto, monitorado apenas por stop de performance (hard -5% sobre PL). Sem limites formais de VaR/Stress ativos — não alimentar semáforo de VaR para este fundo no Morning Call."
+}

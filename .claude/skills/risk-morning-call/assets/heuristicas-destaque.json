@@ -1,0 +1,55 @@
+{
+  "_doc": "Parâmetros para detecção automática de destaques no sumário executivo do Morning Call. Ajustar conforme aprendizado de uso real.",
+  "_last_update": "2026-04-16",
+
+  "performance_absoluta": {
+    "dia_excepcional_pct_historico": 90,
+    "_note_dia": "Se PnL do dia > P90 dos últimos 60 dias úteis, destacar",
+    "dia_ruim_pct_historico": 10,
+    "mtd_excepcional_abs_bps": 50,
+    "_note_mtd": "MTD acima de +50 bps OU abaixo de -50 bps sempre destaca"
+  },
+
+  "performance_relativa": {
+    "er_negativo_dias_consecutivos": 3,
+    "_note_er_neg": "ER negativo em 3+ dias consecutivos sugere investigação",
+    "er_mtd_negativo_bps": -5,
+    "_note_er_mtd": "ER MTD < -5 bps em fundo benchmarked sugere destaque"
+  },
+
+  "risco_elevado": {
+    "var_percentil_elevado": 80,
+    "_note_var": "VaR acima do P80 histórico do fundo merece menção",
+    "pct_stop_mensal_consumido": 50,
+    "_note_stop": "Stop mensal consumido > 50% sempre destaca (PMs ou relativo)",
+    "pct_stop_anual_consumido": 40,
+    "_note_stop_anual": "Stop anual consumido > 40% antes de Set merece menção"
+  },
+
+  "concentracao": {
+    "top_contribuidor_pct_total": 60,
+    "_note_top": "Se top contribuidor do PnL do dia representa > 60%, destacar (risco de 'ovos em uma cesta')",
+    "bull_market_alignment_disparo": true,
+    "_note_bma": "Se Camada 4 do evolution-risk-concentration disparar, sempre no topo do sumário"
+  },
+
+  "pontos_de_atencao_automaticos": {
+    "caveat_cotas_junior_com_credito_top3": true,
+    "_note_caveat": "Se caveat ativo E CREDITO está no top 3 de contribuição, sugerir validação",
+    "pm_proximo_stop_mensal_pct": 75,
+    "_note_pm": "Qualquer PM do MACRO com stop consumido > 75% do limite",
+    "idka_replica_degradando": true,
+    "_note_replica": "Se BVaR_Benchmark_IDKA do book aumenta > 30% vs média móvel 21d"
+  },
+
+  "sugestoes_aprofundamento": {
+    "pnl_mtd_pm_limite_bps": -30,
+    "_note_pm_aprof": "Se PnL MTD de PM < -30 bps, sugerir investigação do livro",
+    "er_persistente_negativo": true,
+    "_note_er_aprof": "ER negativo persistente → sugerir revisão da réplica ou do risco ativo",
+    "top_contribuidor_atipico": true,
+    "_note_atipico": "Se book/PM não usual aparece no top, investigar se é evento pontual"
+  },
+
+  "change_log": []
+}
