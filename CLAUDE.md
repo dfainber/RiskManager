@@ -163,6 +163,11 @@ dashboards originais.
   - Dust filter em `fetch_pa_leaves` (drop leaves todos zero)
   - Connection reuse por thread em `glpg_fetch.py` (`threading.local`)
 
+**Fase 4 — fixes pós entrega (2026-04-18):**
+- `_latest_nav(desk, date_str)` helper + `merge_asof(backward)` em `build_series` — NAV da tabela LOTE_TRADING_DESKS_NAV_SHARE defasa ~1 business day vs. VaR/Expo. Antes: Status consolidado vinha sem VaR no "dia" mais recente e Mudanças Significativas explodia para bilhões de %. Ver `project_rule_nav_lag.md`.
+- `compute_pa_outliers` ganha cláusula **OR absoluta**: flaga se `(|z|≥2σ AND |bps|≥3)` OR `|bps|≥10`. Captura losses materiais em nomes historicamente voláteis (AXIA, etc.) onde σ é grande demais para o z-test disparar sozinho. Ver `project_rule_outlier_or_absolute.md`.
+- `run_report.bat` — script Windows que pergunta a data e roda o generator (default = hoje no formato YYYY-MM-DD).
+
 **Fase 4 — pendente:**
 - **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
 - **(A) Mudanças Significativas** já cobre os 5 fundos; **(B) Main Risks** fica para próxima
