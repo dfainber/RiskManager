@@ -34,7 +34,8 @@ decisão do gestor. Se não leva a decisão, o briefing está errado.
 ├── evolution-risk-concentration/       # concentração no fundo Evolution
 ├── rf-idka-monitor/                    # IDKAs benchmarked (Renda Fixa)
 ├── performance-attribution/            # PA transversal às famílias
-└── risk-morning-call/                  # briefing final consolidado
+├── risk-morning-call/                  # briefing final consolidado
+└── wrap-session/                       # checklist de fim de dia (memory + CLAUDE.md + commit + push)
 ```
 
 **Regra de ouro:** as sobreposições (ex.: `macro-stop-monitor` vs.
