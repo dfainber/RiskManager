@@ -4,7 +4,14 @@
       "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -c ' *)",
       "Edit(/.claude/skills/risk-daily-monitor/**)",
       "Bash(start \"\" \"F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\data\\\\morning-calls\\\\2026-04-16_risk_monitor.html\")",
-      "Bash(start \"f:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\data\\\\morning-calls\\\\2026-04-16_risk_monitor.html\")"
+      "Bash(start \"f:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\data\\\\morning-calls\\\\2026-04-16_risk_monitor.html\")",
+      "Bash(start f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html)",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe generate_risk_report.py 2026-04-16)",
+      "Bash(start \"\" \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html\")",
+      "Read(//c/Users/diego.fainberg/OneDrive - GALAPAGOS CAPITAL/Desktop//**)",
+      "Read(///fs01/FS_GALAPAGOS/Macros/DADOS/Projetos/**)",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -m pip install --quiet --upgrade openpyxl)",
+      "Read(///fs01/FS_GALAPAGOS//**)"
     ]
   }
 }

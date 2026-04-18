@@ -52,14 +52,28 @@
       "descricao": "Parcela de crédito inclui cotas júnior — marcação pode divergir do valor de mercado",
       "acao": "Validar marcação com equipe de crédito quando CREDITO estiver no top-3 de contribuição do dia"
     },
-    "delay_dados": {
-      "descricao": "Evolution tem 1 dia de delay no banco",
-      "acao": "Sempre usar D-1 para EVOLUTION ao consultar LOTE_TRADING_DESKS_NAV_SHARE"
+    "delay_dados_OBSOLETO": {
+      "descricao": "Regra histórica removida em 2026-04-18 após validação empírica (22 datas do último mês, VaR e NAV same-day na LOTE_FUND_STRESS_RPM e LOTE_TRADING_DESKS_NAV_SHARE).",
+      "motivo_original": "Delay D-1 é contábil (cota do FIC sai D+1 porque depende da cota do master). Não se aplica ao risco, onde o engine faz look-through para posições do master direto.",
+      "quando_reaplica": "Para fundos FORA do lote (estruturados/externos com admin externo), o shift D-1 é necessário."
     }
   },
 
   "cenarios_stress": ["Evolution"],
   "cenario_principal": "Evolution",
 
-  "observacoes": "Fundo multiestratégia. Importante: dados no banco têm 1 dia de delay — sempre usar D-1. Parcela de crédito com cotas júnior exige atenção especial na marcação. Bull Market Alignment (camada 4) deve ser sempre destacado no Morning Call quando ativo. SubA e SubB existem no banco — ignorar no MVP, usar apenas o agregado."
+  "_calibracao_stress": {
+    "_nota": "Validação feita em 2026-04-18 contra Asset_RiscoMercado_20260415.xlsx.",
+    "coluna_db": "SPECIFIC_STRESS",
+    "tabela": "LOTE45.LOTE_FUND_STRESS_RPM",
+    "level": 3,
+    "validacoes_15abr": [
+      {"metrica": "VaR (E)",      "db_pct": 0.620, "oficial_pct": 0.62, "gap_pp": 0.00},
+      {"metrica": "Stress Test",  "db_pct": 4.88,  "oficial_pct": 4.20, "gap_pp": 0.68}
+    ],
+    "interpretacao": "VaR confere perfeitamente com o cenário '(E)' do Asset_RiscoMercado (DB LEVEL=3). Stress tem gap de 0.68 pp (DB acima). Direcionalmente correto.",
+    "acao": "Opção A aceita: usar DB como é. Revisitar junto com QUANT."
+  },
+
+  "observacoes": "Fundo multiestratégia. Parcela de crédito com cotas júnior exige atenção especial na marcação. Bull Market Alignment (camada 4) deve ser sempre destacado no Morning Call quando ativo. SubA e SubB existem no banco — ignorar no MVP, usar apenas o agregado."
 }

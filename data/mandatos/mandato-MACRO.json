@@ -108,5 +108,17 @@
   "cenarios_stress": ["Quant e Macro V"],
   "cenario_principal": "Quant e Macro V",
 
+  "_calibracao_stress": {
+    "_nota": "Validação feita em 2026-04-17 contra Asset_RiscoMercado_20260415.xlsx.",
+    "coluna_db": "SPECIFIC_STRESS",
+    "tabela": "LOTE45.LOTE_FUND_STRESS_RPM",
+    "level": 2,
+    "validacoes": [
+      {"data": "2026-04-15", "db_pct": 4.86, "oficial_pct": 4.53, "gap_pp": 0.33}
+    ],
+    "interpretacao": "Gap pequeno (~0.3 pp) — DB levemente acima do oficial. Aceitável.",
+    "acao": "Opção A aceita: usar DB como é."
+  },
+
   "observacoes": "Fundo multimercado discricionário com 5 PMs (CI, LF, JD, RJ, QM). CI opera como comitê com regras de stop diferentes dos demais. Regra de carrego (ajuste do stop pelo PnL do mês anterior) está em revisão pela gestão — não implementar até aprovação formal."
 }

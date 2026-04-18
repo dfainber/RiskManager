@@ -44,6 +44,19 @@
   "cenarios_stress": ["Quant e Macro V"],
   "cenario_principal": "Quant e Macro V",
 
+  "_calibracao_stress": {
+    "_nota": "Validação feita em 2026-04-17 contra Asset_RiscoMercado_20260415.xlsx. O cenário 'Quant e Macro V' no engine oficial mapeia para a coluna MACRO_STRESS de LOTE_FUND_STRESS_RPM, mas há um gap sistemático.",
+    "coluna_db": "MACRO_STRESS",
+    "tabela": "LOTE45.LOTE_FUND_STRESS_RPM",
+    "level": 2,
+    "validacoes": [
+      {"data": "2026-04-15", "db_pct": 5.53, "oficial_pct": 6.77, "gap_pp": -1.24},
+      {"data": "2026-04-16", "db_pct": 4.81, "oficial_pct": 6.13, "gap_pp": -1.32}
+    ],
+    "interpretacao": "O DB subestima o stress oficial em ~1.3 pp. O engine Asset_RiscoMercado aplica overlay/buffer (concentração, haircut ou similar) que o Risk Monitor não captura. Direcionalmente correto, mas alerta mais tarde do que o oficial.",
+    "acao": "Opção A aceita: usar DB como proxy conservador. Reavaliar após 5-10 dias de uso para decidir entre calibração (opção B) ou ingestão direta do Asset_RiscoMercado (opção C)."
+  },
+
   "relacao_evolution": {
     "_nota": "O fundo QUANT (Galapagos Quantitativo FIM) é um fundo INDEPENDENTE. O Evolution tem um 'Quant Book' interno que ALOCA neste fundo — isso não os torna o mesmo produto.",
     "quant_book_no_evolution": "O Quant Book do Evolution aparece na PA e no breakdown do Evolution como contribuição de uma estratégia. Não confundir com o PnL/risco do QUANT standalone.",

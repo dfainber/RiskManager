@@ -49,7 +49,7 @@
       "familia": "Multimercado multiestratégia",
       "escopo_mvp": true,
       "confirmado": true,
-      "_atencao_delay": "Fundo tem 1 dia de delay no banco. Sempre usar D-1 para EVOLUTION.",
+      "_atencao_delay_OBSOLETO": "Regra removida em 2026-04-18. Era contábil (cota FIC D+1); risco usa look-through e vem same-day. Ver project_rule_delay_d1_estruturados no memory.",
       "_nota": "SubA e SubB também existem. Também existe 'Galapagos Evo Strategy FIM CP' — produto separado, ignorar no MVP."
     },
 
@@ -208,8 +208,8 @@
       "impacto": "skill performance-attribution deve pular MACRO_Q no Regime A"
     },
     {
-      "armadilha": "EVOLUTION com 1 dia de delay",
-      "impacto": "Sempre usar D-1 para EVOLUTION no relatório do dia corrente"
+      "armadilha_OBSOLETA": "EVOLUTION com 1 dia de delay (removido 2026-04-18)",
+      "impacto": "Delay D-1 era contábil (cota FIC D+1); risco faz look-through, vem same-day. Regra restante: só aplicar D-1 a fundos FORA do lote (estruturados/externos)."
     },
     {
       "armadilha": "ECO_INDEX — filtrar FIELD='YIELD' para CDI correto",

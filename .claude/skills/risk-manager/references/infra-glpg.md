@@ -85,13 +85,17 @@ SELECT DISTINCT "FUNDO" FROM q_models."REPORT_ALPHA_ATRIBUTION" ORDER BY 1;
 
 Atualizar `fundos-canonicos.json` com os valores reais encontrados.
 
-## EVOLUTION tem 1 dia de delay
+## EVOLUTION delay — REVISADO 2026-04-18
 
-**Citação direta do guia:** "GALAPAGOS EVOLUTION FIC FIM / Fundo Evolution (1 dia delay no DB)"
+**Regra anterior (obsoleta):** "Fundo Evolution tem 1 dia de delay no DB, usar D-1 sempre."
 
-**Implicação:** skills que processam EVOLUTION devem tratar D-1 como "dia atual" do fundo. O `risk-data-collector` precisa refletir isso no manifesto — esperar EVOLUTION em D-1 é normal, não é atraso.
+**Entendimento atual:** o delay D-1 é **contábil**, não de risco.
+- Contábil: a cota do FIC é publicada em D+1 porque depende da cota do master (Galapagos Evo Strategy)
+- Risco: o engine do banco faz **look-through** nas posições do master — `LOTE_FUND_STRESS_RPM` e `LOTE_TRADING_DESKS_NAV_SHARE` para EVOLUTION têm VaR e NAV disponíveis **same-day** (validado empiricamente em 22 datas do último mês)
 
-Atualizar `data-dependencies.json` para marcar este caso como comportamento esperado.
+**Implicação prática:** para monitoramento de risco, tratar EVOLUTION como os demais fundos — sem shift D-1. O `generate_risk_report.py` removeu o shift em 2026-04-18.
+
+**Quando o D-1 ainda aplica:** fundos FORA do lote (estruturados, admin externo). Aí sim a cota/posição só chega D+1. Ver memory: `project_rule_delay_d1_estruturados`.
 
 ## Tabelas do banco (inventário atualizado)
 

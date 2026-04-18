@@ -87,8 +87,8 @@ nomes de fundos e mesas. Regras:
 | 0    | 1–2 dias    | instalar skills + criar pastas + cadastrar mandatos    | ✅ concluída 2026-04-17 |
 | 1    | ½ dia       | auditoria de nomes (4 queries SQL)                     | ✅ concluída 2026-04-17 |
 | 2    | 1 semana    | 1ª execução real, validar contra dashboards existentes | ✅ concluída 2026-04-17 |
-| 3    | 2–4 semanas | calibrar thresholds com uso real                       | **em andamento** |
-| 4    | 1–3 meses   | expansão: RF completo, carrego MACRO, MC em HTML       | pendente   |
+| 3    | 2–4 semanas | calibrar thresholds com uso real + validar EVOLUTION/QUANT | ✅ 2026-04-18 |
+| 4    | 1–3 meses   | UX refactor (tabs, modal, CSV, sort), analytics extras | **em andamento** (2026-04-18) |
 | 5    | 3–6+ meses  | state-of-the-art: análise temporal, alertas proativos  | pendente   |
 
 **Fase 0 — entregues:**
@@ -119,6 +119,33 @@ nomes de fundos e mesas. Regras:
 **Próxima ação concreta (Fase 3):** usar o relatório diariamente, identificar thresholds
 a calibrar (alertas de 80° pct, escala das barras), validar QUANT e EVOLUTION com os
 dashboards originais.
+
+**Fase 3 — entregues (concluída 2026-04-18):**
+- QUANT validado contra `RELATORIO_POSICOES_2026-04-16.xlsx` — VaR 0.79% bate com DB; stress mapeado para `MACRO_STRESS` (cenário "Quant e Macro V"), gap sistemático de ~1.3 pp vs Asset_RiscoMercado documentado no mandato
+- EVOLUTION validado — VaR 0.45% bate com Excel, **shift D-1 era bug** (era contábil, não de risco — engine faz look-through), removido para todos os fundos
+- Regra "D-1 contábil só para estruturados fora do lote" salva no memory
+- Calibrações de stress documentadas em `_calibracao_stress` nos 3 mandatos
+
+**Fase 4 — entregues até 2026-04-18:**
+- Navegação 3-modos (Summary / Por Fundo / Por Report) via URL hash, section registry
+- Single-Name QUANT (decomposição do WIN em IBOV constituintes, Top 8 L/S) via modal
+- Distribuição 252d com toggle Backward/Forward (usa `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
+- Brand azul Galapagos — logo tortoise, Gadugi→Inter, JetBrains Mono
+- CSS variables, cards unificados, modal system
+- Regras universais: **sort em toda `<th>`** + **CSV export em todo card** (injetados no DOMContentLoaded)
+- Column "VaR%" → "VaR (bps)" (unidade correta)
+- σ rotulado como "(bps)" — daily bps per instrumento
+
+**Fase 4 — pendente:**
+- **Summary page** (conteúdo — hoje é placeholder "em construção"): heatmap fundos × métricas, top alerts, deltas D/D, orçamentos
+- Backtest de VaR (diagnóstico de calibração)
+- Cross-fund / firm-level overlap (consolidado por instrumento/emissor)
+- Scenario library (named shocks)
+- Drawdown trajectory (tempo underwater, velocidade)
+- Correlation breakdown (diversification benefit ao longo do tempo)
+- Style drift (PM vs mandato)
+
+Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) para o roadmap de analytics priorizado.
 
 ---
 
@@ -168,6 +195,19 @@ WHERE. Usar a camada `glpg-data-fetch`.
 **Outputs.** O Morning Call final sai em markdown primeiro (Fase 2–3), depois
 migra para HTML (Fase 4). Não perder tempo com estética antes de ter números
 confiáveis.
+
+**Tabelas no HTML.** Toda tabela deve, por padrão:
+- Ter **sorting** em todas as colunas (click no `th` alterna asc/desc). Injetado
+  automaticamente via `attachUniversalSort()` no DOMContentLoaded. Para desligar
+  em uma tabela específica (ex: poucas linhas, só 2 rows, conteúdo SVG),
+  adicionar `data-no-sort="1"` no `<table>` — exceção deve ser justificada.
+- Ter **CSV export** no header do card (botão `⤓ CSV`). Injetado automaticamente
+  via `injectCsvButtons()`. Exporta só linhas/tabelas visíveis (respeita toggles
+  como Backward/Forward ou POSIÇÕES/PM VaR). Exceções só em cards puramente
+  decorativos.
+
+Regras universais do kit. Novas tabelas **não precisam** repetir — o comportamento
+é injetado no DOMContentLoaded a partir das classes existentes.
 
 ---
 

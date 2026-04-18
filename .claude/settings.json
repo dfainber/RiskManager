@@ -13,7 +13,16 @@
       "Read(//f/Bloomberg/Quant/Rotinas/RELATORIO_EXPO_PNL_AUTOMATICO_HTML/**)",
       "Read(//f/Bloomberg/Quant/Rotinas/**)",
       "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/generate_risk_report.py\" 2026-04-16)",
-      "Bash(start \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html\")"
+      "Bash(start \"f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html\")",
+      "Read(//f/Bloomberg/Quant/**)",
+      "Read(//f/Bloomberg/Quant/MODELOS/**)",
+      "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -m pip install \"f:/Bloomberg/Quant/MODELOS/TOOLS_/GLPG_Prices_mode/dist/GLPG_Prices-2.0.0-py3-none-any.whl\" --quiet)",
+      "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor status --short)",
+      "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor branch --show-current)",
+      "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor log --oneline -5)",
+      "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor remote -v)",
+      "Edit(/.claude/skills/risk-data-collector/**)",
+      "Edit(/.claude/skills/risk-manager/**)"
     ]
   }
 }

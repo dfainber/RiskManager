@@ -12,9 +12,10 @@
   },
 
   "_excecoes_de_frescor": {
+    "_revisado_2026-04-18": "Revisão: o delay D-1 para Evolution é CONTÁBIL (cota do FIC publicada em D+1 porque depende da cota do master). Para RISCO o engine faz look-through: VaR e NAV estão disponíveis SAME-DAY na LOTE_FUND_STRESS_RPM e LOTE_TRADING_DESKS_NAV_SHARE (validado empiricamente em 22 datas). Delay D-1 deve aplicar apenas a fundos FORA do lote (estruturados/admin externo).",
     "GALAPAGOS EVOLUTION FIC FIM": {
-      "delay_esperado_dias": 1,
-      "descricao": "Fundo Evolution tem 1 dia de delay documentado no banco (GLPG Guide). D-1 é o 'hoje' normal para este fundo — NÃO tratar como atraso."
+      "delay_esperado_dias": 0,
+      "descricao": "Mesmo-dia OK. Regra antiga de D-1 foi removida do generate_risk_report.py em 2026-04-18."
     }
   },
 
