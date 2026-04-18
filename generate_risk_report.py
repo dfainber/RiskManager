@@ -1880,10 +1880,14 @@ def fetch_pa_daily_per_product(date_str: str = DATA_STR, lookback_days: int = 90
 
 def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
                          z_min: float = 2.0, bps_min: float = 3.0,
+                         abs_floor_bps: float = 10.0,
                          min_obs: int = 20) -> pd.DataFrame:
     """
-    Flags products where today's alpha contribution is both statistically unusual
-    (|z-score| >= z_min vs. prior-day std) and materially impactful (|bps| >= bps_min).
+    Flags products where today's alpha contribution is either:
+      (a) statistically unusual (|z-score| >= z_min) AND materially impactful (|bps| >= bps_min), OR
+      (b) simply absolutely large (|bps| >= abs_floor_bps), regardless of z —
+          catches moves on historically-volatile names (e.g. AXIA) where σ is too wide
+          for the z-test to trigger even on a real sell-off.
     Excludes non-directional livros (Caixa, Taxas e Custos).
     """
     if df_daily is None or df_daily.empty:
@@ -1909,11 +1913,16 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
     valid = merged["sigma"] > 0.05
     merged.loc[valid, "z"] = merged.loc[valid, "today_bps"] / merged.loc[valid, "sigma"]
 
-    flagged = merged[
+    statistical = (
         (merged["z"].abs() >= z_min)
         & (merged["today_bps"].abs() >= bps_min)
         & (merged["n_obs"] >= min_obs)
-    ].copy()
+    )
+    absolute_big = (
+        (merged["today_bps"].abs() >= abs_floor_bps)
+        & (merged["n_obs"] >= min_obs)
+    )
+    flagged = merged[statistical | absolute_big].copy()
     flagged = flagged.sort_values("today_bps", key=lambda s: s.abs(), ascending=False)
     return flagged
 
