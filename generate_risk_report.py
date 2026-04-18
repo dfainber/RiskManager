@@ -495,14 +495,24 @@ def compute_distribution_stats(w_series, actual_bps=None):
         out["nvols"]      = actual_bps / sd if sd > 1e-9 else None
     return out
 
+def _latest_nav(desk: str, date_str: str):
+    """
+    Most recent NAV on or before `date_str` for `desk`.
+    NAV often lags the risk feed by up to a business day (admin process),
+    so callers should tolerate forward-filling from D-1.
+    """
+    df = read_sql(f"""
+        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+        WHERE "TRADING_DESK" = '{desk}'
+          AND "VAL_DATE" <= DATE '{date_str}'
+        ORDER BY "VAL_DATE" DESC LIMIT 1
+    """)
+    return float(df["NAV"].iloc[0]) if not df.empty else None
+
+
 def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
     """Returns (df_expo, df_var, aum) for the given date."""
-    aum_df = read_sql(f"""
-        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
-          AND "VAL_DATE" = DATE '{date_str}'
-    """)
-    aum = float(aum_df["NAV"].iloc[0]) if not aum_df.empty else 1.0
+    aum = _latest_nav("Galapagos Macro FIM", date_str) or 1.0
 
     expo = read_sql(f"""
         SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
@@ -574,14 +584,9 @@ def _fetch_single_names_generic(date_str: str, desk: str, source: str,
       merged_df columns: ticker, direct, from_idx, net, pct_nav
       index_legs: dict with per-source deltas {'WIN': x, 'BOVA11': y, 'SMAL11': z}
     """
-    nav_df = read_sql(f"""
-        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = '{source}'
-          AND "VAL_DATE"     = DATE '{date_str}'
-    """)
-    if nav_df.empty:
+    nav = _latest_nav(source, date_str)
+    if nav is None:
         return None, None, None
-    nav = float(nav_df["NAV"].iloc[0])
 
     desk_clause = f"AND \"TRADING_DESK\" = '{desk}'" if desk else ""
 
@@ -693,14 +698,9 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
       BOOK, PRODUCT_CLASS, PRODUCT, delta_brl, mod_dur (years), dv01_brl (R$/bp), indexador
     DV01 ≈ |DELTA × MOD_DURATION × 0.0001|.
     """
-    nav_df = read_sql(f"""
-        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = 'GALAPAGOS ALBATROZ FIRF LP'
-          AND "VAL_DATE"     = DATE '{date_str}'
-    """)
-    if nav_df.empty:
+    nav = _latest_nav("GALAPAGOS ALBATROZ FIRF LP", date_str)
+    if nav is None:
         return None, None
-    nav = float(nav_df["NAV"].iloc[0])
 
     df = read_sql(f"""
         SELECT "BOOK", "PRODUCT_CLASS", "PRODUCT",
@@ -1816,13 +1816,9 @@ def fetch_fund_position_changes(short: str, date_str: str, d1_str: str) -> pd.Da
     if not desk:
         return None
 
-    nav_df = read_sql(f"""
-        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = '{desk}' AND "VAL_DATE" = DATE '{date_str}'
-    """)
-    if nav_df.empty:
+    nav = _latest_nav(desk, date_str)
+    if nav is None:
         return None
-    nav = float(nav_df["NAV"].iloc[0])
 
     if short == "EVOLUTION":
         scope = f'"TRADING_DESK_SHARE_SOURCE" = \'{desk}\''
