@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<title>Risk Monitor — Documentação Técnica</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0b0d10; --bg-2:#111418; --panel:#14181d; --panel-2:#181d24;
+    --line:#232a33; --line-2:#2d3540; --text:#e7ecf2; --muted:#8892a0;
+    --accent:#0071BB; --accent-2:#1a8fd1; --accent-deep:#183C80;
+    --up:#26d07c; --down:#ff5a6a; --warn:#f5c451;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.55;
+  }
+  body {
+    min-height: 100vh; padding: 40px 24px;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(0,113,187,.06), transparent 60%),
+      radial-gradient(900px 500px at 110% 10%, rgba(26,143,209,.04), transparent 60%),
+      var(--bg);
+  }
+  .mono { font-family:'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  main { max-width: 980px; margin: 0 auto; }
+
+  header.doc-head {
+    display: flex; align-items: center; gap: 16px;
+    padding-bottom: 24px; margin-bottom: 32px;
+    border-bottom: 1px solid var(--line);
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+    display: grid; place-items: center; flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(0,113,187,.35), 0 8px 24px -8px rgba(0,113,187,.4);
+  }
+  .logo svg { width: 30px; height: 30px; }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: .2px; }
+  header p  { font-size: 12px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; margin-top: 4px; }
+
+  section { margin-bottom: 36px; }
+  h2 {
+    font-size: 13px; font-weight: 700;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent-2); margin-bottom: 16px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  h3 {
+    font-size: 15px; font-weight: 600;
+    color: var(--text); margin: 20px 0 10px 0;
+  }
+  p { margin-bottom: 12px; font-size: 13.5px; color: var(--text); }
+  p.lede { color: var(--muted); }
+
+  code, .code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; background: var(--panel-2);
+    padding: 1px 6px; border-radius: 4px; color: var(--accent-2);
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px;
+    overflow-x: auto; font-size: 11.5px; line-height: 1.5;
+    font-family: 'JetBrains Mono', monospace;
+    color: #cbd5e1; margin: 10px 0 18px 0;
+  }
+  pre .kw  { color: #60a5fa; }
+  pre .str { color: #86efac; }
+  pre .com { color: var(--muted); font-style: italic; }
+
+  .formula {
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 12px 16px; margin: 10px 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+    color: var(--text);
+  }
+  .formula .lbl { color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  ul, ol { margin: 8px 0 16px 22px; font-size: 13px; }
+  li { margin-bottom: 4px; }
+  li code { font-size: 11.5px; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 12px 0 18px 0; font-size: 12.5px;
+  }
+  th {
+    text-align: left; font-size: 10px; color: var(--muted);
+    letter-spacing: .1em; text-transform: uppercase;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 500;
+  }
+  td {
+    padding: 7px 10px; border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  td code { font-size: 11px; }
+
+  .box {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px 20px; margin: 14px 0;
+  }
+  .box-head {
+    color: var(--text); font-weight: 600; font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .box.warn  { border-left: 3px solid var(--warn); }
+  .box.info  { border-left: 3px solid var(--accent-2); }
+  .box.ok    { border-left: 3px solid var(--up); }
+
+  .toc {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 22px; margin-bottom: 32px;
+  }
+  .toc h2 { border: 0; padding: 0; margin-bottom: 10px; color: var(--muted); }
+  .toc ol { margin-left: 18px; }
+  .toc a  { color: var(--accent-2); text-decoration: none; font-size: 12.5px; }
+  .toc a:hover { color: var(--text); }
+
+  .tag {
+    display: inline-block; padding: 2px 8px;
+    font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    border-radius: 4px; margin-right: 6px; font-weight: 700;
+  }
+  .tag.macro { background: rgba(0,113,187,.15); color: var(--accent-2); }
+  .tag.quant { background: rgba(38,208,124,.12); color: var(--up); }
+  .tag.evo   { background: rgba(245,196,81,.12); color: var(--warn); }
+  .tag.all   { background: var(--panel-2); color: var(--muted); }
+
+  footer {
+    margin-top: 48px; padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<main>
+<header class="doc-head">
+  <div class="logo"><svg viewBox="0 0 47 45" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M39.5781 37.6377C36.1678 40.8382 31.8394 42.6304 27.2486 42.6304H27.1174C17.5423 42.5024 9.67243 34.8213 9.67243 25.4758C9.54127 17.9227 14.6567 11.2657 21.8708 8.96135C22.2643 9.72947 22.5266 10.6256 22.6578 11.3937C20.428 12.0338 18.4605 13.186 16.7554 14.8502C14.6567 16.7705 13.3451 19.3309 12.6892 21.8913V22.0193C12.0334 24.5797 12.1646 27.1401 12.9516 29.4444C13.6074 31.6208 14.7879 33.6691 16.493 35.3333C18.4605 37.2536 20.8215 38.6618 23.3136 39.3019C23.4448 39.3019 23.7071 39.43 23.8383 39.43C23.9694 39.43 23.9694 39.43 24.1006 39.43C24.1006 39.43 24.4941 39.558 25.1499 39.558C25.6746 39.686 26.3304 39.686 26.8551 39.686C27.6421 39.686 28.4291 39.686 29.3472 39.558C32.364 39.1739 35.3808 37.8937 37.7418 35.7174C39.8404 33.6691 41.0209 31.3647 41.2833 30.4686C41.6768 29.3164 41.5456 28.0362 41.0209 26.8841C40.4963 25.7319 39.4469 24.8358 38.1353 24.4517C36.8236 24.0676 35.512 24.0676 34.3315 24.7077C31.8394 25.8599 30.79 28.8043 32.1017 31.2367C32.364 31.6208 32.8887 31.8768 33.2822 31.6208C33.6757 31.3647 33.938 30.8527 33.6757 30.4686C32.8887 28.9324 33.5445 27.1401 35.1185 26.372C35.9055 25.9879 36.6925 25.9879 37.4795 26.244C38.2665 26.5 38.9223 27.0121 39.3158 27.7802C39.7093 28.5483 39.7093 29.3164 39.4469 30.0845C39.3158 30.4686 39.1846 30.7246 38.9223 30.9807C34.8562 34.6932 28.4291 34.4372 24.4941 30.4686C24.1006 30.0845 23.5759 30.0845 23.1825 30.4686C22.789 30.8527 22.789 31.3647 23.1825 31.7488C26.5927 35.3333 31.8394 36.3575 36.299 34.6932C34.4627 36.3575 32.2329 37.3816 29.8719 37.7657C27.7732 38.0217 26.0681 36.9976 25.5434 36.7415C22.002 34.4372 20.2968 30.2126 21.3461 25.8599C22.6578 20.4831 28.1667 17.1546 33.6757 18.4348C34.0692 18.5628 34.4627 18.5628 34.725 18.6908C35.9055 19.0749 37.2171 18.6908 37.873 17.5386C38.2665 16.7705 38.3976 16.0024 38.0041 15.3623C38.0041 15.2343 36.6925 11.9058 32.8887 9.08937C39.9716 11.3937 44.9559 17.9227 44.9559 25.4758C44.8247 30.0845 42.9884 34.3092 39.5781 37.6377ZM30.79 6.78503C30.1342 6.65701 29.4784 7.04107 29.2161 7.68116C28.9537 8.32126 29.2161 8.96136 29.8719 9.34541C33.938 11.6498 35.6432 14.5942 36.0366 15.6184C36.1678 15.7464 36.1678 15.8744 36.1678 15.8744C36.299 16.3865 36.1678 16.6425 36.1678 16.7705C36.0366 16.8986 35.7743 17.2826 35.2497 17.1546C34.8562 17.0266 34.4627 16.8986 33.938 16.7705C27.5109 15.3623 20.9526 19.3309 19.3787 25.6039C18.1982 30.3406 20.1657 35.0773 23.9694 37.7657C22.9201 37.5097 21.7396 37.1256 20.6903 36.4855C20.6903 36.4855 20.6903 36.4855 20.5592 36.4855C20.428 36.4855 20.2968 36.3575 20.2968 36.3575C17.6735 34.6932 15.5749 32.2609 14.6567 29.3164C13.2139 24.8358 14.2632 19.715 17.9358 16.1304C19.3787 14.8502 21.0838 13.8261 22.9201 13.186C23.0513 13.9541 23.0513 14.8502 23.0513 15.6184C23.0513 16.1304 23.4448 16.5145 23.9694 16.5145C24.4941 16.5145 24.8876 16.1304 24.8876 15.6184C24.8876 14.3382 24.7564 13.058 24.4941 11.9058C24.2318 10.4976 23.7071 9.08937 23.1825 7.80918C23.0513 7.55314 22.789 7.2971 22.5266 7.16908C22.2643 7.04107 22.002 7.04107 21.7396 7.16908C13.6074 9.47343 7.70496 17.0266 7.70496 25.4758C7.70496 35.8454 16.3619 44.4227 26.9862 44.4227C27.1174 44.4227 27.1174 44.4227 27.1174 44.4227C32.2329 44.4227 37.086 42.5024 40.7586 38.9179C44.5624 35.3333 46.5299 30.4686 46.5299 25.4758C46.661 16.2585 40.1028 8.44928 30.79 6.78503Z" fill="white"/></svg></div>
+  <div>
+    <h1>Risk Monitor — Documentação Técnica</h1>
+    <p>Galapagos Capital · Kit de risco diário</p>
+  </div>
+</header>
+
+<!-- TOC -->
+<nav class="toc">
+  <h2>Índice</h2>
+  <ol>
+    <li><a href="#contexto">Contexto e objetivo</a></li>
+    <li><a href="#fontes">Fontes de dados (GLPG-DB01)</a></li>
+    <li><a href="#shell">Shell HTML: navegação, tabs, modal</a></li>
+    <li><a href="#risk-monitor">Report · Risk Monitor (VaR/Stress)</a></li>
+    <li><a href="#stop-monitor">Report · Stop Monitor (Risk Budget)</a></li>
+    <li><a href="#exposure">Report · Exposição MACRO</a></li>
+    <li><a href="#single-name">Report · Single-Name (QUANT, decomposição WIN)</a></li>
+    <li><a href="#dist252">Report · Distribuição 252d (Backward/Forward)</a></li>
+    <li><a href="#universais">Regras universais · Sort + CSV</a></li>
+    <li><a href="#calibracoes">Calibrações & armadilhas documentadas</a></li>
+    <li><a href="#roadmap">Roadmap / pendências</a></li>
+  </ol>
+</nav>
+
+<!-- 1. CONTEXT -->
+<section id="contexto">
+  <h2>1. Contexto e objetivo</h2>
+  <p class="lede">
+    O kit monitora diariamente o risco dos fundos multimercados da Galapagos
+    (MACRO, QUANTITATIVO, EVOLUTION) para alimentar o Morning Call. O produto
+    final é um HTML interativo gerado por <code>generate_risk_report.py</code>.
+  </p>
+  <p>
+    Métrica de sucesso: <b>número de vezes por semana que o briefing leva a
+    uma decisão do gestor</b>. Se é lido e arquivado sem ação, o kit falhou.
+  </p>
+  <p>
+    Arquitetura: Python puro → PostgreSQL (GLPG-DB01) → HTML self-contained.
+    Sem servidor, sem JavaScript framework — o HTML vive em disco local
+    (<code>data/morning-calls/</code>) e é aberto no browser.
+  </p>
+</section>
+
+<!-- 2. DATA SOURCES -->
+<section id="fontes">
+  <h2>2. Fontes de dados (GLPG-DB01)</h2>
+  <table>
+    <thead><tr><th>Tabela</th><th>Uso</th><th>Colunas-chave</th></tr></thead>
+    <tbody>
+      <tr><td><code>LOTE45.LOTE_FUND_STRESS_RPM</code></td><td>VaR e Stress nível fundo</td><td>VAL_DATE, TRADING_DESK, LEVEL, PARAMETRIC_VAR, SPECIFIC_STRESS, MACRO_STRESS</td></tr>
+      <tr><td><code>LOTE45.LOTE_BOOK_STRESS_RPM</code></td><td>VaR por book (MACRO via Evolution)</td><td>BOOK, PARAMETRIC_VAR, PRODUCT_CLASS</td></tr>
+      <tr><td><code>LOTE45.LOTE_TRADING_DESKS_NAV_SHARE</code></td><td>NAV do fundo</td><td>TRADING_DESK, VAL_DATE, NAV</td></tr>
+      <tr><td><code>LOTE45.LOTE_PRODUCT_EXPO</code></td><td>Exposição e delta por produto</td><td>BOOK, PRODUCT, DELTA, POSITION, IS_STOCK, PRIMITIVE_CLASS, TRADING_DESK_SHARE_SOURCE</td></tr>
+      <tr><td><code>q_models.REPORT_ALPHA_ATRIBUTION</code></td><td>PnL realizado (DIA, MES, ANO) por LIVRO × PRODUCT</td><td>DATE, FUNDO, LIVRO, PRODUCT, DIA, MES, POSITION, POSITION_LAST, DELTA</td></tr>
+      <tr><td><code>q_models.STANDARD_DEVIATION_ASSETS</code></td><td>σ por instrumento (bps diários)</td><td>VAL_DATE, BOOK, INSTRUMENT, STANDARD_DEVIATION</td></tr>
+      <tr><td><code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code></td><td>Série de PnLs hipotéticos (carteira × retornos históricos)</td><td>PORTIFOLIO_DATE, PORTIFOLIO, W, DATE_SYNTHETIC_POSITION</td></tr>
+      <tr><td><code>public.EQUITIES_COMPOSITION</code></td><td>Composição de índices (IBOV)</td><td>LIST_NAME, DATE, INSTRUMENT, VALUE (peso)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="box info">
+    <div class="box-head">Camada de acesso</div>
+    <p style="margin:0">Todo acesso passa por <code>glpg_fetch.read_sql()</code> —
+    conexão via <code>.env</code>, nunca hardcoded. Queries parametrizadas por
+    data e fundo (sem literal de data no meio do WHERE).</p>
+  </div>
+</section>
+
+<!-- 3. SHELL -->
+<section id="shell">
+  <h2>3. Shell HTML: navegação, tabs, modal</h2>
+
+  <h3>Modelo mental de navegação</h3>
+  <p>A UI tem 2 eixos: <b>fundos</b> × <b>reports</b>. Cada seção é uma tupla
+  <code>(fund_key, report_key, html)</code> no section registry. O usuário navega em 3 modos:</p>
+  <ul>
+    <li><b>Summary</b> — dashboard cross-fund (em construção)</li>
+    <li><b>Por Fundo</b> — seleciona fundo → vê todos os reports dele</li>
+    <li><b>Por Report</b> — seleciona report → vê para todos os fundos numa caixa unificada</li>
+  </ul>
+
+  <h3>URL hash como single source of truth</h3>
+  <p>Estado de navegação vive no hash: <code>#summary</code>, <code>#fund=MACRO</code>,
+  <code>#report=exposure</code>. Permite bookmark e deep-link. A função <code>applyState()</code>
+  é chamada em <code>DOMContentLoaded</code> e em <code>hashchange</code>.</p>
+
+  <h3>Modal (Single-Name QUANT)</h3>
+  <p>Overlay centrado com backdrop blur. Abre via botão em card (<code>openSnModal()</code>),
+  fecha com ESC, click fora ou botão ×.</p>
+</section>
+
+<!-- 4. RISK MONITOR -->
+<section id="risk-monitor">
+  <h2>4. Report · Risk Monitor (VaR/Stress)</h2>
+  <p><span class="tag macro">MACRO</span><span class="tag quant">QUANT</span><span class="tag evo">EVOLUTION</span></p>
+
+  <p>Para cada fundo, duas métricas: VaR 95% 1 dia e Stress (cenário "Quant e Macro V").</p>
+
+  <h3>Fórmulas</h3>
+  <div class="formula">
+    <span class="lbl">VaR % do NAV</span>
+    VaR% = −SUM(PARAMETRIC_VAR) / NAV × 100
+  </div>
+  <div class="formula">
+    <span class="lbl">Stress % do NAV</span>
+    Stress% = −SUM(stress_col) / NAV × 100<br/>
+    onde stress_col =
+    &nbsp;&nbsp;<code>SPECIFIC_STRESS</code> (MACRO, EVOLUTION)<br/>
+    &nbsp;&nbsp;<code>MACRO_STRESS</code>&nbsp;&nbsp;&nbsp; (QUANT)
+  </div>
+  <div class="formula">
+    <span class="lbl">Utilização (soft)</span>
+    util_soft = |métrica| / soft_limit × 100
+  </div>
+
+  <h3>Range bar (12M)</h3>
+  <p>Para cada métrica, mostra posição dentro do min/max observado nos últimos 12 meses:</p>
+  <div class="formula">
+    range_pct = (|val_hoje| − min_12M) / (max_12M − min_12M) × 100
+  </div>
+  <p>Se <code>range_pct ≥ 80%</code> → <b>zona de alerta</b> (laranja + comentário automático em <code>ALERT_COMMENTS</code>).</p>
+
+  <h3>LEVEL no LOTE_FUND_STRESS_RPM</h3>
+  <table>
+    <thead><tr><th>Fundo</th><th>LEVEL</th><th>Stress col</th><th>Soft/Hard VaR</th><th>Soft/Hard Stress</th></tr></thead>
+    <tbody>
+      <tr><td>MACRO</td><td>2</td><td>SPECIFIC_STRESS</td><td>2.10% / 3.00%</td><td>21.0% / 30.0%</td></tr>
+      <tr><td>QUANT</td><td>2</td><td>MACRO_STRESS</td><td>2.10% / 3.00%</td><td>21.0% / 30.0%</td></tr>
+      <tr><td>EVOLUTION</td><td>3</td><td>SPECIFIC_STRESS</td><td>1.75% / 2.50%</td><td>10.5% / 15.0%</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 5. STOP MONITOR -->
+<section id="stop-monitor">
+  <h2>5. Report · Stop Monitor (Risk Budget por PM)</h2>
+  <p><span class="tag macro">MACRO</span></p>
+  <p>Orçamento de perda mensal por gestor: CI (Comitê), LF (Luiz Felipe),
+  JD (Joca Dib), RJ (Rodrigo Jafet).</p>
+
+  <h3>Regra de carrego</h3>
+  <p>Base mensal = <code>−63 bps</code>. Stop do mês seguinte depende do PnL do mês atual:</p>
+
+  <div class="formula">
+    <span class="lbl">Ganho (PnL &gt; 0)</span>
+    carry = PnL × 50%<br/>
+    stop_next = −(63 + carry)  <span style="color:var(--muted)">// stop expande</span>
+  </div>
+
+  <div class="formula">
+    <span class="lbl">Perda com stop "extended" (stop_atual > 63 bps e YTD positivo)</span>
+    consumed = loss_em_extra × 25% + loss_em_base × 50% + loss_além_do_stop × 100%<br/>
+    stop_next = −(63 − consumed)
+  </div>
+
+  <div class="formula">
+    <span class="lbl">Perda com stop "base" (stop ≤ 63 ou YTD negativo)</span>
+    consumed = loss_dentro_stop × 50% + loss_além_stop × 100%<br/>
+    stop_next = −(63 − consumed)
+  </div>
+
+  <h3>Caps (quando YTD negativo)</h3>
+  <ul>
+    <li>Semestral: stop_next ≥ −(128 − |YTD|) &nbsp;·&nbsp; <code>STOP_SEM = 128</code></li>
+    <li>Anual: stop_next ≥ −252 &nbsp;·&nbsp; <code>STOP_ANO = 252</code></li>
+  </ul>
+
+  <h3>Gancho</h3>
+  <p>Se <code>consumed ≥ 63</code> (PnL do mês excedeu 1× o stop base),
+  o mês seguinte abre com <b>stop = 0</b>. O mês seguinte ao gancho reseta
+  para <code>−63</code> sujeito aos caps.</p>
+
+  <h3>Colunas do relatório</h3>
+  <ul>
+    <li><b>Margem (bps)</b> = <code>budget + PnL_MTD</code> — o quanto ainda dá para perder antes do stop</li>
+    <li><b>Perf. MTD vs Stop</b> = barra horizontal do PnL MTD contra o stop vigente</li>
+    <li><b>Histórico</b> = YTD + chips SEM% e ANO% (consumo dos caps)</li>
+    <li><b>Status</b> = 🟢 OK (margem &gt; 30%), 🟡 ATENÇÃO (margem &lt; 30%), 🔴 STOP (margem ≤ 0), ⚡ GANCHO</li>
+  </ul>
+
+  <div class="box warn">
+    <div class="box-head">CI é exceção</div>
+    <p style="margin:0">O Comitê opera com stop em <b>% do PL</b>, não em bps:
+    Soft = −1.5% (gatilho de redução, não liquidação),
+    Hard = −2.33% (stop duro). Não tem regra de carrego.</p>
+  </div>
+</section>
+
+<!-- 6. EXPOSURE -->
+<section id="exposure">
+  <h2>6. Report · Exposição MACRO</h2>
+  <p><span class="tag macro">MACRO</span></p>
+  <p>Decomposição hierárquica: fator de risco (RF) → produto; com toggle para
+  visão POSIÇÕES (por RF) vs PM VaR (por gestor).</p>
+
+  <h3>Fonte de exposição</h3>
+  <pre>
+<span class="kw">SELECT</span> <span class="str">"BOOK"</span>, <span class="str">"PRODUCT"</span>, <span class="str">"PRODUCT_CLASS"</span>, <span class="str">"PRIMITIVE_CLASS"</span>,
+       <span class="kw">SUM</span>(<span class="str">"DELTA"</span>)                 <span class="kw">AS</span> delta,
+       <span class="kw">SUM</span>(<span class="str">"DELTA"</span> * <span class="str">"MOD_DURATION"</span>) <span class="kw">AS</span> delta_dur
+<span class="kw">FROM</span>  <span class="str">"LOTE45"."LOTE_PRODUCT_EXPO"</span>
+<span class="kw">WHERE</span> <span class="str">"TRADING_DESK_SHARE_SOURCE"</span> = <span class="str">'Galapagos Evolution FIC FIM CP'</span>
+  <span class="kw">AND</span> <span class="str">"VAL_DATE"</span>                  = <span class="str">DATE '{date}'</span>
+  <span class="kw">AND</span> <span class="str">"BOOK"</span> ~* <span class="str">'CI|JD|LF|QM|RJ'</span>
+  <span class="kw">AND</span> <span class="str">"BOOK"</span> ~* <span class="str">'Direcional|Relativo|Hedge|Volatilidade|SS'</span></pre>
+
+  <p><b>Por que SHARE_SOURCE = Evolution?</b> MACRO é alocado dentro do Evolution FIC.
+  O filtro pega a parcela do Evolution que corresponde ao MACRO.</p>
+
+  <h3>VaR (bps) alocado</h3>
+  <p>O VaR por book (<code>LOTE_BOOK_STRESS_RPM</code>) vem em BRL. Distribui
+  proporcionalmente ao delta entre produtos do mesmo RF:</p>
+  <div class="formula">
+    <span class="lbl">VaR (bps) por produto — product-level</span>
+    prod_var(bps) = (delta_produto / delta_total_do_RF) × VaR_RF(bps)
+  </div>
+  <div class="formula">
+    <span class="lbl">VaR (bps) por PM</span>
+    pm_var(bps) = SUM(prod_var) sobre todos os produtos do PM
+  </div>
+
+  <div class="box info">
+    <div class="box-head">Unidade = bps (não %)</div>
+    <p style="margin:0">A coluna <code>var_pct</code> do código é calculada como
+    <code>var_brl × −10000 / NAV</code> → resulta em <b>basis points</b>. A
+    rotulação no HTML é "VaR (bps)". Soma dos PMs &gt; VaR do fundo = benefício
+    de diversificação (correlação &lt; 1).</p>
+  </div>
+
+  <h3>σ (bps, daily)</h3>
+  <p>Fonte: <code>q_models.STANDARD_DEVIATION_ASSETS</code>, <code>BOOK='MACRO'</code>.
+  Unidade: bps diários (i.e., σ × 100 em %). Exemplo: VALE3 σ=140 ⇒ 1.4% daily ⇒ ~22% annual (√252).</p>
+
+  <h3>ΔExpo e ΔVaR</h3>
+  <div class="formula">
+    ΔExpo = pct_nav_D − pct_nav_D−1<br/>
+    ΔVaR = var_D − var_D−1
+  </div>
+  <p>Cores: verde = aumentou (long), vermelho = diminuiu.
+  Intensidade proporcional à magnitude.</p>
+
+  <h3>DIA (PnL realizado)</h3>
+  <p>Lookup <code>(LIVRO, PRODUCT)</code> em <code>REPORT_ALPHA_ATRIBUTION.DIA × 10000</code>.
+  Agregado no nível PM somando todos os produtos do gestor.</p>
+</section>
+
+<!-- 7. SINGLE-NAME -->
+<section id="single-name">
+  <h2>7. Report · Single-Name (QUANT, decomposição WIN)</h2>
+  <p><span class="tag quant">QUANT</span></p>
+  <p>Objetivo: mostrar exposição L/S <b>por nome</b>, decompondo o future WIN
+  (Ibov) nos seus constituintes.</p>
+
+  <h3>Passo 1 — posições diretas</h3>
+  <pre>
+<span class="kw">SELECT</span> <span class="str">"PRODUCT"</span> <span class="kw">AS</span> ticker, <span class="kw">SUM</span>(<span class="str">"DELTA"</span>) <span class="kw">AS</span> direct
+<span class="kw">FROM</span>  <span class="str">"LOTE45"."LOTE_PRODUCT_EXPO"</span>
+<span class="kw">WHERE</span> <span class="str">"TRADING_DESK"</span>              = <span class="str">'Galapagos Quantitativo FIM'</span>
+  <span class="kw">AND</span> <span class="str">"TRADING_DESK_SHARE_SOURCE"</span> = <span class="str">'Galapagos Quantitativo FIM'</span>
+  <span class="kw">AND</span> <span class="str">"PRODUCT_CLASS"</span> = <span class="str">'Equity'</span> <span class="kw">AND</span> <span class="str">"IS_STOCK"</span> = <span class="kw">TRUE</span>
+<span class="kw">GROUP BY</span> <span class="str">"PRODUCT"</span></pre>
+
+  <h3>Passo 2 — equity leg do WIN</h3>
+  <p>O DELTA do future WINM26 vem em 2 filtros: <code>PRIMITIVE_CLASS='BRL Rate Curve'</code>
+  (perna de juros) e <code>'Equity'</code> (perna de ações, beta-adjusted).
+  Soma-se apenas a equity leg:</p>
+  <pre>
+<span class="kw">SELECT</span> <span class="kw">SUM</span>(<span class="str">"DELTA"</span>) <span class="kw">AS</span> win_equity_delta
+<span class="kw">FROM</span>  <span class="str">"LOTE45"."LOTE_PRODUCT_EXPO"</span>
+<span class="kw">WHERE</span> <span class="str">"TRADING_DESK_SHARE_SOURCE"</span> = <span class="str">'Galapagos Quantitativo FIM'</span>
+  <span class="kw">AND</span> <span class="str">"PRODUCT_CLASS"</span>   = <span class="str">'IBOVSPFuture'</span>
+  <span class="kw">AND</span> <span class="str">"PRIMITIVE_CLASS"</span> = <span class="str">'Equity'</span></pre>
+
+  <div class="box warn">
+    <div class="box-head">Atenção — granularidade do DB</div>
+    <p style="margin:0">Cada BOOK reporta o WINM26 equity leg em ~83 rows (uma por constituinte IBOV já beta-decomposta pelo engine). A soma dessas 83 rows = exposição total beta-adjusted do book ao WIN. Validado: 42.63% de NAV para o QUANT em 16/04/2026.</p>
+  </div>
+
+  <h3>Passo 3 — composição do IBOV</h3>
+  <pre>
+<span class="kw">SELECT</span> <span class="str">"INSTRUMENT"</span> <span class="kw">AS</span> ticker, <span class="str">"VALUE"</span> <span class="kw">AS</span> weight
+<span class="kw">FROM</span>  public.<span class="str">"EQUITIES_COMPOSITION"</span>
+<span class="kw">WHERE</span> <span class="str">"LIST_NAME"</span> = <span class="str">'IBOV'</span>
+  <span class="kw">AND</span> <span class="str">"DATE"</span> = (<span class="kw">SELECT</span> <span class="kw">MAX</span>(<span class="str">"DATE"</span>) <span class="kw">FROM</span> ... <span class="kw">WHERE</span> <span class="str">"DATE"</span> ≤ data_ref)</pre>
+
+  <h3>Fórmula de decomposição</h3>
+  <div class="formula">
+    <span class="lbl">Decomposição do WIN por constituinte</span>
+    from_win(ticker) = win_equity_delta × weight_ibov(ticker)
+  </div>
+  <div class="formula">
+    <span class="lbl">Exposição net por nome</span>
+    net(ticker) = direct(ticker) + from_win(ticker)
+  </div>
+  <div class="formula">
+    <span class="lbl">Normalização</span>
+    net_pct_NAV = net × 100 / NAV
+  </div>
+
+  <h3>Sumário</h3>
+  <ul>
+    <li><b>Gross L</b> = soma dos net positivos (em % NAV)</li>
+    <li><b>Gross S</b> = soma dos net negativos</li>
+    <li><b>Net</b> = Gross L + Gross S</li>
+    <li><b>Top 8 L / Top 8 S</b> ordenados por |net|</li>
+  </ul>
+</section>
+
+<!-- 8. DIST 252d -->
+<section id="dist252">
+  <h2>8. Report · Distribuição 252d (Backward / Forward)</h2>
+  <p><span class="tag macro">MACRO</span><span class="tag evo">EVOLUTION</span></p>
+
+  <p>Usa a tabela pré-computada <code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code>.
+  Cada <code>PORTIFOLIO_DATE</code> produz uma série <code>W</code> dos últimos ~252
+  dias, onde <code>W</code> é o PnL hipotético (em bps) da carteira daquela data
+  aplicada aos retornos de cada <code>DATE_SYNTHETIC_POSITION</code>.</p>
+
+  <h3>Portfolios disponíveis</h3>
+  <ul>
+    <li><b>Fundo</b>: MACRO, EVOLUTION</li>
+    <li><b>PM (MACRO)</b>: CI, LF, JD, RJ, QM</li>
+    <li><b>Fator (MACRO)</b>: RF-BZ, RF-DM, RF-EM, FX-BRL, FX-DM, FX-EM, RV-BZ, RV-DM, RV-EM, COMMODITIES, P-Metals</li>
+    <li><b>QUANT</b>: Bracco, Quant_PA, SIST, SIST_COMMO, SIST_FX, SIST_RF, SIST_GLOBAL</li>
+  </ul>
+
+  <h3>Backward 252d</h3>
+  <p><b>PORTIFOLIO_DATE = D−1</b> (carteira de ontem).
+  Responde: <i>"o movimento de hoje foi esperado ou extremo vs histórico?"</i></p>
+
+  <div class="formula">
+    <span class="lbl">Percentil ordinal</span>
+    pct = |{i : W_i &lt; DIA_today}| / N × 100
+  </div>
+  <div class="formula">
+    <span class="lbl">Número de desvios-padrão</span>
+    #σ = DIA_today / σ(W)
+  </div>
+  <p>Colunas: <code>Tipo · Nome · DIA · Percentil · #σ</code>.
+  Leitura: <code>pct &lt; 10</code> ou <code>&gt; 90</code> = cauda; <code>|#σ| &gt; 2</code> = evento raro.</p>
+
+  <h3>Forward 252d</h3>
+  <p><b>PORTIFOLIO_DATE = D</b> (carteira de hoje).
+  Responde: <i>"dado a carteira que carrego agora, o que esperar em P&L diário?"</i></p>
+
+  <div class="formula">
+    <span class="lbl">Estatísticas</span>
+    Min  = min(W) &nbsp;·&nbsp; Max = max(W) &nbsp;·&nbsp; Média = mean(W) &nbsp;·&nbsp; σ = std(W)<br/>
+    VaR 95  = percentile(W, 5)   <span style="color:var(--muted)">// cauda de perda</span><br/>
+    VaR +95 = percentile(W, 95)  <span style="color:var(--muted)">// cauda de ganho (simétrica)</span>
+  </div>
+  <p>Colunas: <code>Tipo · Nome · Min · VaR 95 · Média · VaR +95 · Max · σ</code>.</p>
+
+  <div class="box info">
+    <div class="box-head">UI</div>
+    <p style="margin:0">Toggle Backward/Forward dentro do mesmo card, feito em JS
+    (função <code>setDistMode</code>). CSV export pega só a view visível.</p>
+  </div>
+</section>
+
+<!-- 9. UNIVERSAIS -->
+<section id="universais">
+  <h2>9. Regras universais · Sort + CSV</h2>
+
+  <h3>Sort automático em qualquer <code>&lt;th&gt;</code></h3>
+  <p>Função <code>attachUniversalSort()</code> roda em <code>DOMContentLoaded</code>,
+  varre todas as tabelas e anexa handler de click nos headers. Para desligar
+  numa tabela específica (ex: Risk Monitor com só 2 linhas):</p>
+  <pre>&lt;table class=<span class="str">"metric-table"</span> data-no-sort=<span class="str">"1"</span>&gt;</pre>
+  <p>Tabelas com sort custom (Exposure usa <code>sortTable(tbody, col, paired)</code>)
+  são detectadas e skipadas via <code>onclick</code> contendo <code>sortTable(</code>.</p>
+
+  <h3>CSV export em cada card</h3>
+  <p>Função <code>injectCsvButtons()</code> adiciona botão <code>⤓ CSV</code>
+  em todo <code>.card-head</code> e <code>.modal-head</code>. O CSV:</p>
+  <ul>
+    <li>Inclui apenas tabelas visíveis (<code>offsetParent !== null</code>)</li>
+    <li>Respeita toggles (Backward/Forward, POSIÇÕES/PM VaR)</li>
+    <li>Nome: <code>&lt;card_title&gt;_&lt;date_picker_value&gt;.csv</code></li>
+    <li>Encoding UTF-8 com BOM (<code>\uFEFF</code>) — abre bem no Excel-PT</li>
+    <li>Escape CSV padrão: aspas em valores com vírgula/ponto-e-vírgula/aspas</li>
+  </ul>
+
+  <div class="box ok">
+    <div class="box-head">Regra do CLAUDE.md</div>
+    <p style="margin:0">Novas tabelas <b>não precisam</b> repetir nada —
+    comportamento é injetado no DOMContentLoaded a partir das classes existentes.</p>
+  </div>
+</section>
+
+<!-- 10. CALIBRACOES -->
+<section id="calibracoes">
+  <h2>10. Calibrações & armadilhas documentadas</h2>
+
+  <h3>Stress · gap vs Asset_RiscoMercado</h3>
+  <table>
+    <thead><tr><th>Fundo</th><th>Coluna DB</th><th>DB 15/abr</th><th>Oficial</th><th>Gap</th></tr></thead>
+    <tbody>
+      <tr><td>MACRO</td><td>SPECIFIC_STRESS</td><td>4.86%</td><td>4.53%</td><td>+0.33 pp</td></tr>
+      <tr><td>QUANT</td><td>MACRO_STRESS</td><td>5.53%</td><td>6.77%</td><td>−1.24 pp</td></tr>
+      <tr><td>EVOLUTION</td><td>SPECIFIC_STRESS</td><td>4.88%</td><td>4.20%</td><td>+0.68 pp</td></tr>
+    </tbody>
+  </table>
+  <p>Gap sistemático (≈1.3 pp no QUANT). Engine oficial aplica overlay
+  (concentração / haircut) que o raw do DB não captura. Usar DB como proxy
+  <b>conservador direcional</b>. Revisar após 5-10 dias (opção B: calibração
+  fator/offset ou opção C: ingerir Asset_RiscoMercado).</p>
+
+  <h3>EVOLUTION · regra D-1 obsoleta</h3>
+  <p>A regra histórica "usar D-1 para EVOLUTION" foi removida em 2026-04-18.
+  O delay D-1 é <b>contábil</b> (cota do FIC publicada em D+1 porque depende da
+  cota do master), <b>não de risco</b> — o engine faz look-through nas posições
+  do master e reporta same-day.</p>
+
+  <p>Validação empírica: 22 datas do último mês, VaR e NAV same-day em
+  <code>LOTE_FUND_STRESS_RPM</code> e <code>LOTE_TRADING_DESKS_NAV_SHARE</code>.
+  A regra ainda <b>aplica a fundos fora do lote</b> (estruturados com admin externo).</p>
+
+  <h3>QUANT · nome canônico no DB</h3>
+  <p>O fundo Galapagos Quantitativo FIM aparece como <code>QUANT</code> no banco
+  (não <code>SISTEMATICO</code>, que era o nome antigo no Excel).
+  Nos portfolios da simulação histórica ele é <code>SIST</code> e derivados
+  (<code>SIST_RF</code>, <code>SIST_FX</code>, etc.).</p>
+</section>
+
+<!-- 11. ROADMAP -->
+<section id="roadmap">
+  <h2>11. Roadmap / pendências</h2>
+
+  <h3>Fase 4 — em andamento</h3>
+  <ul>
+    <li><b>Summary page</b> — conteúdo (hoje placeholder). Heatmap fundos × métricas, top alerts, deltas D/D, orçamentos. É o Morning Call numa tela.</li>
+    <li>Mandatos ALBATROZ, IDKA_3Y, IDKA_10Y (aguardam definição de BVaR)</li>
+  </ul>
+
+  <h3>Fase 5 — analytics sugeridas (excluindo liquidez e crédito)</h3>
+  <ol>
+    <li><b>Backtest de VaR</b> — quantas vezes PnL real excedeu VaR 95% em 252 dias? Esperado ≈ 5%. É a fundação da calibração.</li>
+    <li><b>Cross-fund / firm-level overlap</b> — consolidar mesma posição aparecendo em vários fundos (QUANT dentro de Evolution, MACRO dentro de Evolution).</li>
+    <li><b>Scenario library</b> — shocks nomeados: "Fed +100bps", "BRL −5%", "S&P −3%", "Oil +20%".</li>
+    <li><b>Drawdown trajectory</b> — current DD from peak, tempo underwater, velocidade.</li>
+    <li><b>Correlation breakdown</b> — diversification benefit ao longo do tempo.</li>
+    <li><b>Style drift</b> — PM dentro do mandato (ex: RJ = Commodities; se aparece em RV-DM, alertar).</li>
+  </ol>
+</section>
+
+<footer>
+  Risk Monitor · Galapagos Capital · gerado em 2026-04-18<br/>
+  Código: <code>f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/generate_risk_report.py</code><br/>
+  Repo: <code>github.com/dfainber/RiskManager</code>
+</footer>
+</main>
+</body>
+</html>
