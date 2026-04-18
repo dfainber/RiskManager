@@ -22,7 +22,18 @@
       "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor log --oneline -5)",
       "Bash(git -C f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor remote -v)",
       "Edit(/.claude/skills/risk-data-collector/**)",
-      "Edit(/.claude/skills/risk-manager/**)"
+      "Edit(/.claude/skills/risk-manager/**)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Read(//c/Users/diego.fainberg/.claude/projects/**)",
+      "Bash(start \"\" \"data/morning-calls/2026-04-16_risk_monitor.html\")",
+      "Read(//f/Macros/DADOS/Projetos/PA_Fundos/PA_REPORTS/**)",
+      "Read(//c/Program Files/Google/Chrome/Application/**)",
+      "Read(//c/Program Files \\(x86\\)/Google/Chrome/Application/**)",
+      "Read(//c/Program Files/Microsoft/Edge/Application/**)",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless --disable-gpu --print-to-pdf=\"data/morning-calls/2026-04-16_preview.pdf\" \"file:///f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/data/morning-calls/2026-04-16_risk_monitor.html\")"
     ]
   }
 }

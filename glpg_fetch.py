@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -35,15 +36,33 @@ _DB_USER = _env("GLPG_DB_USER",     "svc_automation")
 _DB_PASS = _env("GLPG_DB_PASSWORD", "")
 
 
-def read_sql(query: str) -> pd.DataFrame:
-    """Execute a SELECT query and return a DataFrame."""
-    conn = psycopg2.connect(
+# Per-thread connection cache — each thread keeps one live connection and reuses it
+# across multiple read_sql() calls. Cuts ~50-100ms handshake overhead per query.
+_tl = threading.local()
+
+
+def _get_conn():
+    c = getattr(_tl, "conn", None)
+    if c is not None and c.closed == 0:
+        return c
+    c = psycopg2.connect(
         host=_DB_HOST, port=int(_DB_PORT), dbname=_DB_NAME,
         user=_DB_USER, password=_DB_PASS,
         connect_timeout=30,
         options="-c statement_timeout=120000",
     )
+    _tl.conn = c
+    return c
+
+
+def read_sql(query: str) -> pd.DataFrame:
+    """Execute a SELECT query and return a DataFrame. Reuses a per-thread connection."""
+    conn = _get_conn()
     try:
         return pd.read_sql(query, conn)
-    finally:
-        conn.close()
+    except psycopg2.Error:
+        # If the connection got poisoned, drop it so next call gets a fresh one.
+        try: conn.close()
+        except Exception: pass
+        _tl.conn = None
+        raise

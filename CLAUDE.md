@@ -128,24 +128,54 @@ dashboards originais.
 
 **Fase 4 — entregues até 2026-04-18:**
 - Navegação 3-modos (Summary / Por Fundo / Por Report) via URL hash, section registry
-- Single-Name QUANT (decomposição do WIN em IBOV constituintes, Top 8 L/S) via modal
-- Distribuição 252d com toggle Backward/Forward (usa `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
+- Single-Name inline (QUANT + EVOLUTION com look-through, Bracco/Quant_PA/FMN/FCO/FLO/Frontier/Macro CI_COMMODITIES), com **BOVA11** exploded via lista IBOV, **SMAL11** via SMLLBV, **ADR/ADR Options** mapeados via `PRIMITIVE_NAME` regex `^[A-Z]{4}[0-9]{1,2}$` (exclui BABA→'9988 HK'), Gross absoluto no header, coluna "From Idx" agregando WIN+BOVA+SMAL
+- Distribuição 252d com toggle Backward/Forward
 - Brand azul Galapagos — logo tortoise, Gadugi→Inter, JetBrains Mono
-- CSS variables, cards unificados, modal system
-- Regras universais: **sort em toda `<th>`** + **CSV export em todo card** (injetados no DOMContentLoaded)
-- Column "VaR%" → "VaR (bps)" (unidade correta)
-- σ rotulado como "(bps)" — daily bps per instrumento
+- CSS variables, cards unificados, regras universais (sort + CSV em todo card)
+- **Fund switcher por report** generalizado (.report-fund-switcher) — Por Report > X com ≥2 fundos
+- **Performance Attribution hierárquico** (`fetch_pa_leaves` + `build_pa_section_hier`):
+  - Toggle **Por Classe** (CLASSE→PRODUCT) / **Por Livro** (LIVRO→PRODUCT). EVO Livro tem 3 níveis: Strategy (Macro/Quant/Equities/Crédito) → Livro → PRODUCT
+  - Renames: Macro_JD→JD, Macro_LF→LF, Macro_RJ→RJ, Macro_MD→MD, Macro_QM→QM, Macro_AC/DF/FG idem
+  - Ordem default fixa inspirada no Excel PA (`_PA_ORDER_CLASSE`, `_PA_ORDER_LIVRO`, `_PA_ORDER_STRATEGY`) com tiebreak |YTD| desc
+  - Pinned-bottom sem sort: Caixa, Caixa USD, Taxas e Custos, Custos
+  - Sort clicável nas 4 colunas DIA/MTD/YTD/12M preservando hierarquia
+  - Footer 3-linhas: Total Alpha · Benchmark (CDI) · Retorno Nominal (soma)
+  - Tudo em % com 2 decimais (era bps)
+  - **Heatmap** nas células de métrica (alpha 0.14, sutil)
+  - **Lazy render** + **Expand/Collapse All** + sort que preserva pinned
+  - HTML 4 MB → 0.9 MB (77% menor)
+- **ALBATROZ onboarded** (5º fundo):
+  - PA completo (via `FUNDO='ALBATROZ'` em `REPORT_ALPHA_ATRIBUTION`)
+  - **Exposure RF** em `build_albatroz_exposure` — resumo por indexador (Pré / IPCA / IGP-M / CDI / Outros) + top 15 posições por |DV01|. DV01 ≈ DELTA × MOD_DURATION × 0.0001
+  - **Risk Budget** 150 bps/mês sem carry (`build_albatroz_risk_budget`)
+  - Confirmado: ALBATROZ **não tem VaR/Stress** em `LOTE_FUND_STRESS_RPM` — bloqueado até descobrir fonte
+- **Summary page** completa (substituiu o placeholder):
+  - Status consolidado (grid 5 fundos × DIA/MTD/YTD/12M + VaR util + Stop util + Δ VaR D-1)
+  - Alerts (movido do rodapé para Summary)
+  - Comments — Outliers do dia (|z| ≥ 2σ vs 90d + |contrib| ≥ 3 bps)
+  - Top Movers — DIA com toggle Livro/Classe (Caixa/Custos/Taxas excluídos)
+  - Mudanças Significativas D-0 vs D-1 — MACRO em PM×fator, outros em PRODUCT_CLASS → fator agregado (via `fetch_fund_position_changes`)
+- **Novo report "Análise"** por fundo (primeiro tab) — replica Outliers + Top Movers + Mudanças Significativas focado em um fundo só
+- **Ordem de reports finalizada:** Análise → PA → Risk Monitor → Exposure → Single-Name → Distribuição 252d → Risk Budget
+- **PDF export browser-native** — dois botões no header: "⇣ PDF (aba)" imprime a aba atual · "⇣ PDF (completo)" mostra todas seções. `@media print` remapeia CSS vars para paleta clara (fundo branco, verde #0e7a32, vermelho #a8001a), A4 landscape, page-breaks em cards
+- **Performance:**
+  - 16 fetches paralelos via `ThreadPoolExecutor(max_workers=12)` — total ~5.6s (fetches em ~3.3s)
+  - Dust filter em `fetch_pa_leaves` (drop leaves todos zero)
+  - Connection reuse por thread em `glpg_fetch.py` (`threading.local`)
 
 **Fase 4 — pendente:**
-- **Summary page** (conteúdo — hoje é placeholder "em construção"): heatmap fundos × métricas, top alerts, deltas D/D, orçamentos
+- **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
+- **(A) Mudanças Significativas** já cobre os 5 fundos; **(B) Main Risks** fica para próxima
 - Backtest de VaR (diagnóstico de calibração)
 - Cross-fund / firm-level overlap (consolidado por instrumento/emissor)
 - Scenario library (named shocks)
 - Drawdown trajectory (tempo underwater, velocidade)
 - Correlation breakdown (diversification benefit ao longo do tempo)
 - Style drift (PM vs mandato)
+- ALBATROZ: descobrir fonte VaR/Stress + definir mandato + clarificar sign convention LFT
+- Filter/search inline no PA (lazy-render-aware)
 
-Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) para o roadmap de analytics priorizado.
+Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) e [memory/project_todo_session_2026_04_18](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_session_2026_04_18.md) para o backlog detalhado.
 
 ---
 

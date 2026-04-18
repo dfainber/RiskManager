@@ -6,6 +6,7 @@ Usage: python generate_risk_report.py [YYYY-MM-DD]
 import sys
 import base64
 import io
+import json
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -545,57 +546,393 @@ def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
 
     return expo, var_df, aum
 
-def fetch_quant_single_names(date_str: str = DATA_STR) -> tuple:
-    """QUANT single-name L/S exposure with IBOV future (WIN) decomposed into constituents."""
+_ETF_TO_LIST = {"BOVA11": "IBOV", "SMAL11": "SMLLBV"}  # ETF → EQUITIES_COMPOSITION list
+
+
+def _fetch_single_names_generic(date_str: str, desk: str, source: str,
+                                 extra_where: str = "") -> tuple:
+    """
+    Generic BR single-name L/S with index explosion.
+
+    Direct equities plus decomposition of:
+      - IBOV future (WIN) → IBOV constituents
+      - BOVA11 ETF       → IBOV constituents
+      - SMAL11 ETF       → SMLLBV constituents
+
+    Parameters
+    ----------
+    desk   : TRADING_DESK filter (None → no filter, any desk that matches `source`)
+    source : TRADING_DESK_SHARE_SOURCE filter (the fund whose look-through we want)
+    extra_where : optional extra predicate (e.g. BOOK IN (...)) added to both direct + fut queries.
+
+    Returns
+    -------
+    (merged_df, nav, index_legs) or (None, None, None) if no NAV.
+      merged_df columns: ticker, direct, from_idx, net, pct_nav
+      index_legs: dict with per-source deltas {'WIN': x, 'BOVA11': y, 'SMAL11': z}
+    """
     nav_df = read_sql(f"""
         SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = 'Galapagos Quantitativo FIM'
+        WHERE "TRADING_DESK" = '{source}'
           AND "VAL_DATE"     = DATE '{date_str}'
     """)
     if nav_df.empty:
         return None, None, None
     nav = float(nav_df["NAV"].iloc[0])
 
-    direct = read_sql(f"""
+    desk_clause = f"AND \"TRADING_DESK\" = '{desk}'" if desk else ""
+
+    direct_all = read_sql(f"""
         SELECT "PRODUCT" AS ticker, SUM("DELTA") AS direct
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-        WHERE "TRADING_DESK"              = 'Galapagos Quantitativo FIM'
-          AND "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Quantitativo FIM'
+        WHERE "TRADING_DESK_SHARE_SOURCE" = '{source}'
+          {desk_clause}
           AND "VAL_DATE"                  = DATE '{date_str}'
-          AND "PRODUCT_CLASS"             = 'Equity'
+          AND "PRODUCT_CLASS"             IN ('Equity','Equity Receipts')
           AND "IS_STOCK"                  = TRUE
+          {extra_where}
         GROUP BY "PRODUCT"
     """)
+
+    # split ETFs that should be exploded vs. stocks kept as direct
+    etf_mask = direct_all["ticker"].isin(_ETF_TO_LIST)
+    direct_etf = direct_all[etf_mask].copy()
+    direct    = direct_all[~etf_mask].copy()
+
+    # ADR and ADR-option equity leg → map to BR ticker via PRIMITIVE_NAME.
+    # Filter: PRIMITIVE_CLASS='Equity' drops FX legs; regex keeps only BR-style
+    # tickers (VALE3, PETR4, ITSA11 etc.) and excludes foreign primitives (e.g. BABA → '9988 HK').
+    adr = read_sql(f"""
+        SELECT "PRIMITIVE_NAME" AS ticker, SUM("DELTA") AS adr_delta
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK_SHARE_SOURCE" = '{source}'
+          {desk_clause}
+          AND "VAL_DATE"                  = DATE '{date_str}'
+          AND "PRODUCT_CLASS"             IN ('ADR','ADR Options')
+          AND "PRIMITIVE_CLASS"           = 'Equity'
+          AND "PRIMITIVE_NAME"            ~ '^[A-Z]{{4}}[0-9]{{1,2}}$'
+          {extra_where}
+        GROUP BY "PRIMITIVE_NAME"
+    """)
+    adr_total = float(adr["adr_delta"].sum()) if not adr.empty else 0.0
+    if not adr.empty:
+        direct = direct.merge(adr, on="ticker", how="outer").fillna(0.0)
+        direct["direct"] = direct["direct"] + direct["adr_delta"]
+        direct = direct.drop(columns="adr_delta")
 
     fut = read_sql(f"""
         SELECT SUM("DELTA") AS delta
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-        WHERE "TRADING_DESK"              = 'Galapagos Quantitativo FIM'
-          AND "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Quantitativo FIM'
+        WHERE "TRADING_DESK_SHARE_SOURCE" = '{source}'
+          {desk_clause}
           AND "VAL_DATE"                  = DATE '{date_str}'
           AND "PRODUCT_CLASS"             = 'IBOVSPFuture'
           AND "PRIMITIVE_CLASS"           = 'Equity'
+          {extra_where}
     """)
     fut_delta = float(fut["delta"].iloc[0]) if not fut.empty and pd.notna(fut["delta"].iloc[0]) else 0.0
 
-    ibov = read_sql(f"""
-        SELECT "INSTRUMENT" AS ticker, "VALUE" AS weight
-        FROM public."EQUITIES_COMPOSITION"
-        WHERE "LIST_NAME" = 'IBOV'
-          AND "DATE" = (
-                SELECT MAX("DATE") FROM public."EQUITIES_COMPOSITION"
-                WHERE "LIST_NAME" = 'IBOV' AND "DATE" <= DATE '{date_str}'
-          )
+    # latest composition per list (IBOV + SMLLBV) as of date_str
+    compo = read_sql(f"""
+        WITH latest AS (
+          SELECT "LIST_NAME", MAX("DATE") AS d
+          FROM public."EQUITIES_COMPOSITION"
+          WHERE "LIST_NAME" IN ('IBOV','SMLLBV')
+            AND "DATE" <= DATE '{date_str}'
+          GROUP BY "LIST_NAME"
+        )
+        SELECT ec."LIST_NAME" AS list, ec."INSTRUMENT" AS ticker, ec."VALUE" AS weight
+        FROM public."EQUITIES_COMPOSITION" ec
+        JOIN latest l
+          ON l."LIST_NAME" = ec."LIST_NAME" AND l.d = ec."DATE"
     """)
-    ibov["from_win"] = fut_delta * ibov["weight"]
 
-    merged = pd.merge(direct, ibov[["ticker", "from_win"]], on="ticker", how="outer").fillna(0.0)
-    merged["net"]     = merged["direct"] + merged["from_win"]
-    merged["pct_nav"] = merged["net"] * 100 / nav
-    merged = merged[merged["net"].abs() > 1].copy()  # drop dust
+    # individual ETF deltas for stats breakdown
+    bova_delta = float(direct_etf.loc[direct_etf["ticker"] == "BOVA11", "direct"].sum()) if not direct_etf.empty else 0.0
+    smal_delta = float(direct_etf.loc[direct_etf["ticker"] == "SMAL11", "direct"].sum()) if not direct_etf.empty else 0.0
+
+    # IBOV explosion = fut (WIN) + BOVA11
+    ibov_w = compo[compo["list"] == "IBOV"][["ticker", "weight"]].copy()
+    ibov_w["from_idx_ibov"] = (fut_delta + bova_delta) * ibov_w["weight"]
+    # SMLLBV explosion = SMAL11
+    smll_w = compo[compo["list"] == "SMLLBV"][["ticker", "weight"]].copy()
+    smll_w["from_idx_smll"] = smal_delta * smll_w["weight"]
+
+    merged = direct.merge(ibov_w[["ticker", "from_idx_ibov"]], on="ticker", how="outer")
+    merged = merged.merge(smll_w[["ticker", "from_idx_smll"]], on="ticker", how="outer").fillna(0.0)
+    merged["from_idx"] = merged["from_idx_ibov"] + merged["from_idx_smll"]
+    merged["net"]      = merged["direct"] + merged["from_idx"]
+    merged["pct_nav"]  = merged["net"] * 100 / nav
+    merged = merged[merged["net"].abs() > 1].copy()
     merged = merged.sort_values("pct_nav", key=lambda s: s.abs(), ascending=False)
+    merged = merged[["ticker", "direct", "from_idx", "net", "pct_nav"]]
 
-    return merged, nav, fut_delta
+    index_legs = {
+        "WIN":    fut_delta,
+        "BOVA11": bova_delta,
+        "SMAL11": smal_delta,
+        "ADR":    adr_total,
+    }
+    return merged, nav, index_legs
+
+
+def fetch_quant_single_names(date_str: str = DATA_STR) -> tuple:
+    """QUANT single-name L/S — only rows from the QUANT desk (no FIC look-through)."""
+    return _fetch_single_names_generic(
+        date_str, desk="Galapagos Quantitativo FIM", source="Galapagos Quantitativo FIM"
+    )
+
+
+def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
+    """
+    RF exposure snapshot for ALBATROZ — position-level from LOTE_PRODUCT_EXPO.
+    Returns (df, nav) where df columns are:
+      BOOK, PRODUCT_CLASS, PRODUCT, delta_brl, mod_dur (years), dv01_brl (R$/bp), indexador
+    DV01 ≈ |DELTA × MOD_DURATION × 0.0001|.
+    """
+    nav_df = read_sql(f"""
+        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+        WHERE "TRADING_DESK" = 'GALAPAGOS ALBATROZ FIRF LP'
+          AND "VAL_DATE"     = DATE '{date_str}'
+    """)
+    if nav_df.empty:
+        return None, None
+    nav = float(nav_df["NAV"].iloc[0])
+
+    df = read_sql(f"""
+        SELECT "BOOK", "PRODUCT_CLASS", "PRODUCT",
+               SUM("DELTA")                                                 AS delta_brl,
+               MAX("MOD_DURATION")                                          AS mod_dur,
+               SUM("DELTA" * COALESCE("MOD_DURATION", 0) * 0.0001)          AS dv01_brl
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK"              = 'GALAPAGOS ALBATROZ FIRF LP'
+          AND "TRADING_DESK_SHARE_SOURCE" = 'GALAPAGOS ALBATROZ FIRF LP'
+          AND "VAL_DATE"                  = DATE '{date_str}'
+          AND "DELTA" <> 0
+        GROUP BY "BOOK", "PRODUCT_CLASS", "PRODUCT"
+    """)
+    if df.empty:
+        return df, nav
+    cls_to_idx = {
+        "DI1Future": "Pré", "NTN-F": "Pré", "LTN": "Pré",
+        "NTN-B": "IPCA",    "DAP Future": "IPCA", "DAPFuture": "IPCA",
+        "NTN-C": "IGP-M",   "DAC Future": "IGP-M",
+        "LFT": "CDI",       "Cash": "CDI",    "Overnight": "CDI",
+        "Compromissada": "CDI",
+    }
+    df["indexador"] = df["PRODUCT_CLASS"].map(cls_to_idx).fillna("Outros")
+    for c in ("delta_brl", "mod_dur", "dv01_brl"):
+        df[c] = df[c].astype(float).fillna(0.0)
+    return df, nav
+
+
+def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
+    """RF exposure card for ALBATROZ — summary by indexador + top positions by |DV01|."""
+    if df is None or df.empty or not nav:
+        return ""
+
+    # Duration-weighted aggregate (only rows with non-zero delta contribute)
+    abs_delta = df["delta_brl"].abs().sum()
+    dur_w = (df["delta_brl"].abs() * df["mod_dur"]).sum() / abs_delta if abs_delta else 0.0
+    total_dv01 = df["dv01_brl"].sum()
+    total_delta = df["delta_brl"].sum()
+
+    # ── By Indexador summary ───────────────────────────────────────────
+    idx_order = ["Pré", "IPCA", "IGP-M", "CDI", "Outros"]
+    by_idx = df.groupby("indexador").agg(
+        delta_brl=("delta_brl", "sum"),
+        dv01_brl=("dv01_brl", "sum"),
+        gross_brl=("delta_brl", lambda s: s.abs().sum()),
+        dur_w=("delta_brl", lambda s: (s.abs() * df.loc[s.index, "mod_dur"]).sum() / s.abs().sum()
+                                     if s.abs().sum() else 0.0),
+    ).reset_index()
+    by_idx = by_idx.set_index("indexador").reindex(idx_order).reset_index().dropna(how="all", subset=["delta_brl"])
+
+    def bp_pct(v_brl):
+        pct = v_brl * 100 / nav
+        color = "var(--up)" if v_brl >= 0 else "var(--down)"
+        return f'<td class="t-num mono" style="color:{color}">{pct:+.2f}%</td>'
+
+    def mm(v):
+        return f"{v/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def mm_cell(v):
+        return f'<td class="t-num mono" style="color:var(--muted)">{mm(v)}</td>'
+
+    def dv01_cell(v):
+        if abs(v) < 1:
+            return '<td class="t-num mono" style="color:var(--muted)">—</td>'
+        color = "var(--up)" if v >= 0 else "var(--down)"
+        return f'<td class="t-num mono" style="color:{color}">{v/1e3:+,.1f}</td>'
+
+    def dur_cell(v):
+        if v is None or abs(v) < 0.01:
+            return '<td class="t-num mono" style="color:var(--muted)">—</td>'
+        return f'<td class="t-num mono" style="color:var(--muted)">{v:.2f}</td>'
+
+    idx_rows = "".join(
+        f'<tr>'
+        f'<td class="pa-name" style="font-weight:600">{r.indexador}</td>'
+        + bp_pct(r.delta_brl)
+        + mm_cell(r.gross_brl)
+        + dur_cell(r.dur_w)
+        + dv01_cell(r.dv01_brl)
+        + "</tr>"
+        for r in by_idx.itertuples(index=False)
+    )
+    idx_total_row = (
+        '<tr class="pa-total-row">'
+        '<td class="pa-name" style="font-weight:700">Total</td>'
+        + bp_pct(total_delta)
+        + f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{mm(abs_delta)}</td>'
+        + (f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{dur_w:.2f}</td>'
+           if dur_w else '<td class="t-num mono" style="color:var(--muted)">—</td>')
+        + (f'<td class="t-num mono" style="font-weight:700; color:{"var(--up)" if total_dv01>=0 else "var(--down)"}">{total_dv01/1e3:+,.1f}</td>'
+           if abs(total_dv01) >= 1 else '<td class="t-num mono" style="color:var(--muted)">—</td>')
+        + "</tr>"
+    )
+
+    # ── Top positions by |DV01| ────────────────────────────────────────
+    top = df.copy()
+    top["abs_dv01"] = top["dv01_brl"].abs()
+    top = top.sort_values("abs_dv01", ascending=False).head(15)
+    pos_rows = "".join(
+        f'<tr>'
+        f'<td class="pa-name">{r.PRODUCT}</td>'
+        f'<td class="pa-name" style="color:var(--muted); font-size:11px">{r.indexador}</td>'
+        f'<td class="pa-name" style="color:var(--muted); font-size:11px">{r.BOOK}</td>'
+        + bp_pct(r.delta_brl)
+        + dur_cell(r.mod_dur)
+        + dv01_cell(r.dv01_brl)
+        + "</tr>"
+        for r in top.itertuples(index=False)
+    )
+
+    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposure RF</span>
+        <span class="card-sub">— ALBATROZ · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {total_dv01/1e3:+,.1f}k R$/bp</span>
+      </div>
+
+      <div class="sn-inline-stats mono" style="margin-bottom:8px">
+        <span style="color:var(--muted); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase">Por Indexador</span>
+      </div>
+      <table class="pa-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Indexador</th>
+          <th style="text-align:right">Net (%NAV)</th>
+          <th style="text-align:right">Gross (R$M)</th>
+          <th style="text-align:right">Mod Dur (y)</th>
+          <th style="text-align:right">DV01 (kR$/bp)</th>
+        </tr></thead>
+        <tbody>{idx_rows}</tbody>
+        <tfoot>{idx_total_row}</tfoot>
+      </table>
+
+      <div class="sn-inline-stats mono" style="margin:16px 0 8px">
+        <span style="color:var(--muted); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase">Top 15 Posições — por |DV01|</span>
+      </div>
+      <table class="pa-table">
+        <thead><tr>
+          <th style="text-align:left">Produto</th>
+          <th style="text-align:left">Idx</th>
+          <th style="text-align:left">Book</th>
+          <th style="text-align:right">Net (%NAV)</th>
+          <th style="text-align:right">Mod Dur (y)</th>
+          <th style="text-align:right">DV01 (kR$/bp)</th>
+        </tr></thead>
+        <tbody>{pos_rows}</tbody>
+      </table>
+    </section>"""
+
+
+ALBATROZ_STOP_BPS = 150.0  # monthly loss budget (bps)
+
+
+def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
+    """
+    Risk Budget card for ALBATROZ — 150 bps/month stop.
+    Reuses the stop_bar_svg helper from the MACRO stop monitor.
+    Pulls MTD + YTD alpha from the already-fetched `df_pa` (REPORT_ALPHA_ATRIBUTION leaves).
+    """
+    if df_pa is None or df_pa.empty:
+        return ""
+    alb = df_pa[df_pa["FUNDO"] == "ALBATROZ"]
+    if alb.empty:
+        return ""
+
+    mtd_bps = float(alb["mtd_bps"].sum())
+    ytd_bps = float(alb["ytd_bps"].sum())
+    dia_bps = float(alb["dia_bps"].sum())
+
+    budget_abs = ALBATROZ_STOP_BPS
+    consumed_bps = abs(mtd_bps) if mtd_bps < 0 else 0.0
+    consumed_pct = consumed_bps / budget_abs * 100.0
+
+    # Status semáforo
+    if consumed_pct >= 100:
+        status_label, status_color = "🔴 STOP", "var(--down)"
+    elif consumed_pct >= 70:
+        status_label, status_color = "🟡 ATENÇÃO", "var(--warn)"
+    elif consumed_pct >= 50:
+        status_label, status_color = "🟡 SOFT", "var(--warn)"
+    else:
+        status_label, status_color = "🟢 OK", "var(--up)"
+
+    margem_bps = budget_abs + mtd_bps  # distance from stop (in bps, positive = room left)
+    bar = stop_bar_svg(budget_abs, mtd_bps, budget_abs * 1.2, width=340, height=48)
+
+    dia_color = "var(--up)" if dia_bps >= 0 else "var(--down)"
+    mtd_color = "var(--up)" if mtd_bps >= 0 else "var(--down)"
+    ytd_color = "var(--up)" if ytd_bps >= 0 else "var(--down)"
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Risk Budget</span>
+        <span class="card-sub">— ALBATROZ · stop mensal {budget_abs:.0f} bps · alpha vs. CDI</span>
+      </div>
+      <table class="metric-table" data-no-sort="1" style="width:100%">
+        <thead>
+          <tr class="col-headers">
+            <th>Status</th>
+            <th style="text-align:right">DIA</th>
+            <th style="text-align:right">MTD</th>
+            <th style="text-align:right">YTD</th>
+            <th>Consumo do stop</th>
+            <th style="text-align:right">Margem</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="metric-row">
+            <td class="metric-name"><span style="color:{status_color}; font-weight:700">{status_label}</span></td>
+            <td class="value-cell mono" style="color:{dia_color}">{dia_bps:+.1f} bps</td>
+            <td class="value-cell mono" style="color:{mtd_color}; font-weight:700">{mtd_bps:+.1f} bps</td>
+            <td class="value-cell mono" style="color:{ytd_color}">{ytd_bps:+.1f} bps</td>
+            <td class="bar-cell">{bar}</td>
+            <td class="util-cell mono" style="color:{status_color}; font-weight:700">{margem_bps:+.1f} bps</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="bar-legend">
+        consumo: <span style="color:{status_color}; font-weight:600">{consumed_pct:.0f}%</span> do stop
+        &nbsp;·&nbsp; stop em <span class="mono">-{budget_abs:.0f} bps</span>
+        &nbsp;·&nbsp; <span style="color:var(--muted)">origem = início do mês</span>
+      </div>
+    </section>"""
+
+
+def fetch_evolution_single_names(date_str: str = DATA_STR) -> tuple:
+    """
+    EVOLUTION single-name L/S — full look-through into QUANT (Bracco, Quant_PA),
+    Evo Strategy (FMN_*, FCO, AÇÕES BR LONG), Frontier Ações, and Macro FIM (CI_COMMODITIES).
+    ADRs / ADR Options / ETFs / FIIs excluded automatically by the PRODUCT_CLASS filter.
+    """
+    return _fetch_single_names_generic(
+        date_str, desk=None, source="Galapagos Evolution FIC FIM CP"
+    )
 
 def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: float,
                            df_expo_d1: pd.DataFrame = None, df_var_d1: pd.DataFrame = None,
@@ -1050,8 +1387,14 @@ function toggleDrillPM(id) {
       <div id="macro-pm-view" style="display:none">{global_pm_table}</div>
     </div>"""
 
-def build_quant_single_names_modal(df: pd.DataFrame, nav: float, fut_delta: float) -> str:
-    """QUANT single-name L/S — rendered inside a modal overlay (hidden by default)."""
+def build_single_names_section(fund_short: str, sub_label: str,
+                                df: pd.DataFrame, nav: float,
+                                index_legs: dict) -> str:
+    """
+    Inline single-name L/S section for a given fund. Full detail (stats header + Top 8 L/S).
+    `index_legs` is a dict of {leg_name: delta_in_brl} for each exploded index leg
+    (WIN, BOVA11, SMAL11 …). Zero legs are hidden from the header.
+    """
     if df is None or df.empty:
         return ""
 
@@ -1059,6 +1402,7 @@ def build_quant_single_names_modal(df: pd.DataFrame, nav: float, fut_delta: floa
     shorts = df[df["net"] < 0].sort_values("net", ascending=True).head(8)
     gross_l = df.loc[df["net"] > 0, "net"].sum()
     gross_s = df.loc[df["net"] < 0, "net"].sum()
+    gross   = abs(gross_l) + abs(gross_s)
     net     = gross_l + gross_s
     n_total = len(df)
     n_long  = int((df["net"] > 0).sum())
@@ -1067,15 +1411,15 @@ def build_quant_single_names_modal(df: pd.DataFrame, nav: float, fut_delta: floa
     def fmt_row(row):
         net_pct    = row["net"]      * 100 / nav
         direct_pct = row["direct"]   * 100 / nav
-        from_pct   = row["from_win"] * 100 / nav
+        idx_pct    = row["from_idx"] * 100 / nav
         color      = "var(--up)" if row["net"] > 0 else "var(--down)"
-        dir_disp   = f"{direct_pct:+.2f}%" if abs(row["direct"]) > 1 else "—"
-        win_disp   = f"{from_pct:+.2f}%"   if abs(row["from_win"]) > 1 else "—"
+        dir_disp   = f"{direct_pct:+.2f}%" if abs(row["direct"])   > 1 else "—"
+        idx_disp   = f"{idx_pct:+.2f}%"    if abs(row["from_idx"]) > 1 else "—"
         return (
             f'<tr>'
             f'<td class="t-name">{row["ticker"]}</td>'
             f'<td class="t-num mono">{dir_disp}</td>'
-            f'<td class="t-num mono">{win_disp}</td>'
+            f'<td class="t-num mono">{idx_disp}</td>'
             f'<td class="t-num mono" style="color:{color}; font-weight:700">{net_pct:+.2f}%</td>'
             f'</tr>'
         )
@@ -1094,37 +1438,38 @@ def build_quant_single_names_modal(df: pd.DataFrame, nav: float, fut_delta: floa
             <thead><tr>
               <th style="text-align:left">Ticker</th>
               <th style="text-align:right">Direct</th>
-              <th style="text-align:right">From WIN</th>
+              <th style="text-align:right">From Idx</th>
               <th style="text-align:right">Net %NAV</th>
             </tr></thead>
             <tbody>{body}</tbody>
           </table>
         </div>"""
 
-    win_pct = fut_delta * 100 / nav if nav else 0.0
+    # Breakdown of the index-explosion leg — only show non-zero sources
+    leg_bits = []
+    for leg_name, delta in (index_legs or {}).items():
+        if nav and abs(delta) > 1:
+            leg_bits.append(f"{leg_name} {delta*100/nav:+.2f}%")
+    legs_html = (" &nbsp;|&nbsp; " + " · ".join(leg_bits)) if leg_bits else ""
+
     return f"""
-    <div id="sn-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
-      <div class="modal">
-        <div class="modal-head">
-          <div>
-            <div class="modal-title">QUANT — Single-Name Exposure</div>
-            <div class="modal-sub">após decomposição do WIN pela composição IBOV</div>
-          </div>
-          <button class="modal-close" onclick="closeSnModal()" aria-label="Fechar">×</button>
-        </div>
-        <div class="modal-stats mono">
-          Gross L <span style="color:var(--up)">{gross_l*100/nav:+.2f}%</span> &nbsp;|&nbsp;
-          Gross S <span style="color:var(--down)">{gross_s*100/nav:+.2f}%</span> &nbsp;|&nbsp;
-          Net <span style="color:var(--text)">{net*100/nav:+.2f}%</span> &nbsp;|&nbsp;
-          {n_total} names ({n_long}L / {n_short}S) &nbsp;|&nbsp;
-          WIN leg {win_pct:+.2f}%
-        </div>
-        <div class="sn-sides">
-          {side_table("TOP 8 LONG",  "var(--up)",   longs,  n_long)}
-          {side_table("TOP 8 SHORT", "var(--down)", shorts, n_short)}
-        </div>
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Single-Name Exposure</span>
+        <span class="card-sub">— {fund_short} · {sub_label}</span>
       </div>
-    </div>"""
+      <div class="sn-inline-stats mono">
+        Gross L <span style="color:var(--up)">{gross_l*100/nav:+.2f}%</span> &nbsp;|&nbsp;
+        Gross S <span style="color:var(--down)">{gross_s*100/nav:+.2f}%</span> &nbsp;|&nbsp;
+        Gross <span style="color:var(--text)">{gross*100/nav:.2f}%</span> &nbsp;|&nbsp;
+        Net <span style="color:var(--text)">{net*100/nav:+.2f}%</span> &nbsp;|&nbsp;
+        {n_total} names ({n_long}L / {n_short}S){legs_html}
+      </div>
+      <div class="sn-sides">
+        {side_table("TOP 8 LONG",  "var(--up)",   longs,  n_long)}
+        {side_table("TOP 8 SHORT", "var(--down)", shorts, n_short)}
+      </div>
+    </section>"""
 
 def _dist_entries(fund_short):
     return [p for p in _DIST_PORTFOLIOS if p[4] == fund_short]
@@ -1386,21 +1731,596 @@ ALERT_COMMENTS = {
     ("stress", "EVOLUTION"): "Stress EVOLUTION alto. Atenção especial à parcela de crédito (cotas júnior) — marcação pode subestimar perda real no cenário de stress.",
 }
 
+def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
+    """
+    Leaf-level PA rows for MACRO / QUANT / EVOLUTION / GLOBAL.
+    Grouped by (FUNDO, CLASSE, GRUPO, LIVRO, BOOK, PRODUCT) with DIA/MTD/YTD/12M in bps,
+    plus `position_brl` — the leaf's current position (POSITION on `date_str`).
+    Values are alpha (bps) vs. benchmark (q_models.REPORT_ALPHA_ATRIBUTION is alpha by design).
+    """
+    q = f"""
+    SELECT
+      "FUNDO", "CLASSE", "GRUPO", "LIVRO", "BOOK", "PRODUCT",
+      SUM(CASE WHEN "DATE" = DATE '{date_str}'
+               THEN "DIA" ELSE 0 END) * 10000 AS dia_bps,
+      SUM(CASE WHEN "DATE" >= DATE_TRUNC('month', DATE '{date_str}')
+                AND "DATE" <= DATE '{date_str}'
+               THEN "DIA" ELSE 0 END) * 10000 AS mtd_bps,
+      SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
+                AND "DATE" <= DATE '{date_str}'
+               THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
+      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+                AND "DATE" <= DATE '{date_str}'
+               THEN "DIA" ELSE 0 END) * 10000 AS m12_bps,
+      SUM(CASE WHEN "DATE" = DATE '{date_str}'
+               THEN COALESCE("POSITION",0) ELSE 0 END) AS position_brl
+    FROM q_models."REPORT_ALPHA_ATRIBUTION"
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ')
+      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" <= DATE '{date_str}'
+    GROUP BY "FUNDO","CLASSE","GRUPO","LIVRO","BOOK","PRODUCT"
+    """
+    df = read_sql(q)
+    num_cols = ["dia_bps","mtd_bps","ytd_bps","m12_bps","position_brl"]
+    df[num_cols] = df[num_cols].astype(float).fillna(0.0)
+    # Dust filter: drop leaves with zero contribution across every horizon AND no position.
+    # Keeps totals intact (dropped rows were 0 anyway) and trims ~20-30% of JSON payload.
+    dust = (
+        (df["dia_bps"].abs()     < 1e-6)
+        & (df["mtd_bps"].abs()   < 1e-6)
+        & (df["ytd_bps"].abs()   < 1e-6)
+        & (df["m12_bps"].abs()   < 1e-6)
+        & (df["position_brl"].abs() < 1e-6)
+    )
+    df = df[~dust].reset_index(drop=True)
+    return df
+
+
+_FUND_DESK_FOR_EXPO = {
+    "MACRO":     "Galapagos Macro FIM",
+    "QUANT":     "Galapagos Quantitativo FIM",
+    "EVOLUTION": "Galapagos Evolution FIC FIM CP",
+    "MACRO_Q":   "Galapagos Global Macro Q",
+    "ALBATROZ":  "GALAPAGOS ALBATROZ FIRF LP",
+}
+
+# PRODUCT_CLASS → higher-level risk factor. None = non-directional (Cash, LFT) — excluded.
+_PRODCLASS_TO_FACTOR = {
+    "DI1Future": "Pré BZ", "NTN-F": "Pré BZ", "LTN": "Pré BZ",
+    "NTN-B": "IPCA BZ", "DAP Future": "IPCA BZ", "DAPFuture": "IPCA BZ",
+    "NTN-C": "IGP-M BZ", "DAC Future": "IGP-M BZ",
+    "Equity": "Equity BR", "Equity Receipts": "Equity BR",
+    "Equity Options": "Equity BR", "IBOVSPFuture": "Equity BR",
+    "ETF BR": "Equity BR",
+    "ADR": "ADR", "ADR Options": "ADR", "ADR Receipts": "ADR",
+    "USTreasury": "Rates DM", "USTreasuryFuture": "Rates DM", "BondFuture": "Rates DM",
+    "CommodityFuture": "Commodities", "CommodityOption": "Commodities",
+    "Currencies Forward": "FX", "USDBRLFuture": "FX", "Currencies": "FX",
+    "ExchangeFuture": "FX", "FXOption": "FX",
+    # Non-directional (excluded)
+    "LFT": None, "Cash": None, "Margin": None, "Provisions and Costs": None,
+    "Overnight": None, "Compromissada": None, "ETF BR RF": None,
+}
+
+
+def fetch_fund_position_changes(short: str, date_str: str, d1_str: str) -> pd.DataFrame:
+    """
+    Factor-level %NAV exposure D-0 vs D-1 for a fund.
+    Returns df with columns (factor, pct_d0, pct_d1, delta_pp) or None if no data.
+    EVOLUTION uses SHARE_SOURCE look-through; others use own-desk rows.
+    """
+    desk = _FUND_DESK_FOR_EXPO.get(short)
+    if not desk:
+        return None
+
+    nav_df = read_sql(f"""
+        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+        WHERE "TRADING_DESK" = '{desk}' AND "VAL_DATE" = DATE '{date_str}'
+    """)
+    if nav_df.empty:
+        return None
+    nav = float(nav_df["NAV"].iloc[0])
+
+    if short == "EVOLUTION":
+        scope = f'"TRADING_DESK_SHARE_SOURCE" = \'{desk}\''
+    else:
+        scope = (f'"TRADING_DESK" = \'{desk}\' AND '
+                 f'"TRADING_DESK_SHARE_SOURCE" = \'{desk}\'')
+
+    df = read_sql(f"""
+        SELECT "VAL_DATE" AS val_date, "PRODUCT_CLASS",
+               SUM("DELTA") AS delta_brl
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE {scope}
+          AND "VAL_DATE" IN (DATE '{date_str}', DATE '{d1_str}')
+          AND "DELTA" <> 0
+        GROUP BY "VAL_DATE", "PRODUCT_CLASS"
+    """)
+    if df.empty:
+        return None
+
+    df["factor"] = df["PRODUCT_CLASS"].map(lambda pc: _PRODCLASS_TO_FACTOR.get(pc))
+    df = df[df["factor"].notna()]
+    if df.empty:
+        return None
+
+    df["pct_nav"] = df["delta_brl"] * 100 / nav
+    df["date_key"] = pd.to_datetime(df["val_date"]).dt.strftime("%Y-%m-%d")
+
+    pivot = df.pivot_table(
+        index="factor", columns="date_key", values="pct_nav",
+        aggfunc="sum", fill_value=0.0,
+    )
+    if date_str not in pivot.columns: pivot[date_str] = 0.0
+    if d1_str   not in pivot.columns: pivot[d1_str]   = 0.0
+    pivot["pct_d0"] = pivot[date_str]
+    pivot["pct_d1"] = pivot[d1_str]
+    pivot["delta"] = pivot["pct_d0"] - pivot["pct_d1"]
+    return pivot[["pct_d0", "pct_d1", "delta"]].reset_index()
+
+
+def fetch_pa_daily_per_product(date_str: str = DATA_STR, lookback_days: int = 90) -> pd.DataFrame:
+    """
+    Daily alpha per (FUNDO, LIVRO, PRODUCT) for the last `lookback_days`.
+    Used to compute per-product volatility and flag today's outliers.
+    """
+    q = f"""
+    SELECT "FUNDO", "LIVRO", "PRODUCT", "DATE",
+           SUM("DIA") * 10000 AS dia_bps
+    FROM q_models."REPORT_ALPHA_ATRIBUTION"
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ')
+      AND "DATE" >  (DATE '{date_str}' - INTERVAL '{lookback_days} days')
+      AND "DATE" <= DATE '{date_str}'
+    GROUP BY "FUNDO","LIVRO","PRODUCT","DATE"
+    HAVING ABS(SUM("DIA")) > 1e-7
+    """
+    df = read_sql(q)
+    df["DATE"] = pd.to_datetime(df["DATE"]).dt.tz_localize(None)
+    return df
+
+
+def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
+                         z_min: float = 2.0, bps_min: float = 3.0,
+                         min_obs: int = 20) -> pd.DataFrame:
+    """
+    Flags products where today's alpha contribution is both statistically unusual
+    (|z-score| >= z_min vs. prior-day std) and materially impactful (|bps| >= bps_min).
+    Excludes non-directional livros (Caixa, Taxas e Custos).
+    """
+    if df_daily is None or df_daily.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp(date_str)
+    excluded_livros = {"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}
+
+    d = df_daily[~df_daily["LIVRO"].isin(excluded_livros)]
+
+    past  = d[d["DATE"] < today]
+    today_df = d[d["DATE"] == today]
+
+    keys = ["FUNDO", "LIVRO", "PRODUCT"]
+    stats = past.groupby(keys)["dia_bps"].agg(sigma="std", n_obs="count").reset_index()
+    today_agg = today_df.groupby(keys)["dia_bps"].sum().reset_index().rename(columns={"dia_bps": "today_bps"})
+
+    merged = today_agg.merge(stats, on=keys, how="left")
+    merged["sigma"] = merged["sigma"].fillna(0.0)
+    merged["n_obs"] = merged["n_obs"].fillna(0).astype(int)
+    # Z-score; guard against tiny sigma
+    merged["z"] = 0.0
+    valid = merged["sigma"] > 0.05
+    merged.loc[valid, "z"] = merged.loc[valid, "today_bps"] / merged.loc[valid, "sigma"]
+
+    flagged = merged[
+        (merged["z"].abs() >= z_min)
+        & (merged["today_bps"].abs() >= bps_min)
+        & (merged["n_obs"] >= min_obs)
+    ].copy()
+    flagged = flagged.sort_values("today_bps", key=lambda s: s.abs(), ascending=False)
+    return flagged
+
+
+def fetch_cdi_returns(date_str: str = DATA_STR) -> dict:
+    """CDI cumulative simple-sum over DIA/MTD/YTD/12M windows (bps). Daily rate stored in ECO_INDEX."""
+    q = f"""
+    SELECT
+      SUM(CASE WHEN "DATE" = DATE '{date_str}'                      THEN "VALUE" ELSE 0 END) * 10000 AS dia_bps,
+      SUM(CASE WHEN "DATE" >= DATE_TRUNC('month', DATE '{date_str}')
+                AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS mtd_bps,
+      SUM(CASE WHEN "DATE" >= DATE_TRUNC('year',  DATE '{date_str}')
+                AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS ytd_bps,
+      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+                AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS m12_bps
+    FROM public."ECO_INDEX"
+    WHERE "INSTRUMENT" = 'CDI' AND "FIELD" = 'YIELD'
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    r = df.iloc[0]
+    return {"dia": float(r["dia_bps"]), "mtd": float(r["mtd_bps"]),
+            "ytd": float(r["ytd_bps"]), "m12": float(r["m12_bps"])}
+
+
+def _pa_escape(v) -> str:
+    """Sanitize a tree key for use inside data-path attributes."""
+    s = str(v) if v is not None and str(v) != "nan" else "—"
+    return s.replace("|", "¦").replace('"', "'")
+
+
+# PA display renames — strip "Macro_" prefix on PM names
+_PA_LIVRO_RENAMES = {
+    "Macro_JD": "JD", "Macro_LF": "LF", "Macro_RJ": "RJ",
+    "Macro_MD": "MD", "Macro_QM": "QM", "Macro_AC": "AC",
+    "Macro_DF": "DF", "Macro_FG": "FG",
+}
+# Rows that should always sit at the bottom of their sibling group and never be sorted.
+_PA_PINNED_BOTTOM = {"Caixa", "Caixa USD", "Taxas e Custos", "Custos", "Caixa & Custos"}
+
+
+def _pa_render_name(raw: str) -> str:
+    """Map raw tree key to display label (e.g., Macro_JD → JD)."""
+    return _PA_LIVRO_RENAMES.get(raw, raw)
+
+
+def _evo_strategy(livro: str) -> str:
+    """Bucket a LIVRO into a high-level strategy for the EVOLUTION Livro view."""
+    if livro == "CI" or livro.startswith("Macro_"):
+        return "Macro"
+    if livro in {"Bracco", "Quant_PA", "HEDGE_SISTEMATICO"} or livro.startswith("SIST_"):
+        return "Quant"
+    if livro in {"FMN", "FCO", "FLO", "GIS FI FUNDO IMOBILIÁRIO", "RV BZ"}:
+        return "Equities"
+    if livro in {"Crédito", "CRÉDITO", "CredEstr"}:
+        return "Crédito"
+    return "Caixa & Custos"
+
+
+# Default display orders (per level type). Lower = earlier.
+# Names not found fall back to |YTD| desc.
+_PA_ORDER_CLASSE = {
+    "RF BZ": 10, "RF BZ IPCA": 11, "RF BZ IGP-M": 12, "RV BZ": 13,
+    "RF Intl": 20, "RV Intl": 21,
+    "BRLUSD": 30, "FX": 31, "Commodities": 32, "ETF Options": 33,
+    "Credito": 50, "Crédito": 50, "CRÉDITO": 50, "CredEstr": 51,
+}
+_PA_ORDER_LIVRO = {
+    # Macro PMs — prefer renamed, but also accept raw
+    "CI": 100,
+    "JD": 101, "Macro_JD": 101, "LF": 102, "Macro_LF": 102,
+    "RJ": 103, "Macro_RJ": 103, "MD": 104, "Macro_MD": 104,
+    "QM": 105, "Macro_QM": 105, "AC": 106, "Macro_AC": 106,
+    "DF": 107, "Macro_DF": 107, "FG": 108, "Macro_FG": 108,
+    # Quant
+    "Bracco": 200, "Quant_PA": 201,
+    "SIST_GLOBAL": 210, "SIST_COMMO": 211, "SIST_FX": 212, "SIST_RF": 213,
+    "HEDGE_SISTEMATICO": 220,
+    # Equities
+    "FMN": 300, "FCO": 301, "FLO": 302, "GIS FI FUNDO IMOBILIÁRIO": 303,
+    # Crédito
+    "Crédito": 500, "CRÉDITO": 500, "CredEstr": 501,
+    # Prev (Albatroz)
+    "Prev": 600,
+    # RV BZ sub-book inside LIVRO
+    "RV BZ": 400,
+}
+_PA_ORDER_STRATEGY = {"Macro": 1, "Quant": 2, "Equities": 3, "Crédito": 4}
+
+# Mapping from level column name → order dict
+_PA_ORDER_BY_LEVEL = {
+    "CLASSE":   _PA_ORDER_CLASSE,
+    "LIVRO":    _PA_ORDER_LIVRO,
+    "STRATEGY": _PA_ORDER_STRATEGY,
+}
+
+
+def _pa_bp_cell(v: float, bold: bool = False, heat_max: float = 0.0) -> str:
+    """
+    Render a bps value as a percentage with 2 decimals (1 bp = 0.01%).
+    If `heat_max` > 0, apply a subtle green/red background proportional to |v|/heat_max.
+    """
+    pct = v / 100.0
+    if abs(pct) < 0.005:  # rounds to 0.00%
+        return '<td class="t-num mono" style="color:var(--muted)">—</td>'
+    color = "var(--up)" if v >= 0 else "var(--down)"
+    weight = "font-weight:700;" if bold else ""
+    bg = ""
+    if heat_max and heat_max > 0:
+        rgb = "38,208,124" if v >= 0 else "255,90,106"
+        alpha = min(abs(v) / heat_max, 1.0) * 0.14  # subtle so the text stays legible
+        bg = f" background:rgba({rgb},{alpha:.2f});"
+    return f'<td class="t-num mono" style="color:{color};{weight}{bg}">{pct:+.2f}%</td>'
+
+
+def _pa_pos_cell(v: float) -> str:
+    """Position cell — BRL in millions, hide dust."""
+    if abs(v) < 1e5:  # <100k reais
+        return '<td class="t-num mono pa-pos" style="color:var(--muted)">—</td>'
+    m = v / 1e6
+    return f'<td class="t-num mono pa-pos" style="color:var(--muted)">{m:,.1f}</td>'
+
+
+_PA_AGG_LEN = 5  # dia, mtd, ytd, m12, position_brl
+
+
+def _build_pa_tree(df: pd.DataFrame, levels: list) -> dict:
+    """Build a nested dict tree from leaf rows, aggregating bps metrics + position up each level."""
+    root = {"_children": {}, "_agg": [0.0] * _PA_AGG_LEN}
+    val_cols = ["dia_bps","mtd_bps","ytd_bps","m12_bps","position_brl"]
+    for r in df.itertuples(index=False):
+        vals = [getattr(r, c) for c in val_cols]
+        node = root
+        node["_agg"] = [a + v for a, v in zip(node["_agg"], vals)]
+        for lv in levels:
+            key = _pa_escape(getattr(r, lv))
+            if key not in node["_children"]:
+                node["_children"][key] = {"_children": {}, "_agg": [0.0] * _PA_AGG_LEN}
+            node = node["_children"][key]
+            node["_agg"] = [a + v for a, v in zip(node["_agg"], vals)]
+    return root
+
+
+def _render_pa_tree_rows(node: dict, path: list, depth: int, levels: list, out: list):
+    """
+    Depth-first traversal. Non-pinned children sorted by declared order (fixed list
+    inspired by Excel PA report) with |YTD| desc as tiebreak. Pinned children
+    (Caixa/Custos/…) always appended at the end.
+    """
+    max_depth = len(levels)
+    level_name = levels[depth] if depth < max_depth else ""
+    order_dict = _PA_ORDER_BY_LEVEL.get(level_name, {})
+    items = list(node["_children"].items())
+    pinned = [kv for kv in items if kv[0] in _PA_PINNED_BOTTOM]
+    regular = [kv for kv in items if kv[0] not in _PA_PINNED_BOTTOM]
+    regular.sort(key=lambda kv: (order_dict.get(kv[0], 10_000), -abs(kv[1]["_agg"][2])))
+    pinned.sort(key=lambda kv: kv[0])
+    ordered = regular + pinned
+    for name, child in ordered:
+        cur_path = path + [name]
+        has_children = bool(child["_children"]) and depth < max_depth - 1
+        out.append({
+            "name": name,
+            "display": _pa_render_name(name),
+            "depth": depth,
+            "path": "|".join(cur_path),
+            "parent": "|".join(path) if path else "",
+            "has_children": has_children,
+            "pinned": name in _PA_PINNED_BOTTOM,
+            "agg": child["_agg"],
+        })
+        if has_children:
+            _render_pa_tree_rows(child, cur_path, depth + 1, levels, out)
+
+
+def _render_pa_row_html(r: dict, max_abs: list) -> str:
+    """Server-side render of a single PA row (used for depth-0 rows only with lazy render)."""
+    level_cls = f"pa-l{r['depth']}"
+    pinned_cls = " pa-pinned" if r["pinned"] else ""
+    expander = (
+        '<span class="pa-exp" aria-hidden="true">▸</span>'
+        if r["has_children"] else
+        '<span class="pa-exp pa-exp-empty" aria-hidden="true"></span>'
+    )
+    base_cls = f"pa-row {level_cls}{pinned_cls}"
+    if r["has_children"]:
+        cls_click = f' onclick="togglePaRow(this)" class="{base_cls} pa-has-children"'
+    else:
+        cls_click = f' class="{base_cls}"'
+    pinned_attr = ' data-pinned="1"' if r["pinned"] else ""
+    row_attrs = (
+        f' data-level="{r["depth"]}"'
+        f' data-path="{r["path"]}"'
+        f' data-parent="{r["parent"]}"'
+        f'{pinned_attr}'
+    )
+    agg = r["agg"]
+    cells = (
+        f'<td class="pa-name">{expander}<span class="pa-label">{r["display"]}</span></td>'
+        + _pa_bp_cell(agg[0], heat_max=max_abs[0])
+        + _pa_bp_cell(agg[1], heat_max=max_abs[1])
+        + _pa_bp_cell(agg[2], heat_max=max_abs[2])
+        + _pa_bp_cell(agg[3], heat_max=max_abs[3])
+    )
+    return f'<tr{row_attrs}{cls_click}>{cells}</tr>'
+
+
+def _build_pa_view(fund_short: str, df: pd.DataFrame, view_id: str,
+                    levels: list, first_col_label: str, active: bool,
+                    cdi: dict) -> str:
+    """
+    Render one PA hierarchical view with lazy-loaded descendants.
+    - Only depth-0 rows are pre-rendered as HTML.
+    - Deeper rows are embedded as compact JSON and instantiated on expand.
+    - Heatmap: each metric cell gets a background tint proportional to |v|/col_max.
+    """
+    if df is None or df.empty:
+        return ""
+    tree = _build_pa_tree(df, levels)
+    rows = []
+    _render_pa_tree_rows(tree, [], 0, levels, rows)
+
+    # Max absolute per column (DIA/MTD/YTD/12M/POS) for heatmap scaling
+    max_abs = [0.0] * _PA_AGG_LEN
+    for r in rows:
+        for i, v in enumerate(r["agg"]):
+            if abs(v) > max_abs[i]:
+                max_abs[i] = abs(v)
+
+    # Group rows by parent path for lazy rendering
+    by_parent: dict = {}
+    for r in rows:
+        by_parent.setdefault(r["parent"], []).append({
+            "n":  r["name"],
+            "d":  r["display"],
+            "pa": r["path"],
+            "pr": r["parent"],
+            "a":  [round(x, 4) for x in r["agg"]],
+            "hc": 1 if r["has_children"] else 0,
+            "pi": 1 if r["pinned"] else 0,
+            "dp": r["depth"],
+        })
+
+    root_rows = by_parent.get("", [])
+    # Server-render only depth-0 rows
+    tbody_rows = []
+    for child in root_rows:
+        tbody_rows.append(_render_pa_row_html({
+            "name": child["n"], "display": child["d"],
+            "depth": child["dp"], "path": child["pa"], "parent": child["pr"],
+            "has_children": bool(child["hc"]), "pinned": bool(child["pi"]),
+            "agg": child["a"],
+        }, max_abs))
+
+    # Compact JSON: keep all levels (including root) so filter/expand-all can work uniformly
+    data_id = f"pa-data-{fund_short}-{view_id}"
+    json_blob = json.dumps(
+        {"maxAbs": [round(x, 4) for x in max_abs], "byParent": by_parent},
+        separators=(",", ":"), ensure_ascii=False,
+    ).replace("</", "<\\/")
+
+    t = tree["_agg"]
+    total_row = (
+        '<tr class="pa-total-row">'
+        '<td class="pa-name" style="font-weight:700">Total Alpha</td>'
+        + _pa_bp_cell(t[0], bold=True)
+        + _pa_bp_cell(t[1], bold=True)
+        + _pa_bp_cell(t[2], bold=True)
+        + _pa_bp_cell(t[3], bold=True)
+        + "</tr>"
+    )
+    cdi_row = (
+        '<tr class="pa-bench-row">'
+        '<td class="pa-name" style="color:var(--muted); font-style:italic">Benchmark (CDI)</td>'
+        f'<td class="t-num mono" style="color:var(--muted)">{cdi["dia"]/100:+.2f}%</td>'
+        f'<td class="t-num mono" style="color:var(--muted)">{cdi["mtd"]/100:+.2f}%</td>'
+        f'<td class="t-num mono" style="color:var(--muted)">{cdi["ytd"]/100:+.2f}%</td>'
+        f'<td class="t-num mono" style="color:var(--muted)">{cdi["m12"]/100:+.2f}%</td>'
+        '</tr>'
+    )
+    nominal_row = (
+        '<tr class="pa-nominal-row">'
+        '<td class="pa-name" style="font-weight:700">Retorno Nominal</td>'
+        + _pa_bp_cell(t[0] + cdi["dia"], bold=True)
+        + _pa_bp_cell(t[1] + cdi["mtd"], bold=True)
+        + _pa_bp_cell(t[2] + cdi["ytd"], bold=True)
+        + _pa_bp_cell(t[3] + cdi["m12"], bold=True)
+        + "</tr>"
+    )
+
+    # Sort arrow: default YTD desc (tree is already server-sorted that way)
+    def th_sort(idx: int, label: str, active_idx: int = 2) -> str:
+        arrow = ' <span class="pa-sort-arrow">▾</span>' if idx == active_idx else ''
+        extra = ' pa-sort-active' if idx == active_idx else ''
+        return (
+            f'<th class="pa-sortable{extra}" data-pa-metric="{idx}"'
+            f' onclick="sortPaMetric(this,{idx})" style="text-align:right; cursor:pointer">'
+            f'{label}{arrow}</th>'
+        )
+
+    active_style = "" if active else ' style="display:none"'
+    return f"""
+    <div class="pa-view" data-pa-view="{view_id}" data-pa-id="{data_id}"
+         data-sort-idx="2" data-sort-desc="1"{active_style}>
+      <script type="application/json" id="{data_id}">{json_blob}</script>
+      <table class="pa-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">{first_col_label}</th>
+          {th_sort(0,'DIA')}
+          {th_sort(1,'MTD')}
+          {th_sort(2,'YTD')}
+          {th_sort(3,'12M')}
+        </tr></thead>
+        <tbody>{''.join(tbody_rows)}</tbody>
+        <tfoot>{total_row}{cdi_row}{nominal_row}</tfoot>
+      </table>
+    </div>"""
+
+
+def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> str:
+    """
+    PA card with two hierarchical views (Por Classe / Por Livro) and tree drill-down.
+    Default depth is 2 (top → PRODUCT). EVOLUTION Livro view uses 3 levels
+    (Strategy → Livro → PRODUCT) so macro/quant/equities/crédito appear as the first drill-down.
+    """
+    pa_key = _FUND_PA_KEY.get(fund_short)
+    if pa_key is None or df_pa is None or df_pa.empty:
+        return ""
+    df = df_pa[df_pa["FUNDO"] == pa_key].copy()
+    if df.empty:
+        return ""
+
+    view_classe = _build_pa_view(
+        fund_short, df, "classe",
+        ["CLASSE", "PRODUCT"], "Classe / Produto", active=True, cdi=cdi,
+    )
+
+    if fund_short == "EVOLUTION":
+        df_evo = df.copy()
+        df_evo["STRATEGY"] = df_evo["LIVRO"].map(_evo_strategy)
+        view_livro = _build_pa_view(
+            fund_short, df_evo, "livro",
+            ["STRATEGY", "LIVRO", "PRODUCT"], "Strategy / Livro / Produto",
+            active=False, cdi=cdi,
+        )
+    else:
+        view_livro = _build_pa_view(
+            fund_short, df, "livro",
+            ["LIVRO", "PRODUCT"], "Livro / Produto", active=False, cdi=cdi,
+        )
+
+    return f"""
+    <section class="card pa-card" data-pa-fund="{fund_short}">
+      <div class="card-head">
+        <span class="card-title">Performance Attribution</span>
+        <span class="card-sub">— {fund_short} · alpha (%) vs. benchmark · click p/ drill-down</span>
+        <div class="pa-toolbar">
+          <button class="pa-btn" onclick="expandAllPa(this)"    title="Expandir tudo">⤢ Expandir</button>
+          <button class="pa-btn" onclick="collapseAllPa(this)"  title="Colapsar tudo">⤡ Colapsar</button>
+        </div>
+        <div class="pa-view-toggle">
+          <button class="pa-tgl active" data-pa-view="classe"
+                  onclick="selectPaView(this,'classe')">Por Classe</button>
+          <button class="pa-tgl" data-pa-view="livro"
+                  onclick="selectPaView(this,'livro')">Por Livro</button>
+        </div>
+      </div>
+      {view_classe}
+      {view_livro}
+    </section>"""
+
+
 REPORTS = [
+    ("analise",      "Análise"),
+    ("performance",  "PA"),
     ("risk-monitor", "Risk Monitor"),
-    ("stop-monitor", "Stop Monitor"),
     ("exposure",     "Exposure"),
     ("single-name",  "Single-Name"),
     ("distribution", "Distribuição 252d"),
+    ("stop-monitor", "Risk Budget"),
 ]
-FUND_ORDER = ["MACRO", "QUANT", "EVOLUTION"]
-FUND_LABELS = {"MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution"}
+FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ"]
+FUND_LABELS = {
+    "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
+    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz",
+}
+
+# PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short
+_FUND_PA_KEY = {
+    "MACRO":     "MACRO",
+    "QUANT":     "QUANT",
+    "EVOLUTION": "EVOLUTION",
+    "MACRO_Q":   "GLOBAL",
+    "ALBATROZ":  "ALBATROZ",
+}
 
 def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_expo=None, df_var=None, macro_aum=None,
                df_expo_d1=None, df_var_d1=None,
                df_pnl_prod=None, pm_margem=None,
-               df_quant_sn=None, quant_nav=None, quant_fut_delta=None,
+               df_quant_sn=None, quant_nav=None, quant_legs=None,
+               df_evo_sn=None, evo_nav=None, evo_legs=None,
+               df_pa=None, cdi=None, df_pa_daily=None,
+               df_alb_expo=None, alb_nav=None,
+               position_changes=None,
                dist_map=None, dist_map_prev=None, dist_actuals=None) -> str:
     alerts = []
     td_by_short = {cfg["short"]: td for td, cfg in FUNDS.items()}
@@ -1521,29 +2441,225 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if html_sect:
                 sections.append((fs, "distribution", html_sect))
 
-    # QUANT single-name: trigger card + modal
-    single_name_modal_html = ""
-    if df_quant_sn is not None and not df_quant_sn.empty:
-        gross_l_pct = df_quant_sn.loc[df_quant_sn["net"] > 0, "net"].sum() * 100 / quant_nav
-        gross_s_pct = df_quant_sn.loc[df_quant_sn["net"] < 0, "net"].sum() * 100 / quant_nav
-        net_pct     = (df_quant_sn["net"].sum()) * 100 / quant_nav
-        sn_trigger_html = f"""
+    # Single-name L/S — inline full-detail section per fund (no modal)
+    sn_quant = build_single_names_section(
+        "QUANT", "L/S real após decomposição de WIN / BOVA11 / SMAL11",
+        df_quant_sn, quant_nav, quant_legs,
+    )
+    if sn_quant:
+        sections.append(("QUANT", "single-name", sn_quant))
+
+    sn_evo = build_single_names_section(
+        "EVOLUTION", "look-through BR (QUANT + Evo Strategy + Frontier + Macro)",
+        df_evo_sn, evo_nav, evo_legs,
+    )
+    if sn_evo:
+        sections.append(("EVOLUTION", "single-name", sn_evo))
+
+    # Performance Attribution — one card per fund (MACRO, QUANT, EVOLUTION, MACRO_Q, ALBATROZ)
+    if df_pa is not None and not df_pa.empty:
+        cdi_row = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+        for short in FUND_ORDER:
+            pa_html = build_pa_section_hier(short, df_pa, cdi_row)
+            if pa_html:
+                sections.append((short, "performance", pa_html))
+
+    # ALBATROZ — RF exposure card (under the "exposure" report tab)
+    if df_alb_expo is not None and not df_alb_expo.empty and alb_nav:
+        alb_html = build_albatroz_exposure(df_alb_expo, alb_nav)
+        if alb_html:
+            sections.append(("ALBATROZ", "exposure", alb_html))
+
+    # ALBATROZ — Risk Budget (150 bps/month stop)
+    if df_pa is not None and not df_pa.empty:
+        rb_html = build_albatroz_risk_budget(df_pa)
+        if rb_html:
+            sections.append(("ALBATROZ", "stop-monitor", rb_html))
+
+    # ── Per-fund Análise sections (outliers / movers / changes filtered by fund) ──
+    _ANALISE_MOVERS_EXCLUDE = {
+        "LIVRO":  {"Taxas e Custos", "Caixa", "Caixa USD"},
+        "CLASSE": {"Custos", "Caixa"},
+    }
+    _ANALISE_THRESHOLD_PP = 0.30
+
+    def _an_delta_pp(v):
+        color = "var(--up)" if v > 0 else "var(--down)"
+        sign = "+" if v > 0 else ""
+        return f'<span style="color:{color}; font-weight:700">{sign}{v:.2f} pp</span>'
+
+    _an_outliers_by_fund = {}
+    if df_pa_daily is not None and not df_pa_daily.empty:
+        try:
+            _all_out = compute_pa_outliers(df_pa_daily, DATA_STR, z_min=2.0, bps_min=3.0, min_obs=20)
+            if not _all_out.empty:
+                for pa_key in _all_out["FUNDO"].unique():
+                    _an_outliers_by_fund[pa_key] = _all_out[_all_out["FUNDO"] == pa_key]
+        except Exception as e:
+            print(f"  per-fund outliers failed ({e})")
+
+    def _an_outliers_card(short):
+        pa_key = _FUND_PA_KEY.get(short)
+        sub = _an_outliers_by_fund.get(pa_key)
+        if sub is None or sub.empty:
+            body = '<div class="comment-empty">— sem eventos significativos (|z| ≥ 2σ · |contrib| ≥ 3 bps)</div>'
+        else:
+            items = ""
+            for r in sub.itertuples(index=False):
+                color = "var(--up)" if r.today_bps > 0 else "var(--down)"
+                items += (
+                    '<li>'
+                    f'<span class="mono" style="font-weight:700">{r.PRODUCT}</span> '
+                    f'<span class="mono" style="color:{color}">{r.today_bps:+.1f} bps</span> '
+                    f'<span class="mono" style="color:var(--muted)">({r.z:+.1f}σ)</span>'
+                    f' &nbsp;·&nbsp; <span style="color:var(--muted)">{_pa_render_name(r.LIVRO)}</span>'
+                    '</li>'
+                )
+            body = f'<ul class="comment-list">{items}</ul>'
+        return f"""
         <section class="card">
           <div class="card-head">
-            <span class="card-title">Single-Name Exposure</span>
-            <span class="card-sub">— L/S real após decomposição do WIN</span>
+            <span class="card-title">Outliers do dia</span>
+            <span class="card-sub">— {FUND_LABELS.get(short, short)} · |z| ≥ 2σ (vs. 90d) · |contrib| ≥ 3 bps</span>
           </div>
-          <div class="sn-trigger-row">
-            <div class="sn-mini-stats mono">
-              L <span style="color:var(--up)">{gross_l_pct:+.2f}%</span> &nbsp;·&nbsp;
-              S <span style="color:var(--down)">{gross_s_pct:+.2f}%</span> &nbsp;·&nbsp;
-              Net <span style="color:var(--text)">{net_pct:+.2f}%</span>
-            </div>
-            <button class="btn-accent" onclick="openSnModal()">Abrir detalhamento ↗</button>
-          </div>
+          {body}
         </section>"""
-        sections.append(("QUANT", "single-name", sn_trigger_html))
-        single_name_modal_html = build_quant_single_names_modal(df_quant_sn, quant_nav, quant_fut_delta)
+
+    def _an_movers_rows(short, group_col):
+        pa_key = _FUND_PA_KEY.get(short)
+        if not pa_key or df_pa is None or df_pa.empty:
+            return ""
+        sub = df_pa[df_pa["FUNDO"] == pa_key]
+        sub = sub[~sub[group_col].isin(_ANALISE_MOVERS_EXCLUDE.get(group_col, set()))]
+        by = sub.groupby(group_col)["dia_bps"].sum()
+        by = by[by.abs() > 0.5]
+        pos = by[by > 0].sort_values(ascending=False).head(5)
+        neg = by[by < 0].sort_values().head(5)
+        render = _pa_render_name if group_col == "LIVRO" else (lambda s: s)
+        def _fmt(color, items_s):
+            if not len(items_s):
+                return '<li class="comment-empty">— nada material</li>'
+            return "".join(
+                '<li>'
+                f'<span class="mono" style="color:{color}; font-weight:600">{render(l)}</span> '
+                f'<span class="mono">{"+" if v >= 0 else ""}{v/100:.2f}%</span>'
+                '</li>'
+                for l, v in items_s.items()
+            )
+        return f"""
+        <div class="mov-split">
+          <div>
+            <div class="mov-col-title">Contribuintes</div>
+            <ul class="comment-list">{_fmt("var(--up)", pos)}</ul>
+          </div>
+          <div>
+            <div class="mov-col-title">Detratores</div>
+            <ul class="comment-list">{_fmt("var(--down)", neg)}</ul>
+          </div>
+        </div>"""
+
+    def _an_movers_card(short):
+        livro_body  = _an_movers_rows(short, "LIVRO")
+        classe_body = _an_movers_rows(short, "CLASSE")
+        if not (livro_body or classe_body):
+            return ""
+        return f"""
+        <section class="card sum-movers-card">
+          <div class="card-head">
+            <span class="card-title">Top Movers — DIA</span>
+            <span class="card-sub">— {FUND_LABELS.get(short, short)} · alpha do dia (drop &lt; 0.5 bps · Caixa/Custos excluídos)</span>
+            <div class="pa-view-toggle sum-tgl">
+              <button class="pa-tgl active" data-mov-view="livro"
+                      onclick="selectMoversView(this,'livro')">Por Livro</button>
+              <button class="pa-tgl" data-mov-view="classe"
+                      onclick="selectMoversView(this,'classe')">Por Classe</button>
+            </div>
+          </div>
+          <div class="mov-view" data-mov-view="livro">{livro_body}</div>
+          <div class="mov-view" data-mov-view="classe" style="display:none">{classe_body}</div>
+        </section>"""
+
+    def _an_changes_card(short):
+        if short == "MACRO":
+            if df_expo is None or df_expo_d1 is None:
+                return ""
+            d0 = df_expo.groupby(["pm", "rf"])["pct_nav"].sum().reset_index()
+            d1 = df_expo_d1.groupby(["pm", "rf"])["pct_nav"].sum().reset_index().rename(
+                columns={"pct_nav": "pct_d1"}
+            )
+            chg = d0.merge(d1, on=["pm", "rf"], how="outer").fillna(0.0)
+            chg["delta"] = chg["pct_nav"] - chg["pct_d1"]
+            chg = chg[chg["delta"].abs() >= _ANALISE_THRESHOLD_PP]
+            chg = chg.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(10)
+            if chg.empty:
+                return ""
+            rows = "".join(
+                '<tr>'
+                f'<td class="sum-fund" style="width:70px">{r.pm}</td>'
+                f'<td class="mono" style="color:var(--muted)">{r.rf}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_nav:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta)}</td>'
+                '</tr>'
+                for r in chg.itertuples(index=False)
+            )
+            return f"""
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">Mudanças Significativas</span>
+                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp</span>
+              </div>
+              <table class="summary-movers">
+                <thead><tr>
+                  <th style="text-align:left; width:70px">PM</th>
+                  <th style="text-align:left">Fator</th>
+                  <th style="text-align:right">D-1</th>
+                  <th style="text-align:right">D-0</th>
+                  <th style="text-align:right">Δ</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </section>"""
+        else:
+            if not position_changes:
+                return ""
+            df_chg = position_changes.get(short)
+            if df_chg is None or df_chg.empty:
+                return ""
+            big = df_chg[df_chg["delta"].abs() >= _ANALISE_THRESHOLD_PP]
+            big = big.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(10)
+            if big.empty:
+                return ""
+            rows = "".join(
+                '<tr>'
+                f'<td class="mono" style="color:var(--muted)">{r.factor}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_d0:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta)}</td>'
+                '</tr>'
+                for r in big.itertuples(index=False)
+            )
+            return f"""
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">Mudanças Significativas</span>
+                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp</span>
+              </div>
+              <table class="summary-movers">
+                <thead><tr>
+                  <th style="text-align:left">Fator</th>
+                  <th style="text-align:right">D-1</th>
+                  <th style="text-align:right">D-0</th>
+                  <th style="text-align:right">Δ</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </section>"""
+
+    for short in FUND_ORDER:
+        for card in (_an_outliers_card(short), _an_movers_card(short), _an_changes_card(short)):
+            if card:
+                sections.append((short, "analise", card))
 
     # Which fund×report combinations exist — used to enable/disable tabs and handle empty states
     available_pairs = {(f, r) for f, r, _ in sections}
@@ -1556,20 +2672,349 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         for f, r, h in sections
     )
 
-    # Summary placeholder (Fase 2)
-    summary_html = """
+    # ── Summary (cross-fund landing) ──────────────────────────────────────
+    def _sum_bp_cell(bps: float) -> str:
+        pct = bps / 100.0
+        if abs(pct) < 0.005:
+            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+        color = "var(--up)" if bps >= 0 else "var(--down)"
+        return f'<td class="mono" style="color:{color}; text-align:right">{pct:+.2f}%</td>'
+
+    def _sum_util_cell(util):
+        if util is None:
+            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+        color = "var(--up)" if util < 70 else "var(--warn)" if util < 100 else "var(--down)"
+        return f'<td class="mono" style="color:{color}; text-align:right; font-weight:600">{util:.0f}%</td>'
+
+    def _sum_var_cell(v):
+        if v is None:
+            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+        return f'<td class="mono" style="color:var(--text); text-align:right">{v:.2f}%</td>'
+
+    def _sum_dvar_cell(dvar):
+        if dvar is None:
+            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+        dv_bps = dvar * 100  # pp → bps
+        if abs(dv_bps) < 0.5:
+            return '<td class="mono" style="color:var(--muted); text-align:right">flat</td>'
+        color = "var(--down)" if dv_bps > 0 else "var(--up)"  # VaR up = more risk
+        sign = "+" if dv_bps > 0 else ""
+        return f'<td class="mono" style="color:{color}; text-align:right">{sign}{dv_bps:.0f} bps</td>'
+
+    # Gather per-fund summary data
+    summary_rows_html = ""
+    for short in FUND_ORDER:
+        td      = td_by_short.get(short)
+        pa_key  = _FUND_PA_KEY.get(short)
+
+        if pa_key and df_pa is not None and not df_pa.empty:
+            sub = df_pa[df_pa["FUNDO"] == pa_key]
+            a_dia = float(sub["dia_bps"].sum()) if not sub.empty else 0.0
+            a_mtd = float(sub["mtd_bps"].sum()) if not sub.empty else 0.0
+            a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
+            a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
+        else:
+            a_dia = a_mtd = a_ytd = a_m12 = 0.0
+
+        var_today = var_util = dvar = None
+        if td and td in FUNDS and series_map and td in series_map:
+            s = series_map[td]
+            today_r = s[s["VAL_DATE"] == DATA]
+            if not today_r.empty:
+                var_today = abs(today_r.iloc[0]["var_pct"])
+                cfg = FUNDS[td]
+                var_util = var_today / cfg["var_soft"] * 100
+                prev = s[s["VAL_DATE"] < DATA]
+                if not prev.empty:
+                    dvar = var_today - abs(prev.iloc[-1]["var_pct"])
+
+        stop_util = None
+        if short == "MACRO" and pm_margem and stop_hist:
+            utils = []
+            cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
+            for pm, margem in pm_margem.items():
+                hist = stop_hist.get(pm)
+                if hist is None: continue
+                cur_row = hist[hist["mes"] == cur_mes]
+                if cur_row.empty: continue
+                budget = float(cur_row["budget_abs"].iloc[0])
+                if budget <= 0: continue
+                consumed = budget - margem
+                utils.append(max(consumed, 0) / budget * 100)
+            if utils: stop_util = max(utils)
+        elif short == "ALBATROZ":
+            stop_util = (abs(a_mtd) / ALBATROZ_STOP_BPS * 100) if a_mtd < 0 else 0.0
+
+        worst = max(x for x in (var_util, stop_util, 0) if x is not None)
+        if worst >= 100:   status = "🔴"
+        elif worst >= 70:  status = "🟡"
+        else:              status = "🟢"
+
+        summary_rows_html += (
+            "<tr>"
+            f'<td class="sum-status">{status}</td>'
+            f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
+            + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
+            + _sum_var_cell(var_today) + _sum_util_cell(var_util) + _sum_util_cell(stop_util)
+            + _sum_dvar_cell(dvar)
+            + "</tr>"
+        )
+
+    fund_grid_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Status consolidado</span>
+        <span class="card-sub">— {DATA_STR} · alpha vs. CDI · utilização de VaR e stop mensal</span>
+      </div>
+      <table class="summary-table">
+        <thead><tr>
+          <th style="width:60px; text-align:center">Status</th>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">DIA</th>
+          <th style="text-align:right">MTD</th>
+          <th style="text-align:right">YTD</th>
+          <th style="text-align:right">12M</th>
+          <th style="text-align:right">VaR</th>
+          <th style="text-align:right">Util VaR</th>
+          <th style="text-align:right">Util Stop</th>
+          <th style="text-align:right">Δ VaR D-1</th>
+        </tr></thead>
+        <tbody>{summary_rows_html}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:12px">
+        <span style="color:var(--up)">🟢</span> util &lt; 70% &nbsp;·&nbsp;
+        <span style="color:var(--warn)">🟡</span> 70–100% &nbsp;·&nbsp;
+        <span style="color:var(--down)">🔴</span> ≥ 100% &nbsp;·&nbsp;
+        <span style="color:var(--muted)">Status = pior entre utilização de VaR e stop mensal</span>
+      </div>
+    </section>"""
+
+    # Top movers — DIA, with toggle Por Livro / Por Classe
+    # Caixa / Custos livros e classes são operacionais (não-direcionais) — excluídos.
+    _MOVERS_EXCLUDE = {
+        "LIVRO":  {"Taxas e Custos", "Caixa", "Caixa USD"},
+        "CLASSE": {"Custos", "Caixa"},
+    }
+
+    def _movers_rows(group_col: str) -> str:
+        if df_pa is None or df_pa.empty:
+            return ""
+        exclude = _MOVERS_EXCLUDE.get(group_col, set())
+        rows_html = ""
+        for short in FUND_ORDER:
+            pa_key = _FUND_PA_KEY.get(short)
+            if not pa_key: continue
+            sub = df_pa[df_pa["FUNDO"] == pa_key]
+            if sub.empty: continue
+            sub = sub[~sub[group_col].isin(exclude)]
+            by = sub.groupby(group_col)["dia_bps"].sum()
+            by = by[by.abs() > 0.5]
+            pos = by[by > 0].sort_values(ascending=False).head(3)
+            neg = by[by < 0].sort_values().head(3)
+            render = _pa_render_name if group_col == "LIVRO" else (lambda s: s)
+            pos_txt = " · ".join(
+                f'<span style="color:var(--up)">{render(l)} +{v/100:.2f}%</span>'
+                for l, v in pos.items()
+            ) or '<span style="color:var(--muted)">—</span>'
+            neg_txt = " · ".join(
+                f'<span style="color:var(--down)">{render(l)} {v/100:.2f}%</span>'
+                for l, v in neg.items()
+            ) or '<span style="color:var(--muted)">—</span>'
+            rows_html += (
+                "<tr>"
+                f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
+                f'<td class="sum-movers">{pos_txt}</td>'
+                f'<td class="sum-movers">{neg_txt}</td>'
+                "</tr>"
+            )
+        return rows_html
+
+    livro_rows  = _movers_rows("LIVRO")
+    classe_rows = _movers_rows("CLASSE")
+
+    def _movers_table(view_id, rows, active):
+        style = "" if active else ' style="display:none"'
+        return f"""
+        <table class="summary-movers mov-view" data-mov-view="{view_id}"{style}>
+          <thead><tr>
+            <th style="text-align:left; width:120px">Fundo</th>
+            <th style="text-align:left">Contribuintes</th>
+            <th style="text-align:left">Detratores</th>
+          </tr></thead>
+          <tbody>{rows}</tbody>
+        </table>"""
+
+    movers_html = (f"""
+    <section class="card sum-movers-card">
+      <div class="card-head">
+        <span class="card-title">Top Movers — DIA</span>
+        <span class="card-sub">— alpha do dia (drop &lt; 0.5 bps) · Taxas/Custos excluídos</span>
+        <div class="pa-view-toggle sum-tgl">
+          <button class="pa-tgl active" data-mov-view="livro"
+                  onclick="selectMoversView(this,'livro')">Por Livro</button>
+          <button class="pa-tgl" data-mov-view="classe"
+                  onclick="selectMoversView(this,'classe')">Por Classe</button>
+        </div>
+      </div>
+      {_movers_table("livro",  livro_rows,  True)}
+      {_movers_table("classe", classe_rows, False)}
+    </section>""") if (livro_rows or classe_rows) else ""
+
+    # Significant position changes — one card with sub-blocks per fund.
+    # MACRO uses PM × factor detail (richer data already available).
+    # Other funds use factor-level (PRODUCT_CLASS → grouped) from LOTE_PRODUCT_EXPO.
+    changes_html = ""
+    THRESHOLD_PP = 0.30
+
+    def _delta_pp(v):
+        color = "var(--up)" if v > 0 else "var(--down)"
+        sign = "+" if v > 0 else ""
+        return f'<span style="color:{color}; font-weight:700">{sign}{v:.2f} pp</span>'
+
+    change_blocks = []
+
+    # MACRO — PM × factor
+    if df_expo is not None and df_expo_d1 is not None:
+        try:
+            d0 = df_expo.groupby(["pm", "rf"])["pct_nav"].sum().reset_index()
+            d1 = df_expo_d1.groupby(["pm", "rf"])["pct_nav"].sum().reset_index().rename(
+                columns={"pct_nav": "pct_d1"}
+            )
+            chg = d0.merge(d1, on=["pm", "rf"], how="outer").fillna(0.0)
+            chg["delta"] = chg["pct_nav"] - chg["pct_d1"]
+            chg = chg[chg["delta"].abs() >= THRESHOLD_PP]
+            chg = chg.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(8)
+            if not chg.empty:
+                rows = "".join(
+                    f"<tr>"
+                    f'<td class="sum-fund" style="width:70px">{r.pm}</td>'
+                    f'<td class="mono" style="color:var(--muted)">{r.rf}</td>'
+                    f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                    f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_nav:+.2f}%</td>'
+                    f'<td class="mono" style="text-align:right">{_delta_pp(r.delta)}</td>'
+                    f"</tr>"
+                    for r in chg.itertuples(index=False)
+                )
+                change_blocks.append(f"""
+                <div class="comment-fund">
+                  <div class="comment-title">Macro · PM × fator</div>
+                  <table class="summary-movers">
+                    <thead><tr>
+                      <th style="text-align:left; width:60px">PM</th>
+                      <th style="text-align:left">Fator</th>
+                      <th style="text-align:right">D-1</th>
+                      <th style="text-align:right">D-0</th>
+                      <th style="text-align:right">Δ</th>
+                    </tr></thead>
+                    <tbody>{rows}</tbody>
+                  </table>
+                </div>""")
+        except Exception as e:
+            print(f"  changes (MACRO) block failed ({e})")
+
+    # QUANT / EVOLUTION / MACRO_Q / ALBATROZ — factor-level
+    if position_changes:
+        for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ"):
+            df_chg = position_changes.get(short)
+            if df_chg is None or df_chg.empty:
+                continue
+            big = df_chg[df_chg["delta"].abs() >= THRESHOLD_PP]
+            big = big.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(6)
+            if big.empty:
+                continue
+            rows = "".join(
+                f"<tr>"
+                f'<td class="mono" style="color:var(--muted)">{r.factor}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_d0:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right">{_delta_pp(r.delta)}</td>'
+                f"</tr>"
+                for r in big.itertuples(index=False)
+            )
+            change_blocks.append(f"""
+            <div class="comment-fund">
+              <div class="comment-title">{FUND_LABELS.get(short, short)} · por fator</div>
+              <table class="summary-movers">
+                <thead><tr>
+                  <th style="text-align:left">Fator</th>
+                  <th style="text-align:right">D-1</th>
+                  <th style="text-align:right">D-0</th>
+                  <th style="text-align:right">Δ</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </div>""")
+
+    if change_blocks:
+        changes_html = f"""
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Mudanças Significativas</span>
+            <span class="card-sub">— exposição D-0 vs D-1 · |Δ| ≥ {THRESHOLD_PP:.2f} pp · MACRO por PM×fator, outros por fator agregado</span>
+          </div>
+          <div class="comments-grid">{''.join(change_blocks)}</div>
+        </section>"""
+
+    # Comments — outlier detection per product (|z|≥2σ vs 90d + |bps|≥3)
+    comments_html = ""
+    if df_pa_daily is not None and not df_pa_daily.empty:
+        try:
+            outliers = compute_pa_outliers(df_pa_daily, DATA_STR, z_min=2.0, bps_min=3.0, min_obs=20)
+            body_chunks = []
+            for short in FUND_ORDER:
+                pa_key = _FUND_PA_KEY.get(short)
+                if not pa_key: continue
+                sub = outliers[outliers["FUNDO"] == pa_key] if not outliers.empty else outliers
+                label = FUND_LABELS.get(short, short)
+                if sub is None or sub.empty:
+                    body_chunks.append(
+                        f'<div class="comment-fund">'
+                        f'<div class="comment-title">{label}</div>'
+                        f'<div class="comment-empty">— sem eventos significativos</div>'
+                        f'</div>'
+                    )
+                else:
+                    items = ""
+                    for r in sub.itertuples(index=False):
+                        color = "var(--up)" if r.today_bps > 0 else "var(--down)"
+                        livro_disp = _pa_render_name(r.LIVRO)
+                        items += (
+                            f'<li>'
+                            f'<span class="mono" style="font-weight:700">{r.PRODUCT}</span> '
+                            f'<span class="mono" style="color:{color}">{r.today_bps:+.1f} bps</span> '
+                            f'<span class="mono" style="color:var(--muted)">({r.z:+.1f}σ)</span> '
+                            f'&nbsp;·&nbsp; <span style="color:var(--muted)">{livro_disp}</span>'
+                            f'</li>'
+                        )
+                    body_chunks.append(
+                        f'<div class="comment-fund">'
+                        f'<div class="comment-title">{label}</div>'
+                        f'<ul class="comment-list">{items}</ul>'
+                        f'</div>'
+                    )
+            comments_html = f"""
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">Comments — Outliers do dia</span>
+                <span class="card-sub">— produtos com |z| ≥ 2σ (vs. 90d) e |contrib| ≥ 3 bps · ignora Caixa/Custos</span>
+              </div>
+              <div class="comments-grid">{''.join(body_chunks)}</div>
+            </section>"""
+        except Exception as e:
+            print(f"  comments block failed ({e})")
+
+    summary_html = f"""
     <div class="section-wrap" data-view="summary">
-      <section class="card">
-        <div class="card-head">
-          <span class="card-title">Summary</span>
-          <span class="card-sub">— visão consolidada cross-fund</span>
-        </div>
-        <div style="padding:28px 8px; text-align:center; color:var(--muted); font-size:12.5px; line-height:1.8">
-          Em construção (Fase 2).<br/>
-          <span style="color:var(--muted); font-size:11px">Aqui virão: heatmap fundos × métricas, top alerts, deltas D/D, orçamentos.</span>
-        </div>
-      </section>
+      {fund_grid_html}
+      {alerts_html}
+      {comments_html}
+      {movers_html}
+      {changes_html}
     </div>"""
+    # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
+    alerts_html = ""
+
+    # (Análise helpers and per-fund loop were relocated above `sections_html`; see earlier block.)
 
     # Mode switcher + sub-tabs
     mode_tabs_html = (
@@ -1585,6 +3030,25 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         f'<button class="tab" data-target="{rid}" onclick="selectReport(\'{rid}\')">{label}</button>'
         for rid, label in REPORTS if rid in reports_with_data
     )
+
+    # Per-report fund switcher — visible in "Por Report > X" for any report with ≥2 funds
+    sn_switcher_html = ""
+    for rid, _ in REPORTS:
+        funds_in_rep = [
+            short for short in FUND_ORDER
+            if any(f == short and r == rid for f, r, _ in sections)
+        ]
+        if len(funds_in_rep) >= 2:
+            btns = "".join(
+                f'<button class="tab" data-fund="{s}" '
+                f'onclick="selectReportFund(\'{rid}\',\'{s}\')">{s}</button>'
+                for s in funds_in_rep
+            )
+            sn_switcher_html += (
+                f'<div class="sn-switcher report-fund-switcher" '
+                f'data-for-report="{rid}" style="display:none">'
+                f'<span class="sn-switcher-label">Fundo:</span>{btns}</div>'
+            )
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1708,6 +3172,103 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     font-family:'Gadugi','Inter',system-ui,sans-serif;
   }}
   .btn-accent:hover {{ background:rgba(0,113,187,.22); color:#fff; }}
+  .btn-pdf {{
+    padding:7px 12px; border-radius:9px; border:1px solid var(--line-2);
+    background:var(--panel-2); color:var(--muted);
+    font-weight:600; font-size:11px; cursor:pointer; letter-spacing:.04em;
+    margin-left:6px;
+  }}
+  .btn-pdf:hover {{ border-color:var(--accent); color:var(--text); background:rgba(0,113,187,.10); }}
+
+  /* Print / PDF export — remap CSS variables to a light palette so all
+     inline `color:var(--up)` / backgrounds switch to paper-friendly tones. */
+  @media print {{
+    :root {{
+      --bg:        #ffffff;
+      --bg-2:      #ffffff;
+      --panel:     #ffffff;
+      --panel-2:   #f2f4f7;
+      --line:      #d0d5dd;
+      --line-2:    #b0b5c0;
+      --text:      #111111;
+      --muted:     #555555;
+      --accent:    #003d5c;
+      --accent-2:  #004a70;
+      --up:        #0e7a32;
+      --down:      #a8001a;
+      --warn:      #8a6500;
+    }}
+    @page {{ size: A4 landscape; margin: 10mm 8mm; }}
+    html, body {{
+      background: #ffffff !important;
+      color: #111111 !important;
+      font-size: 11pt;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }}
+    .no-print, header .controls, header .mode-switcher,
+    .navrow, .sub-tabs, #empty-state,
+    .sn-switcher, .report-fund-switcher {{
+      display: none !important;
+    }}
+    header {{
+      padding: 4px 0 6px; border-bottom: 1px solid #000; margin-bottom: 6px;
+      background: #ffffff !important;
+    }}
+    header h1 {{ font-size: 14pt !important; color: #000 !important; }}
+    header p  {{ font-size: 9pt  !important; color: #333 !important; }}
+    header .logo svg path {{ fill: #000 !important; }}
+    main {{ padding: 0 !important; max-width: none !important; margin: 0 !important; }}
+
+    .card, section.card {{
+      background: #ffffff !important;
+      border: 1px solid #999 !important;
+      box-shadow: none !important;
+      page-break-inside: avoid;
+      margin-bottom: 8px !important;
+      padding: 8px 10px !important;
+    }}
+    .card-head   {{ padding-bottom: 4px !important; margin-bottom: 6px !important; border-bottom: 1px solid #ddd !important; }}
+    .card-title  {{ color: #000 !important; font-size: 11pt !important; letter-spacing: .1em !important; font-weight: 700 !important; }}
+    .card-sub    {{ color: #444 !important; font-size: 9pt  !important; }}
+
+    table {{ background: #ffffff !important; }}
+    tbody tr {{ background: #ffffff !important; }}
+    th {{
+      font-size: 8.5pt !important;
+      background: #f2f4f7 !important;
+      color: #333 !important;
+    }}
+    td {{ font-size: 10pt !important; }}
+    .mono {{ font-family: 'Courier New', monospace; }}
+
+    /* Denser tables for paper */
+    .summary-table td, .summary-table th,
+    .summary-movers td, .summary-movers th,
+    .pa-table td,      .pa-table th {{
+      padding: 4px 7px !important;
+      font-size: 9.5pt !important;
+    }}
+    .summary-table td.sum-fund {{ font-size: 10pt !important; color: #000 !important; font-weight: 700; }}
+
+    .alert-item   {{ padding: 6px 8px !important; font-size: 9.5pt !important; background: #fff4d6 !important; border-left: 3px solid #a37500 !important; }}
+    .comment-fund {{ padding: 6px 8px !important; font-size: 9.5pt !important; background: #fafbfc !important; border: 1px solid #d0d5dd !important; }}
+    .comment-list li {{ font-size: 9pt !important; line-height: 1.5 !important; }}
+    .comment-empty   {{ color: #777 !important; }}
+
+    .section-wrap {{ page-break-inside: auto; }}
+    .pa-sort-arrow {{ display: none !important; }}
+
+    /* Keep heatmap very subtle so numbers remain readable */
+    .pa-table td[style*="background:rgba(38,208"] {{ background: #e8f6ed !important; }}
+    .pa-table td[style*="background:rgba(255,90"] {{ background: #fae9ec !important; }}
+
+    .subtitle {{ font-size: 9pt !important; margin: 2px 0 6px !important; color: #333 !important; }}
+  }}
+  /* print-full: show all section-wraps even if filtered out by mode/fund/report */
+  body.print-full .section-wrap {{ display: block !important; }}
+  body.print-full .sn-switcher,
+  body.print-full .report-fund-switcher {{ display: none !important; }}
 
   .date-hint {{ font-size:9px; color:var(--muted); margin-left:6px; }}
   .subtitle {{
@@ -1807,45 +3368,149 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .bar-legend {{ margin-top:10px; font-size:10px; color:var(--muted); line-height:1.8; }}
   .tick {{ color:#fb923c; font-size:9px; }}
 
-  /* QUANT single-name trigger */
-  .sn-trigger-row {{
-    display:flex; align-items:center; justify-content:space-between;
-    padding:4px 2px; gap:16px;
-  }}
-  .sn-mini-stats {{ font-size:12.5px; color:var(--muted); }}
+  .sum-movers-card .card-head {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; }}
+  .sum-tgl {{ margin-left:auto; }}
 
-  /* Modal */
-  .modal-backdrop {{
-    position:fixed; inset:0; background:rgba(5,8,12,.72);
-    backdrop-filter:blur(6px);
-    display:none; align-items:center; justify-content:center;
-    z-index:200; padding:24px;
+  /* Top Movers split (per-fund) */
+  .mov-split {{ display:grid; grid-template-columns:1fr 1fr; gap:24px; }}
+  .mov-col-title {{
+    font-size:10px; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--muted); font-weight:700; margin-bottom:6px;
+    padding-bottom:5px; border-bottom:1px solid var(--line);
   }}
-  .modal-backdrop.open {{ display:flex; }}
-  .modal {{
-    background:var(--panel); border:1px solid var(--line-2);
-    border-radius:14px; padding:20px 24px;
-    width:min(900px, 100%); max-height:85vh; overflow:auto;
-    box-shadow:0 20px 60px -10px rgba(0,0,0,.6), 0 0 0 1px rgba(0,113,187,.15);
+
+  /* Comments / outliers block */
+  .comments-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }}
+  .comment-fund {{ background:var(--bg-2); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }}
+  .comment-title {{
+    font-size:11px; color:var(--text); letter-spacing:.1em; text-transform:uppercase;
+    font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--line);
   }}
-  .modal-head {{
-    display:flex; align-items:start; justify-content:space-between;
-    padding-bottom:10px; margin-bottom:14px;
+  .comment-empty {{ font-size:11.5px; color:var(--muted); font-style:italic; padding:4px 0; }}
+  .comment-list  {{ list-style:none; padding:0; margin:0; font-size:11.5px; line-height:1.7; }}
+  .comment-list li {{ padding:3px 0; border-bottom:1px dotted var(--line); }}
+  .comment-list li:last-child {{ border-bottom:none; }}
+
+  /* Summary page — fund grid + top movers */
+  .summary-table {{
+    width:100%; border-collapse:collapse; font-size:13px;
+    background:var(--bg-2); border-radius:8px; overflow:hidden;
+  }}
+  .summary-table th {{
+    color:var(--muted); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    padding:10px 12px; background:var(--panel-2);
+    border-bottom:1px solid var(--line); font-weight:500;
+  }}
+  .summary-table td {{ padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:middle; }}
+  .summary-table tr:last-child td {{ border-bottom:none; }}
+  .summary-table tr:hover {{ background:rgba(26,143,209,.04); }}
+  .summary-table td.sum-status {{ text-align:center; font-size:17px; width:60px; }}
+  .summary-table td.sum-fund   {{ font-weight:700; color:var(--text); font-size:13.5px; }}
+
+  .summary-movers {{
+    width:100%; border-collapse:collapse; font-size:12px;
+    background:var(--bg-2); border-radius:8px; overflow:hidden;
+  }}
+  .summary-movers th {{
+    color:var(--muted); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    padding:10px 12px; background:var(--panel-2);
+    border-bottom:1px solid var(--line); font-weight:500;
+  }}
+  .summary-movers td {{ padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:middle; }}
+  .summary-movers tr:last-child td {{ border-bottom:none; }}
+  .summary-movers td.sum-fund   {{ font-weight:700; color:var(--text); width:130px; }}
+  .summary-movers td.sum-movers {{ font-family:'JetBrains Mono', monospace; font-size:11.5px; }}
+
+  /* Single-name inline section */
+  .sn-inline-stats {{
+    color:var(--muted); font-size:12px;
+    margin: 4px 2px 14px; padding-bottom:10px;
     border-bottom:1px solid var(--line);
   }}
-  .modal-title {{
-    font-size:13px; letter-spacing:.18em; text-transform:uppercase;
-    color:var(--text); font-weight:700;
+
+  /* Performance attribution — hierarchical tree */
+  .pa-card .card-head {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; }}
+  .pa-toolbar {{ margin-left:auto; display:flex; gap:4px; }}
+  .pa-btn {{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    padding:5px 10px; border-radius:6px; font-size:11px; cursor:pointer;
   }}
-  .modal-sub {{ font-size:11px; color:var(--muted); margin-top:2px; }}
-  .modal-close {{
+  .pa-btn:hover {{ color:var(--text); border-color:var(--line-2); }}
+  .pa-view-toggle {{ display:flex; gap:4px; }}
+  .pa-tgl {{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    padding:5px 12px; border-radius:7px; font-size:11px; font-weight:600;
+    letter-spacing:.06em; cursor:pointer;
+  }}
+  .pa-tgl:hover {{ color:var(--text); border-color:var(--line-2); }}
+  .pa-tgl.active {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
+
+  .pa-table {{
+    width:100%; background:var(--bg-2); border-radius:8px; overflow:hidden;
+    font-size:12px; border-collapse:collapse;
+  }}
+  .pa-table th {{
+    color:var(--muted); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    padding:9px 10px; background:var(--panel-2);
+    border-bottom:1px solid var(--line); font-weight:500;
+  }}
+  .pa-table td.pa-name {{ padding:6px 10px; color:var(--text); font-weight:600; }}
+  .pa-table td.t-num   {{ padding:6px 10px; text-align:right; }}
+  .pa-table tbody tr   {{ border-bottom:1px solid var(--line); }}
+  .pa-table tbody tr:last-child {{ border-bottom:none; }}
+  .pa-table tbody tr.pa-has-children {{ cursor:pointer; }}
+  .pa-table tbody tr.pa-has-children:hover {{ background:rgba(26,143,209,.06); }}
+  .pa-table tbody tr.pa-l0 td.pa-name {{ padding-left:10px;  font-weight:700; }}
+  .pa-table tbody tr.pa-l1 td.pa-name {{ padding-left:30px;  font-weight:600; color:var(--text); }}
+  .pa-table tbody tr.pa-l2 td.pa-name {{ padding-left:50px;  font-weight:400; color:var(--muted); }}
+  .pa-table tbody tr.pa-l1        {{ background:rgba(255,255,255,.012); }}
+  .pa-table tbody tr.pa-l2        {{ background:rgba(255,255,255,.024); font-size:11.5px; }}
+  .pa-table tbody tr.pa-pinned td.pa-name {{ color:var(--muted); font-style:italic; }}
+  .pa-table tbody tr.pa-pinned    {{ border-top:1px dashed var(--line); }}
+  .pa-exp {{
+    display:inline-block; width:14px; color:var(--muted);
+    font-size:10px; margin-right:4px; transition:transform .15s;
+  }}
+  .pa-exp-empty {{ color:transparent; }}
+  .pa-has-children.expanded .pa-exp {{ transform:rotate(90deg); color:var(--accent-2); }}
+  .pa-table tfoot tr.pa-total-row {{
+    background:var(--panel-2); border-top:1px solid var(--line-2);
+  }}
+  .pa-table tfoot tr.pa-bench-row {{
+    background:transparent; border-top:1px dashed var(--line);
+  }}
+  .pa-table tfoot tr.pa-bench-row td {{ font-style:italic; }}
+  .pa-table tfoot tr.pa-nominal-row {{
+    background:var(--panel-2); border-top:1px solid var(--line-2);
+  }}
+  .pa-table tfoot td.pa-name {{ padding:8px 10px; }}
+  .pa-table th.pa-sortable {{ user-select:none; }}
+  .pa-table th.pa-sortable:hover {{ color:var(--text); }}
+  .pa-table th.pa-sort-active {{ color:var(--accent-2); }}
+  .pa-sort-arrow {{ font-size:9px; color:var(--accent-2); margin-left:2px; }}
+  .pa-pos {{ color:var(--muted); }}
+
+  /* Single-name fund switcher (Por Report > Single-Name) */
+  .sn-switcher {{
+    display:flex; align-items:center; gap:8px;
+    max-width: 1200px; margin: 0 auto 14px; padding: 8px 16px;
+    background: var(--panel); border:1px solid var(--line);
+    border-radius:10px;
+  }}
+  .sn-switcher-label {{
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.14em;
+    color:var(--muted); margin-right:6px;
+  }}
+  .sn-switcher .tab {{
     background:transparent; border:1px solid var(--line);
-    color:var(--muted); font-size:18px; font-weight:300;
-    width:30px; height:30px; border-radius:8px; cursor:pointer;
-    display:grid; place-items:center;
+    color:var(--muted); padding:6px 14px; border-radius:7px;
+    font-size:12px; font-weight:600; letter-spacing:.06em;
+    cursor:pointer;
   }}
-  .modal-close:hover {{ color:var(--text); border-color:var(--line-2); }}
-  .modal-stats {{ color:var(--muted); font-size:12px; margin-bottom:16px; }}
+  .sn-switcher .tab:hover {{ color:var(--text); border-color:var(--line-2); }}
+  .sn-switcher .tab.active {{
+    background:var(--accent); border-color:var(--accent); color:#fff;
+  }}
   .sn-sides {{ display:flex; gap:18px; }}
   .sn-side {{ flex:1; }}
   .sn-side-head {{ font-size:11px; font-weight:700; letter-spacing:.1em; margin-bottom:6px; }}
@@ -1973,12 +3638,34 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       var bar = t.closest('.sub-tabs');
       t.classList.toggle('active', bar.dataset.for === mode && t.dataset.target === sel);
     }});
+    // Per-report fund switcher: show bar matching the selected report (if it has ≥2 funds)
+    // and filter sections by the stored active fund for that report.
+    var activeFundByRep = {{}};
+    document.querySelectorAll('.report-fund-switcher').forEach(function(bar) {{
+      var forReport = bar.dataset.forReport;
+      var visible   = (mode === 'report' && sel === forReport);
+      bar.style.display = visible ? '' : 'none';
+      if (!visible) return;
+      var key = 'risk_monitor_rf_' + forReport;
+      var stored = '';
+      try {{ stored = sessionStorage.getItem(key) || ''; }} catch (e) {{}}
+      var btns  = bar.querySelectorAll('.tab');
+      var avail = Array.prototype.map.call(btns, function(b) {{ return b.dataset.fund; }});
+      if (!stored || avail.indexOf(stored) === -1) stored = avail[0] || '';
+      btns.forEach(function(b) {{
+        b.classList.toggle('active', b.dataset.fund === stored);
+      }});
+      activeFundByRep[forReport] = stored;
+    }});
     // Section visibility
     document.querySelectorAll('.section-wrap').forEach(function(el) {{
       var show = false;
       if (mode === 'summary')      show = el.dataset.view   === 'summary';
       else if (mode === 'fund')    show = el.dataset.fund   === sel;
-      else if (mode === 'report')  show = el.dataset.report === sel;
+      else if (mode === 'report') {{
+        show = el.dataset.report === sel;
+        if (show && activeFundByRep[sel]) show = el.dataset.fund === activeFundByRep[sel];
+      }}
       el.style.display = show ? '' : 'none';
     }});
     // Empty-state for fund×report with no data
@@ -2173,21 +3860,241 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       v.style.display = (v.dataset.mode === mode) ? '' : 'none';
     }});
   }};
-  window.openSnModal = function() {{
-    var m = document.getElementById('sn-modal');
-    if (m) {{ m.classList.add('open'); m.setAttribute('aria-hidden','false'); }}
+  window.selectReportFund = function(rid, name) {{
+    try {{ sessionStorage.setItem('risk_monitor_rf_' + rid, name); }} catch (e) {{}}
+    applyState();
   }};
-  window.closeSnModal = function() {{
-    var m = document.getElementById('sn-modal');
-    if (m) {{ m.classList.remove('open'); m.setAttribute('aria-hidden','true'); }}
+  // ── PDF export ─────────────────────────────────────────────────────────
+  // mode === 'current' → imprime só o que está visível (respeita mode/fund/report)
+  // mode === 'full'    → expande todas as PA trees e mostra todas as seções
+  window.exportPdf = function(mode) {{
+    var body = document.body;
+    if (mode === 'full') body.classList.add('print-full');
+    else                 body.classList.add('print-current');
+    // We do NOT auto-expand PA trees — that produces dozens of pages of tiny type.
+    // User expands manually what they want before clicking; default is level-0 only.
+    setTimeout(function() {{
+      window.print();
+      setTimeout(function() {{
+        body.classList.remove('print-full', 'print-current');
+      }}, 500);
+    }}, 120);
   }};
-  document.addEventListener('keydown', function(e) {{
-    if (e.key === 'Escape') window.closeSnModal();
-  }});
-  document.addEventListener('click', function(e) {{
-    var m = document.getElementById('sn-modal');
-    if (m && e.target === m) window.closeSnModal();
-  }});
+
+  // Summary > Top Movers view toggle (Por Livro / Por Classe)
+  window.selectMoversView = function(btn, view) {{
+    var card = btn.closest('.sum-movers-card');
+    if (!card) return;
+    card.querySelectorAll('.sum-tgl .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.movView === view);
+    }});
+    card.querySelectorAll('.mov-view').forEach(function(t) {{
+      t.style.display = (t.dataset.movView === view) ? '' : 'none';
+    }});
+  }};
+  // PA view toggle (Por Classe / Por Livro) inside a PA card
+  window.selectPaView = function(btn, viewId) {{
+    var card = btn.closest('.pa-card');
+    if (!card) return;
+    card.querySelectorAll('.pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.paView === viewId);
+    }});
+    card.querySelectorAll('.pa-view').forEach(function(v) {{
+      v.style.display = (v.dataset.paView === viewId) ? '' : 'none';
+    }});
+  }};
+  // ── PA lazy render helpers ─────────────────────────────────────────────
+  function paDataFor(view) {{
+    var id = view.dataset.paId;
+    if (!id) return null;
+    var cached = view._paData;
+    if (cached) return cached;
+    var s = document.getElementById(id);
+    if (!s) return null;
+    try {{ view._paData = JSON.parse(s.textContent); return view._paData; }}
+    catch (e) {{ console.error('PA JSON parse failed', e); return null; }}
+  }}
+  function paEsc(s) {{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }}
+  function paPctCell(v, maxAbs) {{
+    var pct = v / 100.0;
+    if (Math.abs(pct) < 0.005) {{
+      return '<td class="t-num mono" style="color:var(--muted)">—</td>';
+    }}
+    var color = v >= 0 ? 'var(--up)' : 'var(--down)';
+    var rgb   = v >= 0 ? '38,208,124' : '255,90,106';
+    var alpha = (maxAbs > 0) ? Math.min(Math.abs(v) / maxAbs, 1.0) * 0.14 : 0;
+    var sign  = v >= 0 ? '+' : '';
+    return '<td class="t-num mono" style="color:' + color
+         + '; background:rgba(' + rgb + ',' + alpha.toFixed(2) + ')">'
+         + sign + pct.toFixed(2) + '%</td>';
+  }}
+  function paPosCell(v) {{
+    if (Math.abs(v) < 1e5) {{
+      return '<td class="t-num mono pa-pos" style="color:var(--muted)">—</td>';
+    }}
+    var m = v / 1e6;
+    var s = m.toLocaleString('pt-BR', {{minimumFractionDigits:1, maximumFractionDigits:1}});
+    return '<td class="t-num mono pa-pos" style="color:var(--muted)">' + s + '</td>';
+  }}
+  function paRenderRow(node, maxAbs) {{
+    var levelCls  = 'pa-l' + node.dp;
+    var pinnedCls = node.pi ? ' pa-pinned' : '';
+    var expander  = node.hc
+      ? '<span class="pa-exp" aria-hidden="true">▸</span>'
+      : '<span class="pa-exp pa-exp-empty" aria-hidden="true"></span>';
+    var baseCls   = 'pa-row ' + levelCls + pinnedCls;
+    var clsClick  = node.hc
+      ? ' onclick="togglePaRow(this)" class="' + baseCls + ' pa-has-children"'
+      : ' class="' + baseCls + '"';
+    var pinAttr   = node.pi ? ' data-pinned="1"' : '';
+    var attrs = ' data-level="' + node.dp + '" data-path="' + paEsc(node.pa)
+              + '" data-parent="' + paEsc(node.pr) + '"' + pinAttr;
+    var cells = '<td class="pa-name">' + expander
+              + '<span class="pa-label">' + paEsc(node.d) + '</span></td>'
+              + paPctCell(node.a[0], maxAbs[0])
+              + paPctCell(node.a[1], maxAbs[1])
+              + paPctCell(node.a[2], maxAbs[2])
+              + paPctCell(node.a[3], maxAbs[3]);
+    return '<tr' + attrs + clsClick + '>' + cells + '</tr>';
+  }}
+  function paRenderChildren(view, parentTr) {{
+    if (parentTr.dataset.rendered === '1') return;
+    var data = paDataFor(view);
+    if (!data) return;
+    var kids = (data.byParent || {{}})[parentTr.dataset.path] || [];
+    var ordered = kids;
+    // Only re-sort if user has explicitly clicked a sort header.
+    // JSON default order already honours the server-side Excel-inspired order.
+    if (view.dataset.userSorted === '1') {{
+      var idx  = parseInt(view.dataset.sortIdx  || '2', 10);
+      var desc = (view.dataset.sortDesc || '1') === '1';
+      var reg = kids.filter(function(k) {{ return !k.pi; }});
+      var pin = kids.filter(function(k) {{ return k.pi; }});
+      reg.sort(function(a, b) {{
+        var va = Math.abs(a.a[idx]), vb = Math.abs(b.a[idx]);
+        return desc ? (vb - va) : (va - vb);
+      }});
+      ordered = reg.concat(pin);
+    }}
+    var html = ordered.map(function(k) {{ return paRenderRow(k, data.maxAbs); }}).join('');
+    parentTr.insertAdjacentHTML('afterend', html);
+    parentTr.dataset.rendered = '1';
+  }}
+
+  // PA tree expand/collapse (lazy)
+  window.togglePaRow = function(tr) {{
+    if (!tr) return;
+    var view = tr.closest('.pa-view');
+    if (!view) return;
+    var path = tr.dataset.path;
+    var willExpand = !tr.classList.contains('expanded');
+    if (willExpand) paRenderChildren(view, tr);
+    tr.classList.toggle('expanded', willExpand);
+    var sel = 'tr[data-parent="' + (window.CSS && CSS.escape ? CSS.escape(path) : path) + '"]';
+    view.querySelectorAll(sel).forEach(function(c) {{
+      if (willExpand) {{
+        c.style.display = '';
+      }} else {{
+        c.style.display = 'none';
+        if (c.classList.contains('expanded')) window.togglePaRow(c);
+      }}
+    }});
+  }};
+  // Expand every parent in the currently-active view (recursive, lazy-renders as it goes)
+  window.expandAllPa = function(btn) {{
+    var card = btn.closest('.pa-card');
+    if (!card) return;
+    var view = Array.prototype.find.call(card.querySelectorAll('.pa-view'),
+      function(v) {{ return v.style.display !== 'none'; }});
+    if (!view) return;
+    // Loop: keep expanding until no collapsed parents remain visible
+    for (var guard = 0; guard < 50; guard++) {{
+      var pending = view.querySelectorAll('tr.pa-has-children:not(.expanded)');
+      if (pending.length === 0) break;
+      pending.forEach(function(tr) {{
+        if (tr.style.display !== 'none') window.togglePaRow(tr);
+      }});
+    }}
+  }};
+  window.collapseAllPa = function(btn) {{
+    var card = btn.closest('.pa-card');
+    if (!card) return;
+    var view = Array.prototype.find.call(card.querySelectorAll('.pa-view'),
+      function(v) {{ return v.style.display !== 'none'; }});
+    if (!view) return;
+    // Collapse top-level expanded rows; togglePaRow recursively collapses descendants.
+    view.querySelectorAll('tr.pa-has-children.expanded[data-level="0"]').forEach(function(tr) {{
+      window.togglePaRow(tr);
+    }});
+  }};
+  // PA per-metric sort — preserves tree hierarchy (sorts siblings under each parent)
+  window.sortPaMetric = function(th, idx) {{
+    var view  = th.closest('.pa-view');
+    if (!view) return;
+    var tbody = view.querySelector('tbody');
+    var curIdx  = parseInt(view.dataset.sortIdx || '2');
+    var curDesc = (view.dataset.sortDesc || '1') === '1';
+    var desc = (curIdx === idx) ? !curDesc : true;
+    view.dataset.sortIdx   = String(idx);
+    view.dataset.sortDesc  = desc ? '1' : '0';
+    view.dataset.userSorted = '1';
+
+    // Update arrow markers
+    view.querySelectorAll('th.pa-sortable').forEach(function(h) {{
+      h.classList.remove('pa-sort-active');
+      var a = h.querySelector('.pa-sort-arrow');
+      if (a) a.remove();
+    }});
+    th.classList.add('pa-sort-active');
+    var arrow = document.createElement('span');
+    arrow.className = 'pa-sort-arrow';
+    arrow.textContent = desc ? ' ▾' : ' ▴';
+    th.appendChild(arrow);
+
+    function parseCell(tr, metricIdx) {{
+      var cell = tr.children[1 + metricIdx];
+      if (!cell) return 0;
+      var t = cell.textContent.trim();
+      if (t === '—' || t === '') return 0;
+      return parseFloat(t.replace('+','').replace('%','').replace(',','.')) || 0;
+    }}
+
+    // group rows by parent path, separating pinned-bottom rows (Caixa/Custos/...)
+    var byParentReg = {{}}, byParentPin = {{}};
+    Array.prototype.forEach.call(tbody.children, function(tr) {{
+      var p = tr.dataset.parent || '';
+      if (tr.dataset.pinned === '1') {{
+        (byParentPin[p] = byParentPin[p] || []).push(tr);
+      }} else {{
+        (byParentReg[p] = byParentReg[p] || []).push(tr);
+      }}
+    }});
+    // sort regular siblings by |metric|
+    Object.keys(byParentReg).forEach(function(p) {{
+      byParentReg[p].sort(function(a, b) {{
+        var va = Math.abs(parseCell(a, idx)), vb = Math.abs(parseCell(b, idx));
+        return desc ? (vb - va) : (va - vb);
+      }});
+    }});
+    // merge: regular first, pinned always last (not sorted)
+    var byParent = {{}};
+    var allKeys = new Set([].concat(Object.keys(byParentReg), Object.keys(byParentPin)));
+    allKeys.forEach(function(p) {{
+      byParent[p] = (byParentReg[p] || []).concat(byParentPin[p] || []);
+    }});
+    // DFS reconstruction
+    var ordered = [];
+    function visit(parentPath) {{
+      (byParent[parentPath] || []).forEach(function(tr) {{
+        ordered.push(tr);
+        visit(tr.dataset.path);
+      }});
+    }}
+    visit('');
+    ordered.forEach(function(tr) {{ tbody.appendChild(tr); }});
+  }};
 }})();
 </script>
 </head>
@@ -2209,6 +4116,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <span id="date-hint" class="date-hint mono"></span>
       </div>
       <button class="btn-primary" onclick="goToDate(document.getElementById('date-picker').value)">Ir</button>
+      <button class="btn-pdf no-print" onclick="exportPdf('current')" title="Imprimir / salvar como PDF apenas a aba atual">⇣ PDF (aba)</button>
+      <button class="btn-pdf no-print" onclick="exportPdf('full')"    title="Expande todas as PA trees e imprime tudo">⇣ PDF (completo)</button>
     </div>
   </div>
 </header>
@@ -2219,27 +4128,27 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 <div class="subtitle">Data-base: <span class="mono">{DATA_STR}</span> &nbsp;·&nbsp; gerado em <span class="mono">{date.today().isoformat()}</span></div>
 <main>
   {summary_html}
+  {sn_switcher_html}
   <div id="sections-container">
     {sections_html}
   </div>
   <div id="empty-state" style="display:none">Sem dados para essa combinação de fundo × report.</div>
   {alerts_html}
 </main>
-{single_name_modal_html}
 </body>
 </html>"""
     return html
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"Fetching data for {DATA_STR}...")
-    df_risk    = fetch_risk_history()
-    df_aum     = fetch_aum_history()
-    df_pm_pnl  = fetch_pm_pnl_history()
-    series     = build_series(df_risk, df_aum)
-    stop_hist  = build_stop_history(df_pm_pnl)
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from glpg_fetch import read_sql
 
-    # Today's MTD + YTD per PM for the bar
+    t0 = time.time()
+    print(f"Fetching data for {DATA_STR}...")
+    d1_str = _prev_bday(DATA_STR)
+
     q_today = f"""
     SELECT "LIVRO",
            SUM("DIA")  * 10000 AS dia_bps,
@@ -2260,19 +4169,49 @@ if __name__ == "__main__":
       AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
     GROUP BY "LIVRO"
     """
-    from glpg_fetch import read_sql
-    df_today = read_sql(q_today).merge(read_sql(q_ytd), on="LIVRO", how="left")
 
-    df_expo, df_var, macro_aum = fetch_macro_exposure(DATA_STR)
-    d1_str = _prev_bday(DATA_STR)
-    print(f"Fetching D-1 exposure ({d1_str})...")
+    # Fan out all independent DB queries to a thread pool.
+    # Each fetch keeps its own connection; I/O-bound so GIL not an issue.
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        fut_risk       = ex.submit(fetch_risk_history)
+        fut_aum        = ex.submit(fetch_aum_history)
+        fut_pm_pnl     = ex.submit(fetch_pm_pnl_history)
+        fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
+        fut_expo_d1    = ex.submit(fetch_macro_exposure, d1_str)
+        fut_pnl_prod   = ex.submit(fetch_macro_pnl_products, DATA_STR)
+        fut_quant_sn   = ex.submit(fetch_quant_single_names, DATA_STR)
+        fut_evo_sn     = ex.submit(fetch_evolution_single_names, DATA_STR)
+        fut_dist       = ex.submit(fetch_pnl_distribution, DATA_STR)
+        fut_dist_prev  = ex.submit(fetch_pnl_distribution, d1_str)
+        fut_dist_act   = ex.submit(fetch_pnl_actual_by_cut, DATA_STR)
+        fut_pa         = ex.submit(fetch_pa_leaves, DATA_STR)
+        fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
+        fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
+        fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
+        fut_chg        = {
+            short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
+            for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ")
+        }
+        fut_today_q    = ex.submit(read_sql, q_today)
+        fut_ytd_q      = ex.submit(read_sql, q_ytd)
+
+    # ── Resolve results (sequential, with per-task fallback) ──────────────
+    df_risk   = fut_risk.result()
+    df_aum    = fut_aum.result()
+    df_pm_pnl = fut_pm_pnl.result()
+    series    = build_series(df_risk, df_aum)
+    stop_hist = build_stop_history(df_pm_pnl)
+
+    df_today = fut_today_q.result().merge(fut_ytd_q.result(), on="LIVRO", how="left")
+
+    df_expo, df_var, macro_aum = fut_expo.result()
     try:
-        df_expo_d1, df_var_d1, _ = fetch_macro_exposure(d1_str)
+        df_expo_d1, df_var_d1, _ = fut_expo_d1.result()
     except Exception as e:
         print(f"  D-1 fetch failed ({e}) — Δ columns will be blank")
         df_expo_d1, df_var_d1 = None, None
 
-    df_pnl_prod = fetch_macro_pnl_products(DATA_STR)
+    df_pnl_prod = fut_pnl_prod.result()
 
     # PM margem (budget remaining in bps) from stop history
     cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
@@ -2288,22 +4227,66 @@ if __name__ == "__main__":
         pm_margem[pm] = budget + pnl_mtd
 
     try:
-        df_quant_sn, quant_nav, quant_fut_delta = fetch_quant_single_names(DATA_STR)
+        df_quant_sn, quant_nav, quant_legs = fut_quant_sn.result()
     except Exception as e:
         print(f"  QUANT single-name fetch failed ({e})")
-        df_quant_sn, quant_nav, quant_fut_delta = None, None, None
+        df_quant_sn, quant_nav, quant_legs = None, None, None
 
     try:
-        dist_map = fetch_pnl_distribution(DATA_STR)
-        dist_map_prev = fetch_pnl_distribution(d1_str)
-        dist_actuals = fetch_pnl_actual_by_cut(DATA_STR)
+        df_evo_sn, evo_nav, evo_legs = fut_evo_sn.result()
+    except Exception as e:
+        print(f"  EVOLUTION single-name fetch failed ({e})")
+        df_evo_sn, evo_nav, evo_legs = None, None, None
+
+    try:
+        dist_map      = fut_dist.result()
+        dist_map_prev = fut_dist_prev.result()
+        dist_actuals  = fut_dist_act.result()
     except Exception as e:
         print(f"  Distribution fetch failed ({e})")
         dist_map, dist_map_prev, dist_actuals = None, None, None
 
+    try:
+        df_pa = fut_pa.result()
+    except Exception as e:
+        print(f"  PA fetch failed ({e})")
+        df_pa = None
+
+    try:
+        df_pa_daily = fut_pa_daily.result()
+    except Exception as e:
+        print(f"  PA daily fetch failed ({e})")
+        df_pa_daily = None
+
+    try:
+        cdi = fut_cdi.result()
+    except Exception as e:
+        print(f"  CDI fetch failed ({e})")
+        cdi = None
+
+    try:
+        df_alb_expo, alb_nav = fut_alb.result()
+    except Exception as e:
+        print(f"  ALBATROZ exposure fetch failed ({e})")
+        df_alb_expo, alb_nav = None, None
+
+    position_changes = {}
+    for short, fut in fut_chg.items():
+        try:
+            position_changes[short] = fut.result()
+        except Exception as e:
+            print(f"  {short} position changes failed ({e})")
+            position_changes[short] = None
+
+    print(f"  ...fetches done in {time.time()-t0:.1f}s")
+
     html = build_html(series, stop_hist, df_today, df_expo, df_var, macro_aum, df_expo_d1, df_var_d1,
                       df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
-                      df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_fut_delta=quant_fut_delta,
+                      df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
+                      df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
+                      df_pa=df_pa, cdi=cdi, df_pa_daily=df_pa_daily,
+                      df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+                      position_changes=position_changes,
                       dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")
