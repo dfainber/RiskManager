@@ -88,9 +88,12 @@ def fetch_aum_history():
 def build_series(df_risk, df_aum):
     result = {}
     for td, cfg in FUNDS.items():
-        rsk = df_risk[df_risk["TRADING_DESK"] == td].copy()
-        nav = df_aum[df_aum["TRADING_DESK"] == td].copy()
-        merged = rsk.merge(nav[["VAL_DATE", "NAV"]], on="VAL_DATE", how="left").dropna(subset=["NAV"])
+        rsk = df_risk[df_risk["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
+        nav = df_aum [df_aum ["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
+        # NAV lags VaR by up to a day (admin process). Use the latest NAV at-or-before each risk row.
+        merged = pd.merge_asof(
+            rsk, nav[["VAL_DATE", "NAV"]], on="VAL_DATE", direction="backward",
+        ).dropna(subset=["NAV"])
         merged["var_pct"]   = merged["var_total"]    * -1 / merged["NAV"] * 100
         merged["spec_pct"]  = merged["spec_stress"]  * -1 / merged["NAV"] * 100
         merged["macro_pct"] = merged["macro_stress"] * -1 / merged["NAV"] * 100
