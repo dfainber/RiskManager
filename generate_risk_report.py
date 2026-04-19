@@ -1339,9 +1339,9 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     plot_h = H - pad_t - pad_b
     n_buckets = len(bucket_order)
     band_w = plot_w / n_buckets
-    bar_gap = 2
-    bar_w_abs = (band_w - 4 * bar_gap) / 3   # absoluto: 3 bars/bucket
-    bar_w_rel = (band_w - 3 * bar_gap) / 2   # relativo: 2 bars/bucket
+    inter_bucket = 4          # gap between buckets
+    bar_w_abs = (band_w - inter_bucket) / 3   # absoluto: 3 bars flush
+    bar_w_rel = (band_w - inter_bucket) / 2   # relativo: 2 bars flush
 
     # Y scale — fit both absoluto and relativo series
     all_vals = (fund_real_b + fund_nom_b + bench_real_b + bench_nom_b +
@@ -1364,22 +1364,22 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         return (f'<rect class="rf-bar {cls}" data-factor="{factor}" '
                 f'x="{x0:.1f}" y="{y_top:.1f}" width="{bw:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
 
-    # Absoluto: Fund Real | Fund Nominal | Bench
+    # Absoluto: Fund Real | Fund Nominal | Bench (flush within bucket)
     abs_bars = []
     for i in range(n_buckets):
-        x0 = x_band(i) + bar_gap
-        x1 = x0 + bar_w_abs + bar_gap
-        x2 = x1 + bar_w_abs + bar_gap
+        x0 = x_band(i) + inter_bucket / 2
+        x1 = x0 + bar_w_abs
+        x2 = x1 + bar_w_abs
         abs_bars.append(bar_rect(x0, fund_real_b[i], "rf-real", "real", bar_w_abs))
         abs_bars.append(bar_rect(x1, fund_nom_b[i],  "rf-nom",  "nominal", bar_w_abs))
         abs_bars.append(bar_rect(x2, bench_real_b[i] + bench_nom_b[i], "rf-benchbar", "bench", bar_w_abs))
     abs_bars_svg = "".join(abs_bars)
 
-    # Relativo: Relative Real | Relative Nominal (fund − bench per bucket)
+    # Relativo: Relative Real | Relative Nominal (fund − bench per bucket, flush)
     rel_bars = []
     for i in range(n_buckets):
-        x0 = x_band(i) + bar_gap
-        x1 = x0 + bar_w_rel + bar_gap
+        x0 = x_band(i) + inter_bucket / 2
+        x1 = x0 + bar_w_rel
         rel_bars.append(bar_rect(x0, rel_real_b[i], "rf-real", "real", bar_w_rel))
         rel_bars.append(bar_rect(x1, rel_nom_b[i],  "rf-nom",  "nominal", bar_w_rel))
     rel_bars_svg = "".join(rel_bars)
