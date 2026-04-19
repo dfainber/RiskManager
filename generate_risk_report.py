@@ -5086,30 +5086,61 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if abs(nominal_brl_yr) >= 1_000:
                 factor_matrix["Nominal"]["MACRO"] = nominal_brl_yr
 
-    factor_rows_html = ""
-    for factor_key in ["Real", "Nominal", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]:
-        allocations = factor_matrix.get(factor_key, {})
-        if not allocations:
-            continue
-        # Row cells — one per fund in FUND_ORDER
-        cells = ""
-        total = 0.0
-        for short in FUND_ORDER:
-            v = allocations.get(short)
-            if v is None or abs(v) < 1_000:
-                cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-            else:
-                total += v
-                col = "var(--up)" if v >= 0 else "var(--down)"
-                cells += f'<td class="mono" style="text-align:right; color:{col}">{_mm(v)}</td>'
-        tot_col = "var(--up)" if total >= 0 else "var(--down)"
-        factor_rows_html += (
-            "<tr>"
-            f'<td class="sum-fund">{factor_key}</td>'
-            + cells
-            + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{_mm(total)}</td>'
-            + "</tr>"
-        )
+    # Benchmark allocations per fund, per factor (for net-of-bench view).
+    # Real rates: IDKAs have duration-concentrated real-rate bench (3y × NAV, 10y × NAV).
+    # IPCA Idx:   IDKAs bench = 100% NAV of inflation carry.
+    # Equity BR:  Frontier bench is IBOV = 100% NAV long equity.
+    # All other factor×fund cells: bench = 0 (CDI-benchmarked funds or factor not in bench).
+    nav_by_short = {}
+    for short in FUND_ORDER:
+        td = td_by_short.get(short)
+        if td:
+            nav_by_short[short] = _latest_nav(td, DATA_STR) or 0.0
+    bench_matrix = {k: {} for k in factor_matrix}
+    if nav_by_short.get("IDKA_3Y"):
+        bench_matrix["Real"]["IDKA_3Y"]     = 3.0  * nav_by_short["IDKA_3Y"]
+        bench_matrix["IPCA Idx"]["IDKA_3Y"] = 1.0  * nav_by_short["IDKA_3Y"]
+    if nav_by_short.get("IDKA_10Y"):
+        bench_matrix["Real"]["IDKA_10Y"]     = 10.0 * nav_by_short["IDKA_10Y"]
+        bench_matrix["IPCA Idx"]["IDKA_10Y"] = 1.0  * nav_by_short["IDKA_10Y"]
+    if nav_by_short.get("FRONTIER"):
+        bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
+
+    factor_list = ["Real", "Nominal", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
+
+    def _render_factor_rows(net_of_bench: bool) -> str:
+        rows = ""
+        for factor_key in factor_list:
+            allocations = factor_matrix.get(factor_key, {})
+            benches     = bench_matrix.get(factor_key, {}) if net_of_bench else {}
+            shorts_with_data = set(allocations.keys()) | set(benches.keys())
+            if not shorts_with_data:
+                continue
+            cells = ""
+            total = 0.0
+            for short in FUND_ORDER:
+                gross = allocations.get(short, 0.0)
+                bench = benches.get(short, 0.0) if net_of_bench else 0.0
+                v = gross - bench
+                if abs(v) < 1_000:
+                    cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+                else:
+                    total += v
+                    col = "var(--up)" if v >= 0 else "var(--down)"
+                    cells += f'<td class="mono" style="text-align:right; color:{col}">{_mm(v)}</td>'
+            tot_col = "var(--up)" if total >= 0 else "var(--down)"
+            rows += (
+                "<tr>"
+                f'<td class="sum-fund">{factor_key}</td>'
+                + cells
+                + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{_mm(total)}</td>'
+                + "</tr>"
+            )
+        return rows
+
+    factor_rows_liquido = _render_factor_rows(net_of_bench=True)
+    factor_rows_bruto   = _render_factor_rows(net_of_bench=False)
+    factor_rows_html    = factor_rows_liquido  # keep legacy var name for below
 
     fund_col_headers = "".join(
         f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
@@ -5209,10 +5240,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     </section>"""
 
     by_factor_html = f"""
-    <section class="card">
+    <section class="card" id="breakdown-por-fator">
       <div class="card-head">
         <span class="card-title">Breakdown por Fator</span>
-        <span class="card-sub">— R$ exposure por fator de risco × fundo · Real/Nominal/IPCA em BRL-yr (ANO_EQ); Equity em BRL nocional</span>
+        <span class="card-sub">— R$ exposure por fator × fundo · Real/Nominal/IPCA em BRL·ano; Equity em BRL nocional</span>
+        <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
+          <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
+          <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
+        </div>
       </div>
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
@@ -5220,11 +5255,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           {fund_col_headers}
           <th style="text-align:right">Total</th>
         </tr></thead>
-        <tbody>{factor_rows_html}</tbody>
+        <tbody class="rf-brl-body" data-rf-brl="liquido">{factor_rows_liquido}</tbody>
+        <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{factor_rows_bruto}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        Unidades misturadas por fator: <b>Real / Nominal</b> são ANO_EQ em BRL·ano (posição × duration); <b>IPCA Idx</b> é face-value BRL de exposição inflacionária; <b>Equity BR</b> é nocional BRL. Compare dentro de cada linha, não entre linhas.
-        Cobre IDKAs + Albatroz + Frontier + MACRO (equity/FX/commodities/rates) + QUANT + EVOLUTION (equity BR, com ETF explosion). Crédito omitido por escopo.
+        <b>Líquido</b>: fundo − benchmark (IDKAs menos bench real-rate 3y/10y; Frontier menos IBOV 100% NAV). <b>Bruto</b>: exposição total sem abater bench.
+        Unidades misturadas por fator — Real/Nominal/IPCA em BRL·ano; Equity/FX/Commodities em BRL nocional. Cobre IDKAs + Albatroz + Frontier + MACRO + QUANT + EVOLUTION. Crédito omitido por escopo.
       </div>
     </section>"""
 
@@ -6674,6 +6710,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     }});
     card.querySelectorAll('.mov-view').forEach(function(t) {{
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
+    }});
+  }};
+  // Breakdown por Fator — Líquido / Bruto toggle (net-of-bench vs gross)
+  window.selectRfBrl = function(btn, mode) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.rf-brl-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.rfBrl === mode);
+    }});
+    card.querySelectorAll('.rf-brl-body').forEach(function(v) {{
+      v.style.display = (v.dataset.rfBrl === mode) ? '' : 'none';
     }});
   }};
   // PA alerts — Por Tamanho / Por Fundo toggle (preserves grid layout)
