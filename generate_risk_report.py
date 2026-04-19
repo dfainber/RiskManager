@@ -243,6 +243,71 @@ def compute_frontier_bvar_hs(df_frontier: pd.DataFrame, date_str: str = DATA_STR
     }
 
 
+_IDKA_BENCH_INSTRUMENT = {
+    "IDKA IPCA 3Y FIRF":  "IDKA_IPCA_3A",
+    "IDKA IPCA 10Y FIRF": "IDKA_IPCA_10A",
+}
+
+
+def compute_idka_bvar_hs(desk: str, date_str: str = DATA_STR,
+                          window_days: int = 756) -> dict | None:
+    """IDKA realized HS BVaR 95% 1d vs. its IDKA index benchmark.
+       Uses fund cota (SHARE from LOTE_TRADING_DESKS_NAV_SHARE — flow-adjusted)
+       minus IDKA index daily returns over up to `window_days` trading days.
+       Fund-of-cota returns reflect historical positioning, which for replica
+       funds should be close to current positioning.
+    """
+    bench = _IDKA_BENCH_INSTRUMENT.get(desk)
+    if not bench:
+        return None
+
+    q_fund = f"""
+    SELECT "VAL_DATE" AS date, "SHARE"
+    FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+    WHERE "TRADING_DESK" = '{desk}'
+      AND "VAL_DATE" >= DATE '{date_str}' - INTERVAL '{window_days + 200} days'
+      AND "VAL_DATE" <= DATE '{date_str}'
+      AND "SHARE" IS NOT NULL
+    ORDER BY "VAL_DATE"
+    """
+    q_bench = f"""
+    SELECT "DATE" AS date, "VALUE"
+    FROM public."ECO_INDEX"
+    WHERE "INSTRUMENT" = '{bench}' AND "FIELD" = 'INDEX'
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '{window_days + 200} days'
+      AND "DATE" <= DATE '{date_str}'
+    ORDER BY "DATE"
+    """
+    df_f = read_sql(q_fund)
+    df_b = read_sql(q_bench)
+    if df_f.empty or df_b.empty:
+        return None
+
+    df_f["date"] = pd.to_datetime(df_f["date"])
+    df_b["date"] = pd.to_datetime(df_b["date"])
+    df_f = df_f.drop_duplicates("date").set_index("date").sort_index()
+    df_b = df_b.drop_duplicates("date").set_index("date").sort_index()
+
+    # Align to fund's calendar (fund has fewer days than index); inner-join dates
+    merged = df_f.join(df_b, how="inner").dropna()
+    if len(merged) < 30:
+        return None
+    merged["r_fund"]  = merged["SHARE"].pct_change()
+    merged["r_bench"] = merged["VALUE"].pct_change()
+    merged = merged.dropna()
+    er = (merged["r_fund"] - merged["r_bench"]).tail(window_days)
+    if len(er) < 30:
+        return None
+
+    return {
+        "bvar_pct":    -float(er.quantile(0.05)) * 100,
+        "n_obs":       int(len(er)),
+        "window_days": int(window_days),
+        "mean_er_pct": float(er.mean()) * 100,
+        "std_er_pct":  float(er.std())  * 100,
+    }
+
+
 def fetch_aum_history():
     tds = ", ".join(f"'{t}'" for t in ALL_FUNDS)
     q = f"""
@@ -1214,13 +1279,15 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     rel = df[df["factor"].isin(["real", "nominal"])].copy()
     if rel.empty:
         return ""
-    rel["pct"] = rel["ano_eq_brl"] / nav * 100.0
-    pivot = (rel.pivot_table(index="bucket", columns="factor", values="pct",
+    # Express ANO_EQ in years (ano_eq_brl / NAV). One unit = 1 year of duration
+    # per 100% NAV. Bench below is also in years, so bars/table/stats align.
+    rel["yr"] = rel["ano_eq_brl"] / nav
+    pivot = (rel.pivot_table(index="bucket", columns="factor", values="yr",
                              aggfunc="sum", fill_value=0.0))
     bucket_order = [b[0] for b in _RF_BUCKETS]
     pivot = pivot.reindex(index=bucket_order, columns=["real", "nominal"], fill_value=0.0)
 
-    # Per-bucket arrays (ANO_EQ %NAV × 100 = "yr × 100" i.e. years equivalent)
+    # Per-bucket arrays in years-equivalent (unit: yr × NAV fraction)
     fund_real_b = pivot["real"].tolist()
     fund_nom_b  = pivot["nominal"].tolist()
 
@@ -1328,13 +1395,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     y0 = y_scale(0)
     zero_line = f'<line class="rf-zero" x1="{pad_l}" y1="{y0:.1f}" x2="{W - pad_r}" y2="{y0:.1f}"/>'
 
-    # Y-axis ticks (5 ticks)
+    # Y-axis ticks (5 ticks) — values are in years
     y_axis = ""
     for k in range(5):
         t = y_min + (y_max - y_min) * k / 4
         y = y_scale(t)
         y_axis += f'<line class="rf-grid" x1="{pad_l}" y1="{y:.1f}" x2="{W - pad_r}" y2="{y:.1f}"/>'
-        y_axis += f'<text class="rf-axis-lbl" x="{pad_l - 6:.1f}" y="{y + 3:.1f}" text-anchor="end">{t/100:+.2f}</text>'
+        y_axis += f'<text class="rf-axis-lbl" x="{pad_l - 6:.1f}" y="{y + 3:.1f}" text-anchor="end">{t:+.1f}y</text>'
 
     # X-axis labels
     x_axis = ""
@@ -1355,8 +1422,8 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     """
 
     # ── Summary stats ─────────────────────────────────────────────────────────
-    dur_real  = sum(fund_real_b) / 100
-    dur_nom   = sum(fund_nom_b)  / 100
+    dur_real  = sum(fund_real_b)
+    dur_nom   = sum(fund_nom_b)
     dur_total = dur_real + dur_nom
     bench_total = bench_dur_yrs
     gap_total = dur_total - bench_total
