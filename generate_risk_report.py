@@ -1781,6 +1781,18 @@ def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
     </section>"""
 
 
+def fetch_evolution_direct_single_names(date_str: str = DATA_STR) -> tuple:
+    """EVOLUTION direct-only equity — positions held by the Evolution desk itself
+       (FMN_*, FCO, AÇÕES BR LONG books), excluding look-through from QUANT/Frontier/MACRO.
+       Used for the consolidated house views to avoid double-counting.
+    """
+    return _fetch_single_names_generic(
+        date_str,
+        desk="Galapagos Evolution FIC FIM CP",
+        source="Galapagos Evolution FIC FIM CP",
+    )
+
+
 def fetch_evolution_single_names(date_str: str = DATA_STR) -> tuple:
     """
     EVOLUTION single-name L/S — full look-through into QUANT (Bracco, Quant_PA),
@@ -4270,6 +4282,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_pnl_prod=None, pm_margem=None,
                df_quant_sn=None, quant_nav=None, quant_legs=None,
                df_evo_sn=None, evo_nav=None, evo_legs=None,
+               df_evo_direct=None,
                df_pa=None, cdi=None, ibov=None, df_pa_daily=None,
                df_alb_expo=None, alb_nav=None, rf_expo_maps=None,
                df_frontier=None, frontier_bvar=None,
@@ -5051,13 +5064,15 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
             if gross_pct and fr_nav:
                 factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
-    # QUANT + EVOLUTION equity BR — net delta from single-name tables (includes ETF explosion)
+    # QUANT + EVOLUTION equity BR — use Evolution-direct only (not look-through)
+    # to avoid double-counting positions already held via QUANT / Frontier.
     if df_quant_sn is not None and not df_quant_sn.empty:
         q_equity = float(df_quant_sn["net"].sum())
         if abs(q_equity) >= 1_000:
             factor_matrix["Equity BR"]["QUANT"] = q_equity
-    if df_evo_sn is not None and not df_evo_sn.empty:
-        e_equity = float(df_evo_sn["net"].sum())
+    _evo_sn_for_agg = df_evo_direct if df_evo_direct is not None and not df_evo_direct.empty else None
+    if _evo_sn_for_agg is not None:
+        e_equity = float(_evo_sn_for_agg["net"].sum())
         if abs(e_equity) >= 1_000:
             factor_matrix["Equity BR"]["EVOLUTION"] = e_equity
 
@@ -5179,8 +5194,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 "fund": "Frontier", "factor": "Equity BR",
                 "product": r["PRODUCT"], "brl": brl, "unit": "BRL",
             })
-    # QUANT + EVOLUTION single-names (net delta per ticker)
-    for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_sn)]:
+    # QUANT + EVOLUTION single-names (net delta per ticker) — Evolution-direct
+    for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_direct)]:
         if df_sn is None or df_sn.empty:
             continue
         for _, r in df_sn.iterrows():
@@ -5222,7 +5237,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         return 1.0 - bench / total
 
     def _render_top_rows(liquido: bool) -> str:
-        rows = []
+        # Scale per row (Bruto = as-is; Líquido = × (1 − bench/fund_total)).
+        scaled = []
         for r in agg_rows:
             brl = r["brl"]
             if liquido:
@@ -5230,20 +5246,73 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if abs(brl) < 1_000:
                 continue
             rr = dict(r); rr["brl"] = brl
-            rows.append(rr)
-        rows.sort(key=lambda x: abs(x["brl"]), reverse=True)
+            scaled.append(rr)
+
+        # Group by Factor → Instrument, aggregate fund contributions per instrument
+        from collections import defaultdict
+        by_fi = defaultdict(list)
+        for r in scaled:
+            by_fi[(r["factor"], r["product"])].append(r)
+
+        # Aggregate per instrument (sum across funds)
+        instruments = []
+        for (factor, product), rows in by_fi.items():
+            total = sum(r["brl"] for r in rows)
+            unit  = rows[0]["unit"]
+            instruments.append({
+                "factor": factor, "product": product, "total": total,
+                "unit": unit, "holders": rows,
+            })
+
+        # Factor-level totals, rank factors by |total|
+        factor_totals = defaultdict(float)
+        for inst in instruments:
+            factor_totals[inst["factor"]] += inst["total"]
+        factor_order = sorted(factor_totals.keys(),
+                              key=lambda f: abs(factor_totals[f]), reverse=True)
+
+        # Top N per factor (to keep the card focused)
+        TOP_PER_FACTOR = 5
         html = ""
-        for r in rows[:15]:
-            col = "var(--up)" if r["brl"] >= 0 else "var(--down)"
+        for factor in factor_order:
+            factor_insts = [i for i in instruments if i["factor"] == factor]
+            factor_insts.sort(key=lambda i: abs(i["total"]), reverse=True)
+            factor_insts = factor_insts[:TOP_PER_FACTOR]
+            if not factor_insts:
+                continue
+            # Factor header row
+            ftot = factor_totals[factor]
+            ftot_col = "var(--up)" if ftot >= 0 else "var(--down)"
             html += (
-                "<tr>"
-                f'<td class="sum-fund">{r["product"]}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:11px">{r["fund"]}</td>'
-                f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(r["brl"])}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{r["unit"]}</td>'
+                '<tr class="top-pos-factor-hdr">'
+                f'<td class="sum-fund" colspan="2" style="font-weight:700; letter-spacing:.05em; text-transform:uppercase; padding-top:10px">{factor}</td>'
+                f'<td class="mono" style="text-align:right; color:{ftot_col}; font-weight:700">{_mm(ftot)}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{factor_insts[0]["unit"]}</td>'
                 "</tr>"
             )
+            # Instruments + per-fund holders
+            for inst in factor_insts:
+                col = "var(--up)" if inst["total"] >= 0 else "var(--down)"
+                holders_html = ""
+                inst["holders"].sort(key=lambda r: abs(r["brl"]), reverse=True)
+                for h in inst["holders"]:
+                    hcol = "var(--up)" if h["brl"] >= 0 else "var(--down)"
+                    holders_html += f'<span class="mono" style="color:{hcol}; font-size:11px">{h["fund"]} {_mm(h["brl"])}</span>'
+                if len(inst["holders"]) > 1:
+                    holders_html = " · ".join(h for h in holders_html.split('</span><span') for _ in [None])
+                # Simpler: build holders with separators
+                holders_html = " · ".join(
+                    f'<span class="mono" style="color:{("var(--up)" if h["brl"] >= 0 else "var(--down)")}; font-size:11px">{h["fund"]} {_mm(h["brl"])}</span>'
+                    for h in inst["holders"]
+                )
+                html += (
+                    '<tr class="top-pos-inst">'
+                    f'<td class="sum-fund" style="padding-left:20px">{inst["product"]}</td>'
+                    f'<td class="mono" style="font-size:11px">{holders_html}</td>'
+                    f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(inst["total"])}</td>'
+                    f'<td class="mono" style="color:var(--muted); font-size:10.5px">{inst["unit"]}</td>'
+                    "</tr>"
+                )
         return html
 
     top_rows_liquido = _render_top_rows(liquido=True)
@@ -5262,17 +5331,15 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
           <th style="text-align:left">Produto</th>
-          <th style="text-align:left">Fator</th>
-          <th style="text-align:left">Fundo</th>
-          <th style="text-align:right">Exposure</th>
+          <th style="text-align:left">Fundo(s) · por onde está alocado</th>
+          <th style="text-align:right">Total</th>
           <th style="text-align:left">Unidade</th>
         </tr></thead>
         <tbody class="rf-brl-body" data-rf-brl="liquido">{top_rows_liquido}</tbody>
         <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{top_rows_bruto}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        <b>Líquido</b>: cada posição é escalada por <tt>(1 − bench/total_fundo_fator)</tt>, abatendo a parcela da posição que apenas replica o benchmark. <b>Bruto</b>: exposição total sem abater bench.
-        Unidades misturadas (BRL·ano para duration-based, BRL nominal para equity/commodity). IDKAs + Albatroz em BRL·ano; Frontier/QUANT/EVO/MACRO em BRL nocional.
+        Agrupado por <b>Fator → Instrumento → Fundo(s) onde está alocado</b>. Top 5 instrumentos por fator. <b>Líquido</b>: cada contribuição é escalada por (1 − bench/total_fundo_fator) — abate o que apenas replica o benchmark. <b>Bruto</b>: sem abater bench. EVOLUTION usa posições diretas (FMN/FCO/FLO) — sem look-through para QUANT/Frontier (evita double-count). via_albatroz excluído (contado em ALBATROZ direto).
       </div>
     </section>"""
 
@@ -7150,6 +7217,7 @@ if __name__ == "__main__":
         fut_quant_sn_d1= ex.submit(fetch_quant_single_names, d1_str)
         fut_evo_sn     = ex.submit(fetch_evolution_single_names, DATA_STR)
         fut_evo_sn_d1  = ex.submit(fetch_evolution_single_names, d1_str)
+        fut_evo_direct = ex.submit(fetch_evolution_direct_single_names, DATA_STR)
         fut_dist       = ex.submit(fetch_pnl_distribution, DATA_STR)
         fut_dist_prev  = ex.submit(fetch_pnl_distribution, d1_str)
         fut_dist_act   = ex.submit(fetch_pnl_actual_by_cut, DATA_STR)
@@ -7308,6 +7376,12 @@ if __name__ == "__main__":
         df_alb_expo, alb_nav = None, None
 
     try:
+        df_evo_direct, _evo_direct_nav, _ = fut_evo_direct.result()
+    except Exception as e:
+        print(f"  EVOLUTION direct fetch failed ({e})")
+        df_evo_direct = None
+
+    try:
         df_frontier = fut_frontier.result()
     except Exception as e:
         print(f"  Frontier LO fetch failed ({e})")
@@ -7385,6 +7459,7 @@ if __name__ == "__main__":
                       df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
                       df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
                       df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
+                      df_evo_direct=df_evo_direct,
                       df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
                       rf_expo_maps=rf_expo_maps,
