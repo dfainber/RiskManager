@@ -2637,6 +2637,14 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
         stocks["sector"] = "Outros"
         stocks["macro"]  = "—"
 
+    # Ensure ER columns exist and are numeric (fill NaN with 0 for safe aggregation)
+    for _col_name in ["TOTAL_IBVSP_DAY", "TOTAL_IBVSP_MONTH", "TOTAL_IBVSP_YEAR",
+                      "TOTAL_IBOD_Benchmark_DAY", "TOTAL_IBOD_Benchmark_MONTH", "TOTAL_IBOD_Benchmark_YEAR"]:
+        if _col_name not in stocks.columns:
+            stocks[_col_name] = 0.0
+        else:
+            stocks[_col_name] = pd.to_numeric(stocks[_col_name], errors="coerce").fillna(0.0)
+
     # ── Header stats ───────────────────────────────────────────────────────────
     w_beta_num = (stocks["% Cash"] * stocks["BETA"].fillna(0)).sum()
     w_beta = w_beta_num / gross if gross > 0 else None
@@ -2717,11 +2725,27 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
     def _tr(row, indent=False, is_sector=False, colspan=None):
         if is_sector:
             s = row["sector"]
-            pos_tot = row["pos_tot"]
-            ibov_tot = row["ibov_tot"]
-            ibod_tot = row["ibod_tot"]
+            pos_tot    = row["pos_tot"]
+            ibov_tot   = row["ibov_tot"]
+            ibod_tot   = row["ibod_tot"]
             ibov_a_tot = row["ibov_act_tot"]
             ibod_a_tot = row["ibod_act_tot"]
+            er_ibov_d  = row.get("er_ibov_d_tot", 0.0) or 0.0
+            er_ibov_m  = row.get("er_ibov_m_tot", 0.0) or 0.0
+            er_ibov_y  = row.get("er_ibov_y_tot", 0.0) or 0.0
+            er_ibod_d  = row.get("er_ibod_d_tot", 0.0) or 0.0
+            er_ibod_m  = row.get("er_ibod_m_tot", 0.0) or 0.0
+            er_ibod_y  = row.get("er_ibod_y_tot", 0.0) or 0.0
+            wbeta      = row.get("w_beta")
+
+            def _sec_er(vi, vo):
+                col = _col(vo)
+                s = "+" if vo >= 0 else ""
+                return (f'<td class="mono {uid}-er-cell" style="text-align:right;color:{col}"'
+                        f' data-ibov="{vi:.6f}" data-ibod="{vo:.6f}">{s}{vo*100:.2f}%</td>')
+
+            beta_td_s = (f'<td class="mono" style="text-align:right">{wbeta:.2f}</td>'
+                         if wbeta is not None else '<td></td>')
             return (f'<tr class="{uid}-sector-row" style="background:rgba(59,130,246,0.07);'
                     f'font-weight:700;cursor:pointer" onclick="loExpoToggleSector(this)">'
                     f'<td style="padding:5px 4px;white-space:nowrap">'
@@ -2731,28 +2755,38 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
                     f'  data-ibov="{ibov_tot:.6f}" data-ibod="{ibod_tot:.6f}">{_pf(ibov_tot)}</td>'
                     f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(ibov_a_tot)}"'
                     f'  data-ibov="{ibov_a_tot:.6f}" data-ibod="{ibod_a_tot:.6f}">{_pf(ibov_a_tot, sign=True)}</td>'
-                    f'<td></td><td></td><td></td><td></td></tr>')
+                    f'{beta_td_s}'
+                    f'{_sec_er(er_ibov_d, er_ibod_d)}'
+                    f'{_sec_er(er_ibov_m, er_ibod_m)}'
+                    f'{_sec_er(er_ibov_y, er_ibod_y)}'
+                    f'</tr>')
 
-        tk   = row["PRODUCT"]
-        pos  = row["% Cash"]
+        tk     = row["PRODUCT"]
+        pos    = row["% Cash"]
         ibov_b = row["ibov_w"]
         ibod_b = row["ibod_w"]
         ibov_a = row["ibov_act"]
         ibod_a = row["ibod_act"]
-        beta = row.get("BETA")
-        er_d = row.get("TOTAL_IBOD_Benchmark_DAY")
-        er_m = row.get("TOTAL_IBOD_Benchmark_MONTH")
-        er_y = row.get("TOTAL_IBOD_Benchmark_YEAR")
+        beta   = row.get("BETA")
+        # IBOD ER (primary) and IBOV ER (for toggle)
+        er_ibod_d_s = row.get("TOTAL_IBOD_Benchmark_DAY")
+        er_ibod_m_s = row.get("TOTAL_IBOD_Benchmark_MONTH")
+        er_ibod_y_s = row.get("TOTAL_IBOD_Benchmark_YEAR")
+        er_ibov_d_s = row.get("TOTAL_IBVSP_DAY")
+        er_ibov_m_s = row.get("TOTAL_IBVSP_MONTH")
+        er_ibov_y_s = row.get("TOTAL_IBVSP_YEAR")
         pad  = "padding-left:20px" if indent else "padding-left:4px"
         beta_td = (f'<td class="mono" style="text-align:right">{float(beta):.2f}</td>'
                    if pd.notna(beta) else '<td class="mono" style="text-align:right;color:var(--muted)">—</td>')
 
-        def _ertd(v):
+        def _ertd(vi, vo):
             try:
-                f = float(v)
-                s = "+" if f >= 0 else ""
-                return (f'<td class="mono" style="text-align:right;color:{_col(f)}">'
-                        f'{s}{f*100:.2f}%</td>')
+                fi = float(vo)  # default: ibod
+                fv = float(vi)
+                s = "+" if fi >= 0 else ""
+                return (f'<td class="mono {uid}-er-cell" style="text-align:right;color:{_col(fi)}"'
+                        f' data-ibov="{fv:.6f}" data-ibod="{fi:.6f}">'
+                        f'{s}{fi*100:.2f}%</td>')
             except Exception:
                 return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
 
@@ -2764,7 +2798,9 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
                 f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(ibov_a)}"'
                 f'  data-ibov="{ibov_a:.6f}" data-ibod="{ibod_a:.6f}">{_pf(ibov_a, sign=True)}</td>'
                 f'{beta_td}'
-                f'{_ertd(er_d)}{_ertd(er_m)}{_ertd(er_y)}'
+                f'{_ertd(er_ibov_d_s, er_ibod_d_s)}'
+                f'{_ertd(er_ibov_m_s, er_ibod_m_s)}'
+                f'{_ertd(er_ibov_y_s, er_ibod_y_s)}'
                 f'</tr>')
 
     # ── By Name table ──────────────────────────────────────────────────────────
@@ -2774,15 +2810,31 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
     tot_ibod_act = stocks["ibod_act"].sum()
     tot_ibov_bmk = stocks["ibov_w"].sum()
     tot_ibod_bmk = stocks["ibod_w"].sum()
-    name_rows += (f'<tr style="font-weight:700;border-top:2px solid var(--border)">'
+    tot_er_ibov_d = stocks["TOTAL_IBVSP_DAY"].sum()
+    tot_er_ibov_m = stocks["TOTAL_IBVSP_MONTH"].sum()
+    tot_er_ibov_y = stocks["TOTAL_IBVSP_YEAR"].sum()
+    tot_er_ibod_d = stocks["TOTAL_IBOD_Benchmark_DAY"].sum()
+    tot_er_ibod_m = stocks["TOTAL_IBOD_Benchmark_MONTH"].sum()
+    tot_er_ibod_y = stocks["TOTAL_IBOD_Benchmark_YEAR"].sum()
+
+    def _tot_er(vi, vo):
+        s = "+" if vo >= 0 else ""
+        return (f'<td class="mono {uid}-er-cell" style="text-align:right;font-weight:700;color:{_col(vo)}"'
+                f' data-ibov="{vi:.6f}" data-ibod="{vo:.6f}">{s}{vo*100:.2f}%</td>')
+
+    name_rows += (f'<tr data-pinned="1" style="font-weight:700;border-top:2px solid var(--border)">'
                   f'<td>TOTAL</td>'
                   f'<td class="mono" style="text-align:right">{_pf(gross)}</td>'
                   f'<td class="mono {uid}-bmk-cell" style="text-align:right"'
                   f'  data-ibov="{tot_ibov_bmk:.6f}" data-ibod="{tot_ibod_bmk:.6f}">{_pf(tot_ibov_bmk)}</td>'
                   f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(tot_ibov_act)}"'
                   f'  data-ibov="{tot_ibov_act:.6f}" data-ibod="{tot_ibod_act:.6f}">{_pf(tot_ibov_act, sign=True)}</td>'
-                  f'<td></td><td></td><td></td><td></td></tr>')
-    name_rows += (f'<tr style="color:var(--muted)">'
+                  f'<td></td>'
+                  f'{_tot_er(tot_er_ibov_d, tot_er_ibod_d)}'
+                  f'{_tot_er(tot_er_ibov_m, tot_er_ibod_m)}'
+                  f'{_tot_er(tot_er_ibov_y, tot_er_ibod_y)}'
+                  f'</tr>')
+    name_rows += (f'<tr data-pinned="1" style="color:var(--muted)">'
                   f'<td style="padding-left:4px;font-style:italic">Caixa</td>'
                   f'<td class="mono" style="text-align:right">{_pf(cash_pct)}</td>'
                   f'<td colspan="6"></td></tr>')
@@ -2802,15 +2854,32 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
     sector_rows = ""
     for sec in sector_order:
         grp = stocks[stocks["sector"] == sec].sort_values("% Cash", ascending=False)
-        sec_pos   = grp["% Cash"].sum()
-        sec_ibov  = grp["ibov_w"].sum()
-        sec_ibod  = grp["ibod_w"].sum()
+        sec_pos    = grp["% Cash"].sum()
+        sec_ibov   = grp["ibov_w"].sum()
+        sec_ibod   = grp["ibod_w"].sum()
         sec_ibov_a = grp["ibov_act"].sum()
         sec_ibod_a = grp["ibod_act"].sum()
+        sec_er_ibov_d = grp["TOTAL_IBVSP_DAY"].sum()
+        sec_er_ibov_m = grp["TOTAL_IBVSP_MONTH"].sum()
+        sec_er_ibov_y = grp["TOTAL_IBVSP_YEAR"].sum()
+        sec_er_ibod_d = grp["TOTAL_IBOD_Benchmark_DAY"].sum()
+        sec_er_ibod_m = grp["TOTAL_IBOD_Benchmark_MONTH"].sum()
+        sec_er_ibod_y = grp["TOTAL_IBOD_Benchmark_YEAR"].sum()
+        # Weighted beta: Σ(pos_i × beta_i) / Σ(pos_i)
+        _b = grp.dropna(subset=["BETA"])
+        sec_wbeta = ((_b["% Cash"] * _b["BETA"]).sum() / _b["% Cash"].sum()
+                     if not _b.empty and _b["% Cash"].sum() > 0 else None)
         macro_c = grp.iloc[0]["macro"] if not grp.empty else "—"
-        sec_data = {"sector": f"{sec} <span style='font-size:9px;color:var(--muted);font-weight:400'>({macro_c})</span>",
-                    "pos_tot": sec_pos, "ibov_tot": sec_ibov, "ibod_tot": sec_ibod,
-                    "ibov_act_tot": sec_ibov_a, "ibod_act_tot": sec_ibod_a}
+        sec_data = {
+            "sector":       f"{sec} <span style='font-size:9px;color:var(--muted);font-weight:400'>({macro_c})</span>",
+            "pos_tot":      sec_pos,
+            "ibov_tot":     sec_ibov,   "ibod_tot":     sec_ibod,
+            "ibov_act_tot": sec_ibov_a, "ibod_act_tot": sec_ibod_a,
+            "er_ibov_d_tot": sec_er_ibov_d, "er_ibod_d_tot": sec_er_ibod_d,
+            "er_ibov_m_tot": sec_er_ibov_m, "er_ibod_m_tot": sec_er_ibod_m,
+            "er_ibov_y_tot": sec_er_ibov_y, "er_ibod_y_tot": sec_er_ibod_y,
+            "w_beta":       sec_wbeta,
+        }
         sector_rows += _tr(sec_data, is_sector=True)
         for _, r in grp.iterrows():
             sector_rows += (f'<tr class="{uid}-child-row">' +
@@ -2819,7 +2888,7 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
     by_sector_html = f"""
     <div id="{uid}-view-sector" class="{uid}-view" style="display:none">
       <div style="overflow-x:auto">
-        <table class="metric-table" style="font-size:11px;min-width:620px">
+        <table class="metric-table" data-no-sort="1" style="font-size:11px;min-width:620px">
           {th}<tbody>{sector_rows}</tbody>
         </table>
       </div>
@@ -2840,6 +2909,12 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
       td.textContent = isNaN(v) ? '—' : (v*100).toFixed(2)+'%';
     }});
     document.querySelectorAll('.'+uid+'-act-cell').forEach(function(td) {{
+      var v = parseFloat(td.dataset[bmk]);
+      if (isNaN(v)) {{ td.textContent = '—'; return; }}
+      td.textContent = (v >= 0 ? '+' : '') + (v*100).toFixed(2) + '%';
+      td.style.color = v >= 0 ? 'var(--up)' : 'var(--down)';
+    }});
+    document.querySelectorAll('.'+uid+'-er-cell').forEach(function(td) {{
       var v = parseFloat(td.dataset[bmk]);
       if (isNaN(v)) {{ td.textContent = '—'; return; }}
       td.textContent = (v >= 0 ? '+' : '') + (v*100).toFixed(2) + '%';
@@ -4846,7 +4921,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   function sortTableByCol(table, colIdx, asc) {{
     var tbody = table.tBodies[0]; if (!tbody) return;
-    var rows = Array.from(tbody.rows).filter(function(r) {{ return r.cells.length > colIdx; }});
+    var all   = Array.from(tbody.rows).filter(function(r) {{ return r.cells.length > colIdx; }});
+    var pinned = all.filter(function(r) {{ return r.dataset.pinned === '1'; }});
+    var rows   = all.filter(function(r) {{ return r.dataset.pinned !== '1'; }});
     rows.sort(function(a, b) {{
       var va = _cellKey(a.cells[colIdx]), vb = _cellKey(b.cells[colIdx]);
       if (!isNaN(va.n) && !isNaN(vb.n)) return asc ? va.n - vb.n : vb.n - va.n;
@@ -4855,6 +4932,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       return asc ? va.s.localeCompare(vb.s) : vb.s.localeCompare(va.s);
     }});
     rows.forEach(function(r) {{ tbody.appendChild(r); }});
+    pinned.forEach(function(r) {{ tbody.appendChild(r); }});
   }}
   function attachUniversalSort() {{
     // Exclude tables that already have data-sort-col handlers (exposure section)
