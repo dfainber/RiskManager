@@ -1121,8 +1121,12 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
                         PRIMITIVE_CLASS, PRODUCT, expiry, days_to_exp,
                         delta_brl, mod_dur, ano_eq_brl, factor, bucket
     """
-    q = f"""
-    SELECT "TRADING_DESK_SHARE_SOURCE" AS source,
+    # Two sets: (a) direct positions held by the desk itself;
+    # (b) positions held inside Albatroz that are attributable to this desk's
+    # share of Albatroz (reverse attribution — exploded look-through).
+    albatroz_td = "GALAPAGOS ALBATROZ FIRF LP"
+    q_direct = f"""
+    SELECT 'direct' AS via,
            "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
            MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
            SUM("DELTA")               AS delta_brl,
@@ -1130,13 +1134,30 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
            SUM("POSITION")            AS position_brl
     FROM "LOTE45"."LOTE_PRODUCT_EXPO"
     WHERE "TRADING_DESK" = '{desk}'
-      AND "TRADING_DESK_SHARE_SOURCE" IN ('{desk}', 'GALAPAGOS ALBATROZ FIRF LP')
+      AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
       AND "VAL_DATE" = DATE '{date_str}'
       AND "DELTA" <> 0
-    GROUP BY "TRADING_DESK_SHARE_SOURCE", "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
-             "PRODUCT", "EXPIRY"
+    GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
     """
-    df = read_sql(q)
+    parts = [read_sql(q_direct)]
+    # Skip the Albatroz look-through for Albatroz itself (prevents self-join).
+    if desk != albatroz_td:
+        q_via = f"""
+        SELECT 'via_albatroz' AS via,
+               "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
+               MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
+               SUM("DELTA")               AS delta_brl,
+               MAX("MOD_DURATION")        AS mod_dur,
+               SUM("POSITION")            AS position_brl
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK" = '{albatroz_td}'
+          AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
+          AND "VAL_DATE" = DATE '{date_str}'
+          AND "DELTA" <> 0
+        GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
+        """
+        parts.append(read_sql(q_via))
+    df = pd.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
     if df.empty:
         return df
     for c in ("delta_brl", "mod_dur", "days_to_exp", "position_brl"):
@@ -1178,10 +1199,7 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
     # 'IPCA' primitive rows represent inflation-index carry (face value); override factor.
     df.loc[df["PRIMITIVE_CLASS"] == "IPCA", "factor"] = "ipca_idx"
     df["bucket"]    = df["yrs_to_mat"].apply(_rf_bucket)
-    df["via"]       = df["source"].apply(
-        lambda s: "via_albatroz" if (s == "GALAPAGOS ALBATROZ FIRF LP" and desk != s)
-        else "direct"
-    )
+    # 'via' already set by the SQL ('direct' | 'via_albatroz')
     return df
 
 
