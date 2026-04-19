@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 from datetime import date, timedelta
 
+import warnings
+warnings.filterwarnings("ignore")
+
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -21,7 +24,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
 
 # ── Config ──────────────────────────────────────────────────────────────────
-DATA_STR  = sys.argv[1] if len(sys.argv) > 1 else "2026-04-16"
+DATA_STR  = sys.argv[1] if len(sys.argv) > 1 else (
+    (pd.Timestamp("today") - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
+)
 DATA      = pd.Timestamp(DATA_STR)
 DATE_1Y   = DATA - pd.DateOffset(years=1)
 DATE_60D  = DATA - pd.Timedelta(days=90)  # ~60 business days buffer
@@ -31,6 +36,12 @@ FUNDS = {
     "Galapagos Quantitativo FIM":    {"short": "QUANT",      "level": 2, "stress_col": "macro", "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
     "Galapagos Evolution FIC FIM CP":{"short": "EVOLUTION",  "level": 3, "stress_col": "spec",  "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 10.5, "stress_hard": 15.0},
 }
+# Funds in LOTE_FUND_STRESS (product-level, not RPM). Limits provisional — to be calibrated.
+RAW_FUNDS = {
+    "GALAPAGOS ALBATROZ FIRF LP": {"short": "ALBATROZ", "stress_col": "macro", "var_soft": 1.0, "var_hard": 1.5, "stress_soft": 5.0, "stress_hard": 8.0},
+    "Galapagos Global Macro Q":   {"short": "MACRO_Q",  "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
+}
+ALL_FUNDS = {**FUNDS, **RAW_FUNDS}
 OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -69,11 +80,77 @@ def fetch_risk_history():
     ORDER BY "TRADING_DESK", "VAL_DATE"
     """
     df = read_sql(q)
-    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
     return df
 
+def fetch_risk_history_raw():
+    """Fetch VaR/stress from LOTE_FUND_STRESS (product-level) for RAW_FUNDS, summed to fund level."""
+    tds = ", ".join(f"'{td}'" for td in RAW_FUNDS)
+    q = f"""
+    SELECT "TRADING_DESK", "VAL_DATE",
+           SUM("PVAR1DAY")        AS var_total,
+           SUM("SPECIFIC_STRESS") AS spec_stress,
+           SUM("MACRO_STRESS")    AS macro_stress
+    FROM "LOTE45"."LOTE_FUND_STRESS"
+    WHERE "VAL_DATE" >= DATE '{DATE_1Y.date()}'
+      AND "TRADING_DESK" IN ({tds})
+    GROUP BY "TRADING_DESK", "VAL_DATE"
+    ORDER BY "TRADING_DESK", "VAL_DATE"
+    """
+    df = read_sql(q)
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
+    return df
+
+def fetch_frontier_mainboard(date_str: str) -> pd.DataFrame:
+    """Latest available Long Only mainboard on or before date_str."""
+    q = f"""
+    SELECT *
+    FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+    WHERE "VAL_DATE" = (
+        SELECT MAX("VAL_DATE") FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+        WHERE "VAL_DATE" <= DATE '{date_str}'
+    )
+    ORDER BY "BOOK", "PRODUCT"
+    """
+    try:
+        df = read_sql(q)
+        if not df.empty:
+            df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def fetch_frontier_exposure_data() -> tuple:
+    """Fetch IBOV + SMLLBV compositions and sector mapping for Frontier exposure."""
+    q_ibov = """
+    SELECT "INSTRUMENT", "VALUE" AS weight
+    FROM public."EQUITIES_COMPOSITION"
+    WHERE "LIST_NAME" = 'IBOV'
+      AND "DATE" = (SELECT MAX("DATE") FROM public."EQUITIES_COMPOSITION" WHERE "LIST_NAME" = 'IBOV')
+    """
+    q_smll = """
+    SELECT "INSTRUMENT", "VALUE" AS weight
+    FROM public."EQUITIES_COMPOSITION"
+    WHERE "LIST_NAME" = 'SMLLBV'
+      AND "DATE" = (SELECT MAX("DATE") FROM public."EQUITIES_COMPOSITION" WHERE "LIST_NAME" = 'SMLLBV')
+    """
+    q_sectors = """
+    SELECT DISTINCT ON (ft."TICKER")
+           ft."TICKER", cs."GLPG_SECTOR", cs."GLPG_MACRO_CLASSIFICATION"
+    FROM q_models."FRONTIER_TARGETS" ft
+    LEFT JOIN q_models."COMPANY_SECTORS" cs ON ft."GLOBAL_EQUITIES_KEY" = cs."GLOBAL_EQUITIES_KEY"
+    ORDER BY ft."TICKER"
+    """
+    try:
+        df_ibov    = read_sql(q_ibov)
+        df_smll    = read_sql(q_smll)
+        df_sectors = read_sql(q_sectors)
+        return df_ibov, df_smll, df_sectors
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
 def fetch_aum_history():
-    tds = ", ".join(f"'{t}'" for t in FUNDS)
+    tds = ", ".join(f"'{t}'" for t in ALL_FUNDS)
     q = f"""
     SELECT "TRADING_DESK", "VAL_DATE", "NAV"
     FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
@@ -81,15 +158,17 @@ def fetch_aum_history():
       AND "TRADING_DESK" IN ({tds})
     """
     df = read_sql(q)
-    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
     return df
 
 # ── Build series ─────────────────────────────────────────────────────────────
-def build_series(df_risk, df_aum):
+def build_series(df_risk, df_aum, df_risk_raw=None):
     result = {}
     for td, cfg in FUNDS.items():
         rsk = df_risk[df_risk["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
         nav = df_aum [df_aum ["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
+        rsk["VAL_DATE"] = rsk["VAL_DATE"].astype("datetime64[us]")
+        nav["VAL_DATE"] = nav["VAL_DATE"].astype("datetime64[us]")
         # NAV lags VaR by up to a day (admin process). Use the latest NAV at-or-before each risk row.
         merged = pd.merge_asof(
             rsk, nav[["VAL_DATE", "NAV"]], on="VAL_DATE", direction="backward",
@@ -99,6 +178,24 @@ def build_series(df_risk, df_aum):
         merged["macro_pct"] = merged["macro_stress"] * -1 / merged["NAV"] * 100
         merged["stress_pct"] = merged[f"{cfg['stress_col']}_pct"]
         result[td] = merged.sort_values("VAL_DATE")
+    if df_risk_raw is not None and not df_risk_raw.empty:
+        for td, cfg in RAW_FUNDS.items():
+            rsk = df_risk_raw[df_risk_raw["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
+            nav = df_aum[df_aum["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
+            if rsk.empty or nav.empty:
+                continue
+            rsk["VAL_DATE"] = rsk["VAL_DATE"].astype("datetime64[us]")
+            nav["VAL_DATE"] = nav["VAL_DATE"].astype("datetime64[us]")
+            merged = pd.merge_asof(
+                rsk, nav[["VAL_DATE", "NAV"]], on="VAL_DATE", direction="backward",
+            ).dropna(subset=["NAV"])
+            if merged.empty:
+                continue
+            merged["var_pct"]   = merged["var_total"]    * -1 / merged["NAV"] * 100
+            merged["spec_pct"]  = merged["spec_stress"]  * -1 / merged["NAV"] * 100
+            merged["macro_pct"] = merged["macro_stress"] * -1 / merged["NAV"] * 100
+            merged["stress_pct"] = merged[f"{cfg['stress_col']}_pct"]
+            result[td] = merged.sort_values("VAL_DATE")
     return result
 
 # ── Sparkline ────────────────────────────────────────────────────────────────
@@ -200,7 +297,7 @@ def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return result
 
 # ── Range bar (SVG inline) ────────────────────────────────────────────────────
-def range_bar_svg(val, vmin, vmax, soft, hard, width=220, height=36) -> str:
+def range_bar_svg(val, vmin, vmax, soft, hard, width=220, height=48) -> str:
     if vmax == vmin:
         pct = 50.0
     else:
@@ -258,7 +355,7 @@ def range_bar_svg(val, vmin, vmax, soft, hard, width=220, height=36) -> str:
 
 # ── Stop monitor bar (bidirectional SVG) ─────────────────────────────────────
 def stop_bar_svg(budget_abs: float, pnl_mtd: float, budget_max: float,
-                 width=300, height=46, soft_mark=None) -> str:
+                 width=300, height=54, soft_mark=None) -> str:
     """
     Single-track bidirectional bar.
     Origin = start of month (zero). Left = loss (red). Right = gain (green).
@@ -304,7 +401,7 @@ def stop_bar_svg(budget_abs: float, pnl_mtd: float, budget_max: float,
     dist_color = "#4ade80" if dist > 0 else "#f87171"
     dist_label = f"+{dist:.0f}" if dist > 0 else f"{dist:.0f}"
 
-    y_mid = 16
+    y_mid = 22   # shifted down from 16 so top label has room above the bar
     bh    = 12
 
     parts = [f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">']
@@ -314,7 +411,14 @@ def stop_bar_svg(budget_abs: float, pnl_mtd: float, budget_max: float,
     # Subtle gain-side tint
     parts.append(f'<rect x="{origin_x:.1f}" y="{y_mid-bh//2}" width="{gain_px:.1f}" height="{bh}" fill="#14241a" opacity="0.6"/>')
 
-    # PnL fill
+    # Blue budget-available bar: stop_x → origin_x (shows remaining room before stop)
+    if budget_abs > 0:
+        bud_x = stop_x
+        bud_w = origin_x - stop_x
+        if bud_w > 1:
+            parts.append(f'<rect x="{bud_x:.1f}" y="{y_mid-bh//2}" width="{bud_w:.1f}" height="{bh}" fill="#1e4976" opacity="0.55"/>')
+
+    # PnL fill (drawn on top of budget bar)
     if fill_w > 0.5:
         parts.append(f'<rect x="{fill_x:.1f}" y="{y_mid-bh//2}" width="{fill_w:.1f}" height="{bh}" rx="2" fill="{bar_color}" opacity="0.85"/>')
 
@@ -324,7 +428,7 @@ def stop_bar_svg(budget_abs: float, pnl_mtd: float, budget_max: float,
     # Hard stop line
     if budget_abs > 0:
         parts.append(f'<line x1="{stop_x:.1f}" y1="{y_mid-bh//2-4}" x2="{stop_x:.1f}" y2="{y_mid+bh//2+4}" stroke="#f87171" stroke-width="2.5"/>')
-        parts.append(f'<text x="{stop_x:.1f}" y="{y_mid+bh//2+13}" font-size="8" fill="#f87171" font-family="monospace" text-anchor="middle">-{budget_abs:.0f}</text>')
+        parts.append(f'<text x="{stop_x:.1f}" y="{y_mid+bh//2+15}" font-size="8" fill="#f87171" font-family="monospace" text-anchor="middle">-{budget_abs:.0f}</text>')
         # Base-63 tick: always shown as reference for non-CI PMs
         if soft_mark is None:  # i.e. not CI
             base_x = max(LPAD + 2.0, origin_x - STOP_BASE * loss_scale)
@@ -386,7 +490,6 @@ def fetch_macro_pnl_products(date_str: str) -> pd.DataFrame:
         FROM q_models."REPORT_ALPHA_ATRIBUTION"
         WHERE "FUNDO" = 'MACRO'
           AND "DATE"  = DATE '{date_str}'
-          AND "MES"  <> 0
           AND "LIVRO" IN ({livros})
         GROUP BY "LIVRO", "PRODUCT"
     """)
@@ -885,7 +988,7 @@ def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
         status_label, status_color = "🟢 OK", "var(--up)"
 
     margem_bps = budget_abs + mtd_bps  # distance from stop (in bps, positive = room left)
-    bar = stop_bar_svg(budget_abs, mtd_bps, budget_abs * 1.2, width=340, height=48)
+    bar = stop_bar_svg(budget_abs, mtd_bps, budget_abs * 1.2, width=340, height=56)
 
     dia_color = "var(--up)" if dia_bps >= 0 else "var(--down)"
     mtd_color = "var(--up)" if mtd_bps >= 0 else "var(--down)"
@@ -1671,8 +1774,8 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
         def cap_chip(label, pct, limit):
             color = "#f87171" if pct >= 100 else "#facc15" if pct >= 70 else "#334155"
             return f'<span style="color:{color};font-size:9px">{label} {pct:.0f}%</span>'
-        sem_chip = cap_chip("SEM", sem_pct, STOP_SEM) if pm != "CI" else ""
-        ano_chip = cap_chip("ANO", ano_pct, STOP_ANO) if pm != "CI" else ""
+        sem_chip = cap_chip("SEM", sem_pct, STOP_SEM) if pm != "CI" and sem_pct > 0 else ""
+        ano_chip = cap_chip("ANO", ano_pct, STOP_ANO) if pm != "CI" and ano_pct > 0 else ""
 
         # Margem number color based on consumption
         if pm == "CI":
@@ -1865,7 +1968,8 @@ def fetch_pa_daily_per_product(date_str: str = DATA_STR, lookback_days: int = 90
     """
     q = f"""
     SELECT "FUNDO", "LIVRO", "PRODUCT", "DATE",
-           SUM("DIA") * 10000 AS dia_bps
+           SUM("DIA") * 10000              AS dia_bps,
+           ABS(SUM(COALESCE("POSITION",0))) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '{lookback_days} days')
@@ -1902,16 +2006,36 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
     today_df = d[d["DATE"] == today]
 
     keys = ["FUNDO", "LIVRO", "PRODUCT"]
-    stats = past.groupby(keys)["dia_bps"].agg(sigma="std", n_obs="count").reset_index()
-    today_agg = today_df.groupby(keys)["dia_bps"].sum().reset_index().rename(columns={"dia_bps": "today_bps"})
+
+    # Implied daily return = dia_bps / position_brl (asset return, position-neutral)
+    pos_col = "position_brl" if "position_brl" in past.columns else None
+    if pos_col and (past[pos_col] > 0).any():
+        valid_pos = past[past[pos_col] > 0].copy()
+        valid_pos["implied_return"] = valid_pos["dia_bps"] / valid_pos[pos_col]
+        stats = valid_pos.groupby(keys)["implied_return"].agg(sigma="std", n_obs="count").reset_index()
+    else:
+        stats = past.groupby(keys)["dia_bps"].agg(sigma="std", n_obs="count").reset_index()
+
+    today_agg = today_df.groupby(keys).agg(
+        today_bps=("dia_bps", "sum"),
+        today_pos=("position_brl", "sum") if pos_col else ("dia_bps", "count"),
+    ).reset_index()
 
     merged = today_agg.merge(stats, on=keys, how="left")
     merged["sigma"] = merged["sigma"].fillna(0.0)
     merged["n_obs"] = merged["n_obs"].fillna(0).astype(int)
-    # Z-score; guard against tiny sigma
+
+    # Z = today's implied return / σ_implied_return (asset vol, position-neutral)
     merged["z"] = 0.0
-    valid = merged["sigma"] > 0.05
-    merged.loc[valid, "z"] = merged.loc[valid, "today_bps"] / merged.loc[valid, "sigma"]
+    if pos_col:
+        valid = (merged["sigma"] > 1e-9) & (merged["today_pos"] > 0)
+        merged.loc[valid, "z"] = (
+            (merged.loc[valid, "today_bps"] / merged.loc[valid, "today_pos"])
+            / merged.loc[valid, "sigma"]
+        )
+    else:
+        valid = merged["sigma"] > 0.05
+        merged.loc[valid, "z"] = merged.loc[valid, "today_bps"] / merged.loc[valid, "sigma"]
 
     statistical = (
         (merged["z"].abs() >= z_min)
@@ -2281,6 +2405,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> st
         <span class="card-title">Performance Attribution</span>
         <span class="card-sub">— {fund_short} · alpha (%) vs. benchmark · click p/ drill-down</span>
         <div class="pa-toolbar">
+          <input class="pa-search" type="search" placeholder="🔍 buscar..." oninput="filterPa(this)" title="Filtrar por nome (busca parcial)"/>
           <button class="pa-btn" onclick="expandAllPa(this)"    title="Expandir tudo">⤢ Expandir</button>
           <button class="pa-btn" onclick="collapseAllPa(this)"  title="Colapsar tudo">⤡ Colapsar</button>
         </div>
@@ -2296,19 +2421,494 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> st
     </section>"""
 
 
+def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
+    """Long Only position/attribution card for Frontier Ações FIC FI."""
+    if df is None or df.empty:
+        return ""
+
+    val_date = str(df["VAL_DATE"].iloc[0])[:10]
+    stale = val_date != date_str
+
+    total_row = df[df["PRODUCT"] == "TOTAL"]
+    if total_row.empty:
+        return ""
+    tot = total_row.iloc[0]
+
+    gross    = tot["% Cash"]
+    delta    = tot["DELTA"]
+    nav_brl  = tot["R$"] / gross if gross else 0
+
+    att_d  = tot["TOTAL_ATRIBUTION_DAY"]   * 100
+    att_m  = tot["TOTAL_ATRIBUTION_MONTH"] * 100
+    att_y  = tot["TOTAL_ATRIBUTION_YEAR"]  * 100
+    er_d   = tot["TOTAL_IBOD_Benchmark_DAY"]   * 100
+    er_m   = tot["TOTAL_IBOD_Benchmark_MONTH"] * 100
+    er_y   = tot["TOTAL_IBOD_Benchmark_YEAR"]  * 100
+    ibov_d = tot["TOTAL_IBVSP_DAY"]   * 100
+    ibov_m = tot["TOTAL_IBVSP_MONTH"] * 100
+    ibov_y = tot["TOTAL_IBVSP_YEAR"]  * 100
+
+    stocks = df[~df["PRODUCT"].isin(["TOTAL", "SUBTOTAL", "AÇÕES ALIENADAS"])]
+    stocks_valid = stocks.dropna(subset=["BETA", "% Cash"])
+    pct_sum = stocks_valid["% Cash"].sum()
+    w_beta = (stocks_valid["% Cash"] * stocks_valid["BETA"]).sum() / pct_sum if pct_sum else None
+
+    def pct(v, decimals=2):
+        try:
+            f = float(v)
+            return f"{'+'if f>0 else ''}{f*100:.{decimals}f}%"
+        except Exception:
+            return "—"
+
+    def color(v):
+        try:
+            return "var(--up)" if float(v) >= 0 else "var(--down)"
+        except Exception:
+            return "inherit"
+
+    def fmt_brl(v):
+        try:
+            return f"R$ {float(v)/1e6:.1f}M"
+        except Exception:
+            return "—"
+
+    stale_badge = ' <span style="color:var(--warn);font-size:10px">D-1</span>' if stale else ""
+    nav_fmt = f"{nav_brl/1e6:.1f}M" if nav_brl else "—"
+    beta_fmt = f"{w_beta:.2f}" if w_beta is not None else "—"
+
+    # ── Header metrics ─────────────────────────────────────────────────────────
+    def metric_chip(label, val, c=None):
+        col = c or color(val)
+        return (f'<span class="sn-stat"><span class="sn-lbl">{label}</span>'
+                f'<span class="sn-val mono" style="color:{col}">{pct(val)}</span></span>')
+
+    header_metrics = f"""
+      <div class="sn-inline-stats mono" style="margin-bottom:10px;flex-wrap:wrap;gap:6px 16px">
+        <span class="sn-stat"><span class="sn-lbl">NAV</span><span class="sn-val mono">R$ {nav_fmt}</span></span>
+        <span class="sn-stat"><span class="sn-lbl">Gross</span><span class="sn-val mono">{pct(gross)}</span></span>
+        <span class="sn-stat"><span class="sn-lbl">Beta pond.</span><span class="sn-val mono">{beta_fmt}</span></span>
+        <span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>
+        {metric_chip("Attrib D", att_d/100)}
+        {metric_chip("Attrib MTD", att_m/100)}
+        {metric_chip("Attrib YTD", att_y/100)}
+        <span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>
+        {metric_chip("ER IBOD D", er_d/100)}
+        {metric_chip("ER IBOD MTD", er_m/100)}
+        {metric_chip("ER IBOD YTD", er_y/100)}
+        <span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>
+        {metric_chip("ER IBOV D", ibov_d/100)}
+        {metric_chip("ER IBOV MTD", ibov_m/100)}
+        {metric_chip("ER IBOV YTD", ibov_y/100)}
+      </div>"""
+
+    # ── Position table ─────────────────────────────────────────────────────────
+    col_headers = """
+      <tr class="col-headers">
+        <th style="text-align:left;min-width:80px">Ticker</th>
+        <th style="text-align:right">% Cash</th>
+        <th style="text-align:right">Delta</th>
+        <th style="text-align:right">Beta</th>
+        <th style="text-align:right">#ADTV</th>
+        <th style="text-align:right">Ret D</th>
+        <th style="text-align:right">Ret MTD</th>
+        <th style="text-align:right">Ret YTD</th>
+        <th style="text-align:right">Attrib D</th>
+        <th style="text-align:right">Attrib MTD</th>
+        <th style="text-align:right">Attrib YTD</th>
+        <th style="text-align:right">ER IBOD D</th>
+        <th style="text-align:right">ER IBOD MTD</th>
+        <th style="text-align:right">ER IBOD YTD</th>
+      </tr>"""
+
+    def make_row(row, is_subtotal=False, is_total=False):
+        ticker = row["PRODUCT"]
+        book   = row.get("BOOK", "")
+        label  = f"{ticker}" + (f" <span style='color:var(--muted);font-size:9px'>({book})</span>" if is_total else "")
+        bg = "background:rgba(30,144,255,0.08)" if is_total else ("background:rgba(255,255,255,0.04)" if is_subtotal else "")
+        fw = "font-weight:700" if (is_subtotal or is_total) else ""
+
+        def cell(v, is_pct=True, decimals=2):
+            try:
+                f = float(v)
+                txt = f"{'+'if f>0 else ''}{f*100:.{decimals}f}%" if is_pct else f"{f:.{decimals}f}"
+                col = color(f) if is_pct else "inherit"
+                return f'<td class="mono" style="text-align:right;color:{col}">{txt}</td>'
+            except Exception:
+                return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+
+        adtv_cell = cell(row.get("#ADTV"), is_pct=False, decimals=2) if not (is_subtotal or is_total) else '<td></td>'
+        beta_cell = cell(row.get("BETA"), is_pct=False, decimals=2) if not (is_subtotal or is_total) else '<td></td>'
+        ret_d     = cell(row.get("RETURN_DAY"))    if not (is_subtotal or is_total) else '<td></td>'
+        ret_m     = cell(row.get("RETURN_MONTH"))  if not (is_subtotal or is_total) else '<td></td>'
+        ret_y     = cell(row.get("RETURN_YEAR"))   if not (is_subtotal or is_total) else '<td></td>'
+
+        return f"""<tr style="{bg};{fw}">
+          <td style="padding-left:{'4px' if is_subtotal or is_total else '12px'};white-space:nowrap">{label}</td>
+          {cell(row.get("% Cash"))}
+          {cell(row.get("DELTA"))}
+          {beta_cell}
+          {adtv_cell}
+          {ret_d}{ret_m}{ret_y}
+          {cell(row.get("TOTAL_ATRIBUTION_DAY"))}
+          {cell(row.get("TOTAL_ATRIBUTION_MONTH"))}
+          {cell(row.get("TOTAL_ATRIBUTION_YEAR"))}
+          {cell(row.get("TOTAL_IBOD_Benchmark_DAY"))}
+          {cell(row.get("TOTAL_IBOD_Benchmark_MONTH"))}
+          {cell(row.get("TOTAL_IBOD_Benchmark_YEAR"))}
+        </tr>"""
+
+    tbody = ""
+    books = [b for b in df["BOOK"].unique() if b and b not in ("", None)]
+    for book in books:
+        book_rows = df[(df["BOOK"] == book) & (~df["PRODUCT"].isin(["TOTAL", "SUBTOTAL", "AÇÕES ALIENADAS"]))]
+        book_rows = book_rows.sort_values("% Cash", ascending=False, na_position="last")
+        # Book header
+        tbody += f'<tr><td colspan="14" style="padding:6px 4px 2px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--border)">{book}</td></tr>'
+        for _, r in book_rows.iterrows():
+            tbody += make_row(r)
+        # Subtotal for this book
+        sub = df[(df["PRODUCT"] == "SUBTOTAL") & (df["BOOK"] == book)]
+        if not sub.empty:
+            tbody += make_row(sub.iloc[0], is_subtotal=True)
+
+    # Grand total
+    tbody += make_row(tot, is_total=True)
+
+    table_html = f"""
+      <div style="overflow-x:auto">
+        <table class="metric-table" style="font-size:11px;min-width:900px">
+          <thead>{col_headers}</thead>
+          <tbody>{tbody}</tbody>
+        </table>
+      </div>"""
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Long Only</span>
+        <span class="card-sub">— Frontier Ações · {val_date}{stale_badge} · NAV R$ {nav_fmt} · Beta {beta_fmt}</span>
+      </div>
+      {header_metrics}
+      {table_html}
+    </section>"""
+
+
+def build_frontier_exposure_section(df_lo: pd.DataFrame,
+                                    df_ibov: pd.DataFrame,
+                                    df_smll: pd.DataFrame,
+                                    df_sectors: pd.DataFrame) -> str:
+    """Active-weight exposure card for Frontier Long Only vs IBOV / IBOD."""
+    if df_lo is None or df_lo.empty:
+        return ""
+    if df_ibov is None or df_ibov.empty:
+        return ""
+
+    # ── Positions ──────────────────────────────────────────────────────────────
+    EXCLUDE = {"TOTAL", "SUBTOTAL"}
+    # Handle encoding issues with "AÇÕES ALIENADAS"
+    stocks = df_lo[df_lo["BOOK"].astype(str).str.strip() != ""].copy()
+    stocks = stocks[~stocks["PRODUCT"].isin(EXCLUDE)].copy()
+    stocks = stocks[stocks["% Cash"].notna()].copy()
+    stocks = stocks.sort_values("% Cash", ascending=False).reset_index(drop=True)
+
+    if stocks.empty:
+        return ""
+
+    total_row = df_lo[df_lo["PRODUCT"] == "TOTAL"]
+    gross = float(total_row.iloc[0]["% Cash"]) if not total_row.empty else stocks["% Cash"].sum()
+    cash_pct = max(0.0, 1.0 - gross)
+
+    # ── Index weights ──────────────────────────────────────────────────────────
+    ibov_wt = df_ibov.set_index("INSTRUMENT")["weight"].to_dict() if not df_ibov.empty else {}
+    smll_wt = df_smll.set_index("INSTRUMENT")["weight"].to_dict() if not df_smll.empty else {}
+
+    stocks["ibov_w"] = stocks["PRODUCT"].map(ibov_wt).fillna(0.0)
+    stocks["smll_w"] = stocks["PRODUCT"].map(smll_wt).fillna(0.0)
+    stocks["ibod_w"] = 0.5 * stocks["ibov_w"] + 0.5 * stocks["smll_w"]
+    stocks["ibov_act"] = stocks["% Cash"] - stocks["ibov_w"]
+    stocks["ibod_act"] = stocks["% Cash"] - stocks["ibod_w"]
+
+    # ── Sector mapping ─────────────────────────────────────────────────────────
+    if not df_sectors.empty:
+        sec_map  = df_sectors.drop_duplicates("TICKER").set_index("TICKER")
+        stocks["sector"] = stocks["PRODUCT"].map(sec_map["GLPG_SECTOR"]).fillna("Outros")
+        stocks["macro"]  = stocks["PRODUCT"].map(sec_map["GLPG_MACRO_CLASSIFICATION"]).fillna("—")
+    else:
+        stocks["sector"] = "Outros"
+        stocks["macro"]  = "—"
+
+    # ── Header stats ───────────────────────────────────────────────────────────
+    w_beta_num = (stocks["% Cash"] * stocks["BETA"].fillna(0)).sum()
+    w_beta = w_beta_num / gross if gross > 0 else None
+
+    # Ex-ante TE (beta mismatch only, σ_IBOV ≈ 20% annualized)
+    _SIGMA_IBOV = 0.20
+    te_ibov = abs((w_beta or 1.0) - 1.0) * _SIGMA_IBOV * 100  # in %
+    te_ibod = te_ibov * 0.75  # IBOD has ~75% IBOV correlation
+
+    def _pf(v, decimals=2, sign=False):
+        try:
+            f = float(v)
+            s = "+" if (sign and f > 0) else ""
+            return f"{s}{f*100:.{decimals}f}%"
+        except Exception:
+            return "—"
+
+    def _col(v):
+        try:
+            return "var(--up)" if float(v) >= 0 else "var(--down)"
+        except Exception:
+            return "inherit"
+
+    beta_fmt = f"{w_beta:.2f}" if w_beta is not None else "—"
+
+    stats_bar = f"""
+    <div class="sn-inline-stats mono" style="margin-bottom:12px;flex-wrap:wrap;gap:6px 16px">
+      <span class="sn-stat"><span class="sn-lbl">Gross</span>
+        <span class="sn-val mono">{_pf(gross)}</span></span>
+      <span class="sn-stat"><span class="sn-lbl">Caixa</span>
+        <span class="sn-val mono" style="color:var(--muted)">{_pf(cash_pct)}</span></span>
+      <span class="sn-stat"><span class="sn-lbl">Beta pond.</span>
+        <span class="sn-val mono">{beta_fmt}</span></span>
+      <span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>
+      <span class="sn-stat"><span class="sn-lbl">TE aprox vs IBOV</span>
+        <span class="sn-val mono" style="color:var(--warn)">{te_ibov:.1f}%</span></span>
+      <span class="sn-stat"><span class="sn-lbl">TE aprox vs IBOD</span>
+        <span class="sn-val mono" style="color:var(--warn)">{te_ibod:.1f}%</span></span>
+      <span style="font-size:9px;color:var(--muted);align-self:center">(TE estimado via β; σ<sub>IBOV</sub>=20%)</span>
+    </div>"""
+
+    # ── Toggle buttons ─────────────────────────────────────────────────────────
+    uid = "loexpo"
+    toggle_bar = f"""
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px">
+        <button id="{uid}-ibov-btn" class="toggle-btn active"
+                onclick="loExpoBmk('{uid}','ibov')">IBOV</button>
+        <button id="{uid}-ibod-btn" class="toggle-btn"
+                onclick="loExpoBmk('{uid}','ibod')">IBOD</button>
+      </div>
+      <div style="display:flex;gap:4px;margin-left:auto">
+        <button id="{uid}-name-btn" class="toggle-btn active"
+                onclick="loExpoView('{uid}','name')">Por Nome</button>
+        <button id="{uid}-sector-btn" class="toggle-btn"
+                onclick="loExpoView('{uid}','sector')">Por Setor</button>
+        <span id="{uid}-expand-btns" style="display:none;gap:4px;margin-left:4px;display:none">
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="loExpoExpandAll('{uid}')">▼ All</button>
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="loExpoCollapseAll('{uid}')">▶ All</button>
+        </span>
+      </div>
+    </div>"""
+
+    # ── Table header ───────────────────────────────────────────────────────────
+    th = """<thead><tr>
+      <th style="text-align:left;min-width:70px">Ticker</th>
+      <th style="text-align:right">Posição</th>
+      <th style="text-align:right" id="{uid}-th-bmk">Bench</th>
+      <th style="text-align:right" id="{uid}-th-act">Ativo</th>
+      <th style="text-align:right">Beta</th>
+      <th style="text-align:right">ER D</th>
+      <th style="text-align:right">ER MTD</th>
+      <th style="text-align:right">ER YTD</th>
+    </tr></thead>""".replace("{uid}", uid)
+
+    def _tr(row, indent=False, is_sector=False, colspan=None):
+        if is_sector:
+            s = row["sector"]
+            pos_tot = row["pos_tot"]
+            ibov_tot = row["ibov_tot"]
+            ibod_tot = row["ibod_tot"]
+            ibov_a_tot = row["ibov_act_tot"]
+            ibod_a_tot = row["ibod_act_tot"]
+            return (f'<tr class="{uid}-sector-row" style="background:rgba(59,130,246,0.07);'
+                    f'font-weight:700;cursor:pointer" onclick="loExpoToggleSector(this)">'
+                    f'<td style="padding:5px 4px;white-space:nowrap">'
+                    f'<span class="{uid}-sector-arrow" style="font-size:9px;margin-right:4px">▼</span>{s}</td>'
+                    f'<td class="mono" style="text-align:right">{_pf(pos_tot)}</td>'
+                    f'<td class="mono {uid}-bmk-cell" style="text-align:right"'
+                    f'  data-ibov="{ibov_tot:.6f}" data-ibod="{ibod_tot:.6f}">{_pf(ibov_tot)}</td>'
+                    f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(ibov_a_tot)}"'
+                    f'  data-ibov="{ibov_a_tot:.6f}" data-ibod="{ibod_a_tot:.6f}">{_pf(ibov_a_tot, sign=True)}</td>'
+                    f'<td></td><td></td><td></td><td></td></tr>')
+
+        tk   = row["PRODUCT"]
+        pos  = row["% Cash"]
+        ibov_b = row["ibov_w"]
+        ibod_b = row["ibod_w"]
+        ibov_a = row["ibov_act"]
+        ibod_a = row["ibod_act"]
+        beta = row.get("BETA")
+        er_d = row.get("TOTAL_IBOD_Benchmark_DAY")
+        er_m = row.get("TOTAL_IBOD_Benchmark_MONTH")
+        er_y = row.get("TOTAL_IBOD_Benchmark_YEAR")
+        pad  = "padding-left:20px" if indent else "padding-left:4px"
+        beta_td = (f'<td class="mono" style="text-align:right">{float(beta):.2f}</td>'
+                   if pd.notna(beta) else '<td class="mono" style="text-align:right;color:var(--muted)">—</td>')
+
+        def _ertd(v):
+            try:
+                f = float(v)
+                s = "+" if f >= 0 else ""
+                return (f'<td class="mono" style="text-align:right;color:{_col(f)}">'
+                        f'{s}{f*100:.2f}%</td>')
+            except Exception:
+                return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+
+        return (f'<tr>'
+                f'<td style="{pad};white-space:nowrap">{tk}</td>'
+                f'<td class="mono" style="text-align:right">{_pf(pos)}</td>'
+                f'<td class="mono {uid}-bmk-cell" style="text-align:right"'
+                f'  data-ibov="{ibov_b:.6f}" data-ibod="{ibod_b:.6f}">{_pf(ibov_b)}</td>'
+                f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(ibov_a)}"'
+                f'  data-ibov="{ibov_a:.6f}" data-ibod="{ibod_a:.6f}">{_pf(ibov_a, sign=True)}</td>'
+                f'{beta_td}'
+                f'{_ertd(er_d)}{_ertd(er_m)}{_ertd(er_y)}'
+                f'</tr>')
+
+    # ── By Name table ──────────────────────────────────────────────────────────
+    name_rows = "".join(_tr(r) for _, r in stocks.iterrows())
+    # Totals row
+    tot_ibov_act = stocks["ibov_act"].sum()
+    tot_ibod_act = stocks["ibod_act"].sum()
+    tot_ibov_bmk = stocks["ibov_w"].sum()
+    tot_ibod_bmk = stocks["ibod_w"].sum()
+    name_rows += (f'<tr style="font-weight:700;border-top:2px solid var(--border)">'
+                  f'<td>TOTAL</td>'
+                  f'<td class="mono" style="text-align:right">{_pf(gross)}</td>'
+                  f'<td class="mono {uid}-bmk-cell" style="text-align:right"'
+                  f'  data-ibov="{tot_ibov_bmk:.6f}" data-ibod="{tot_ibod_bmk:.6f}">{_pf(tot_ibov_bmk)}</td>'
+                  f'<td class="mono {uid}-act-cell" style="text-align:right;color:{_col(tot_ibov_act)}"'
+                  f'  data-ibov="{tot_ibov_act:.6f}" data-ibod="{tot_ibod_act:.6f}">{_pf(tot_ibov_act, sign=True)}</td>'
+                  f'<td></td><td></td><td></td><td></td></tr>')
+    name_rows += (f'<tr style="color:var(--muted)">'
+                  f'<td style="padding-left:4px;font-style:italic">Caixa</td>'
+                  f'<td class="mono" style="text-align:right">{_pf(cash_pct)}</td>'
+                  f'<td colspan="6"></td></tr>')
+
+    by_name_html = f"""
+    <div id="{uid}-view-name" class="{uid}-view">
+      <div style="overflow-x:auto">
+        <table class="metric-table" style="font-size:11px;min-width:620px">
+          {th}<tbody>{name_rows}</tbody>
+        </table>
+      </div>
+    </div>"""
+
+    # ── By Sector table ────────────────────────────────────────────────────────
+    sector_order = (stocks.groupby("sector")["% Cash"].sum()
+                    .sort_values(ascending=False).index.tolist())
+    sector_rows = ""
+    for sec in sector_order:
+        grp = stocks[stocks["sector"] == sec].sort_values("% Cash", ascending=False)
+        sec_pos   = grp["% Cash"].sum()
+        sec_ibov  = grp["ibov_w"].sum()
+        sec_ibod  = grp["ibod_w"].sum()
+        sec_ibov_a = grp["ibov_act"].sum()
+        sec_ibod_a = grp["ibod_act"].sum()
+        macro_c = grp.iloc[0]["macro"] if not grp.empty else "—"
+        sec_data = {"sector": f"{sec} <span style='font-size:9px;color:var(--muted);font-weight:400'>({macro_c})</span>",
+                    "pos_tot": sec_pos, "ibov_tot": sec_ibov, "ibod_tot": sec_ibod,
+                    "ibov_act_tot": sec_ibov_a, "ibod_act_tot": sec_ibod_a}
+        sector_rows += _tr(sec_data, is_sector=True)
+        for _, r in grp.iterrows():
+            sector_rows += (f'<tr class="{uid}-child-row">' +
+                            _tr(r, indent=True)[4:])  # strip leading <tr>
+
+    by_sector_html = f"""
+    <div id="{uid}-view-sector" class="{uid}-view" style="display:none">
+      <div style="overflow-x:auto">
+        <table class="metric-table" style="font-size:11px;min-width:620px">
+          {th}<tbody>{sector_rows}</tbody>
+        </table>
+      </div>
+    </div>"""
+
+    # ── JavaScript ─────────────────────────────────────────────────────────────
+    js = f"""<script>
+(function() {{
+  var _bmk = 'ibov';
+  window.loExpoBmk = function(uid, bmk) {{
+    _bmk = bmk;
+    ['ibov','ibod'].forEach(function(b) {{
+      var btn = document.getElementById(uid+'-'+b+'-btn');
+      if (btn) btn.classList.toggle('active', b === bmk);
+    }});
+    document.querySelectorAll('.'+uid+'-bmk-cell').forEach(function(td) {{
+      var v = parseFloat(td.dataset[bmk]);
+      td.textContent = isNaN(v) ? '—' : (v*100).toFixed(2)+'%';
+    }});
+    document.querySelectorAll('.'+uid+'-act-cell').forEach(function(td) {{
+      var v = parseFloat(td.dataset[bmk]);
+      if (isNaN(v)) {{ td.textContent = '—'; return; }}
+      td.textContent = (v >= 0 ? '+' : '') + (v*100).toFixed(2) + '%';
+      td.style.color = v >= 0 ? 'var(--up)' : 'var(--down)';
+    }});
+  }};
+  window.loExpoView = function(uid, view) {{
+    ['name','sector'].forEach(function(v) {{
+      var el = document.getElementById(uid+'-view-'+v);
+      if (el) el.style.display = (v === view) ? '' : 'none';
+      var btn = document.getElementById(uid+'-'+v+'-btn');
+      if (btn) btn.classList.toggle('active', v === view);
+    }});
+    var expBtns = document.getElementById(uid+'-expand-btns');
+    if (expBtns) expBtns.style.display = (view === 'sector') ? 'flex' : 'none';
+  }};
+  window.loExpoToggleSector = function(tr) {{
+    var arrow = tr.querySelector('.{uid}-sector-arrow');
+    var open = arrow ? arrow.textContent.trim() === '▼' : true;
+    if (arrow) arrow.textContent = open ? '▶' : '▼';
+    var sib = tr.nextElementSibling;
+    while (sib && !sib.classList.contains('{uid}-sector-row')) {{
+      sib.style.display = open ? 'none' : '';
+      sib = sib.nextElementSibling;
+    }}
+  }};
+  window.loExpoExpandAll = function(uid) {{
+    document.querySelectorAll('.'+uid+'-sector-row').forEach(function(tr) {{
+      var arrow = tr.querySelector('.'+uid+'-sector-arrow');
+      if (arrow && arrow.textContent.trim() === '▶') window.loExpoToggleSector(tr);
+    }});
+  }};
+  window.loExpoCollapseAll = function(uid) {{
+    document.querySelectorAll('.'+uid+'-sector-row').forEach(function(tr) {{
+      var arrow = tr.querySelector('.'+uid+'-sector-arrow');
+      if (arrow && arrow.textContent.trim() === '▼') window.loExpoToggleSector(tr);
+    }});
+  }};
+}})();
+</script>"""
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposição vs Benchmark</span>
+        <span class="card-sub">— Frontier Ações · Active Weight por nome e setor</span>
+      </div>
+      {stats_bar}
+      {toggle_bar}
+      {by_name_html}
+      {by_sector_html}
+      {js}
+    </section>"""
+
+
 REPORTS = [
-    ("analise",      "Análise"),
     ("performance",  "PA"),
-    ("risk-monitor", "Risk Monitor"),
     ("exposure",     "Exposure"),
     ("single-name",  "Single-Name"),
+    ("risk-monitor", "Risk Monitor"),
+    ("analise",      "Análise"),
     ("distribution", "Distribuição 252d"),
     ("stop-monitor", "Risk Budget"),
+    ("frontier-lo",  "Long Only"),
 ]
-FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ"]
+FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER"]
 FUND_LABELS = {
     "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
-    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz",
+    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "FRONTIER": "Frontier",
 }
 
 # PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short
@@ -2320,6 +2920,318 @@ _FUND_PA_KEY = {
     "ALBATROZ":  "ALBATROZ",
 }
 
+def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_daily):
+    """
+    Returns (full_html, compact_html).
+    full_html  — filterable detail table + sanity checks for the Qualidade tab.
+    compact_html — compact status alert for the Summary page.
+    """
+    if manifest is None:
+        return "", ""
+
+    DATA_STR_  = manifest["requested_date"]
+    d1_str_    = manifest["d1_str"]
+    DATA_      = pd.Timestamp(DATA_STR_)
+    expo_date  = manifest.get("expo_date", DATA_STR_)
+
+    _NO_VAR_FUNDS: set = set()  # ALBATROZ/MACRO_Q now sourced from LOTE_FUND_STRESS
+
+    # ── Build flat item list: one row per (fund, source) ──────────────────────
+    # Each item: {fund_short, source_label, status, date_used, detail, problem}
+    # status: "ok" | "stale" | "missing" | "na"
+    items = []
+
+    _PA_KEY = {"MACRO":"MACRO","QUANT":"QUANT","EVOLUTION":"EVOLUTION",
+               "MACRO_Q":"GLOBAL","ALBATROZ":"ALBATROZ"}
+    _TD_BY_SHORT = {cfg["short"]: td_ for td_, cfg in ALL_FUNDS.items()}
+
+    def _pa_item(short):
+        pa_key = _PA_KEY.get(short)
+        if df_pa is None or df_pa.empty or pa_key is None:
+            return dict(status="missing", date="—", detail="PA não disponível")
+        sub = df_pa[df_pa["FUNDO"] == pa_key]
+        if sub.empty:
+            return dict(status="missing", date="—", detail=f"FUNDO={pa_key} não encontrado no PA")
+        dia = float(sub["dia_bps"].sum())
+        mtd = float(sub["mtd_bps"].sum())
+        n   = len(sub)
+        has_dia = sub["dia_bps"].abs().sum() > 0.5
+        status = "ok" if has_dia else "stale"
+        return dict(status=status, date=DATA_STR_ if has_dia else d1_str_,
+                    detail=f"{n} instrumentos · DIA {dia:+.1f} bps · MTD {mtd:+.1f} bps")
+
+    def _var_item(short):
+        td = _TD_BY_SHORT.get(short)
+        if td is None or td not in series_map:
+            src = "LOTE_FUND_STRESS" if short in _NO_VAR_FUNDS else "LOTE_FUND_STRESS_RPM"
+            return dict(status="missing", date="—", detail=f"Sem dados em {src}")
+        s = series_map[td]
+        s_avail = s[s["VAL_DATE"] <= DATA_]
+        if s_avail.empty:
+            return dict(status="missing", date="—", detail="Nenhum registro até a data")
+        row = s_avail.iloc[-1]
+        last_date = str(row["VAL_DATE"])[:10]
+        stale = pd.Timestamp(last_date) < DATA_
+        cfg = ALL_FUNDS[td]
+        var_val = abs(float(row["var_pct"]))
+        soft, hard = cfg.get("var_soft", 999), cfg.get("var_hard", 999)
+        stress_val = row.get("stress_pct", None)
+        stress_txt = f" · Stress {float(stress_val):.1f}%" if stress_val is not None and not pd.isna(stress_val) else ""
+        over = " ⚠ ACIMA SOFT" if var_val >= soft else ""
+        detail = f"VaR {var_val:.2f}% (soft {soft:.2f}%, hard {hard:.2f}%){stress_txt}{over}"
+        return dict(status="stale" if stale else "ok", date=last_date, detail=detail)
+
+    def _expo_item(short):
+        if short == "ALBATROZ":
+            ok = manifest.get("alb_expo_ok", False)
+            rows = manifest.get("alb_expo_rows", 0)
+            if not ok:
+                return dict(status="missing", date="—", detail="Exposição ALBATROZ não disponível")
+            return dict(status="ok", date=DATA_STR_, detail=f"{rows} posições")
+        if short == "QUANT":
+            return dict(status="na", date="—", detail="Exposição QUANT não implementada")
+        ok = manifest.get("expo_ok", False)
+        rows = manifest.get("expo_rows", 0)
+        stale = expo_date != DATA_STR_
+        if not ok:
+            return dict(status="missing", date="—", detail="Exposição MACRO não disponível")
+        return dict(status="stale" if stale else "ok", date=expo_date,
+                    detail=f"{rows} posições" + (" (fallback D-1)" if stale else ""))
+
+    def _sn_item(short):
+        ok = manifest.get("quant_sn_ok" if short=="QUANT" else "evo_sn_ok", False)
+        rows = manifest.get("quant_sn_rows" if short=="QUANT" else "evo_sn_rows", 0)
+        if not ok:
+            return dict(status="missing", date="—", detail="Single-Name não disponível")
+        return dict(status="ok", date=DATA_STR_, detail=f"{rows} nomes")
+
+    def _dist_item(short):
+        today_ok = manifest.get("dist_today_ok", False)
+        prev_ok  = manifest.get("dist_prev_ok", False)
+        if today_ok:
+            return dict(status="ok", date=DATA_STR_, detail="backward + forward disponíveis")
+        if prev_ok:
+            return dict(status="stale", date=d1_str_, detail="backward D-1 (fallback) · forward indisponível")
+        return dict(status="missing", date="—", detail="Distribuição 252d não disponível")
+
+    def _stop_item(short):
+        if short == "ALBATROZ":
+            ok = manifest.get("alb_expo_ok", False)
+            return dict(status="ok" if ok else "missing", date=DATA_STR_ if ok else "—",
+                        detail="Stop R$150k/mês (estimado via DV01)" if ok else "Exposure ALBATROZ não disponível")
+        ok = manifest.get("stop_ok", False)
+        has_pnl = manifest.get("stop_has_pnl", False)
+        pms = manifest.get("stop_pms", [])
+        pms_pnl = manifest.get("stop_pms_pnl", [])
+        if not ok:
+            return dict(status="missing", date="—", detail="Stop monitor não disponível")
+        n_pms = len(pms)
+        n_pnl = len(pms_pnl)
+        detail = f"{n_pms} PMs · {n_pnl} com PnL MTD"
+        if pms_pnl:
+            detail += f" ({', '.join(pms_pnl)})"
+        return dict(status="ok" if has_pnl else "stale", date=DATA_STR_,
+                    detail=detail + ("" if has_pnl else " · PnL zero/ausente"))
+
+    _SRC_DEFS = [
+        ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ"], _pa_item),
+        ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ"], _var_item),
+        ("Exposição",         ["MACRO","QUANT","ALBATROZ"],                       _expo_item),
+        ("Single-Name",       ["QUANT","EVOLUTION"],                              _sn_item),
+        ("Distribuição 252d", ["MACRO","EVOLUTION"],                              _dist_item),
+        ("Stop / Budget",     ["MACRO","ALBATROZ"],                               _stop_item),
+    ]
+
+    all_issues   = []
+    n_known_gaps = 0
+    for src_label, funds, fn in _SRC_DEFS:
+        for short in FUND_ORDER:
+            if short not in funds:
+                continue
+            it = fn(short)
+            st = it["status"]
+            problem = st in ("missing", "stale")  # D-1 is always a warning
+            if st == "na":
+                n_known_gaps += 1
+            elif problem:
+                all_issues.append((short, src_label, st == "stale"))
+            items.append({
+                "fund": short,
+                "source": src_label,
+                "status": st,
+                "date": it["date"],
+                "detail": it["detail"],
+                "problem": problem,
+            })
+
+    # ── Render detail table ───────────────────────────────────────────────────
+    _ST_COLOR = {"ok": "#4ade80", "stale": "#facc15", "missing": "#f87171", "na": "#94a3b8"}
+    _ST_LABEL = {"ok": "TODAY", "stale": "D-1", "missing": "MISSING", "na": "N/A"}
+
+    detail_rows = ""
+    for it in items:
+        st   = it["status"]
+        col  = _ST_COLOR[st]
+        lbl  = _ST_LABEL[st]
+        prob = "1" if it["problem"] else "0"
+        bg   = 'background:rgba(248,113,113,0.05)' if st == "missing" else (
+               'background:rgba(250,204,21,0.04)' if st == "stale" else "")
+        detail_rows += (
+            f'<tr data-problem="{prob}" style="{bg}">'
+            f'<td style="padding:5px 12px;font-weight:600;white-space:nowrap">'
+            f'{FUND_LABELS.get(it["fund"], it["fund"])}</td>'
+            f'<td style="padding:5px 12px;color:var(--muted)">{it["source"]}</td>'
+            f'<td style="padding:5px 10px;text-align:center">'
+            f'<span style="color:{col};font-weight:700;font-size:11px">{lbl}</span></td>'
+            f'<td style="padding:5px 12px;font-family:var(--mono);font-size:11px;color:var(--muted)">'
+            f'{it["date"]}</td>'
+            f'<td style="padding:5px 12px;font-size:11.5px">{it["detail"]}</td>'
+            f'</tr>'
+        )
+
+    # ── Sanity checks table ───────────────────────────────────────────────────
+    sanity_rows = ""
+    for td, cfg in ALL_FUNDS.items():
+        short = cfg["short"]
+        s = series_map.get(td)
+        if s is None or s.empty: continue
+        s_avail = s[s["VAL_DATE"] <= DATA_]
+        if s_avail.empty: continue
+        var_today = abs(s_avail.iloc[-1]["var_pct"])
+        vmin, vmax = s["var_pct"].abs().min(), s["var_pct"].abs().max()
+        pct = (var_today - vmin) / (vmax - vmin) * 100 if vmax != vmin else 0
+        soft, hard = cfg.get("var_soft", 999), cfg.get("var_hard", 999)
+        if var_today >= hard or pct >= 90:
+            col, tag = "#f87171", "⚠ ACIMA DO LIMITE"
+        elif var_today >= soft or pct >= 70:
+            col, tag = "#facc15", "alerta"
+        else:
+            col, tag = "#4ade80", "normal"
+        sanity_rows += (
+            f'<tr><td style="padding:5px 12px;white-space:nowrap">{FUND_LABELS[short]}</td>'
+            f'<td style="padding:5px 12px">VaR vs. mandato</td>'
+            f'<td style="text-align:center;padding:5px 8px">'
+            f'<span style="color:{col};font-weight:700;font-size:11px">{tag}</span></td>'
+            f'<td style="padding:5px 12px;color:var(--muted);font-size:11.5px">'
+            f'VaR {var_today:.2f}% · soft {soft:.2f}% · hard {hard:.2f}% · {pct:.0f}° pct 12M</td></tr>'
+        )
+    if df_pa is not None and not df_pa.empty and df_pa_daily is not None and not df_pa_daily.empty:
+        for short in FUND_ORDER:
+            pa_key = _PA_KEY.get(short)
+            if pa_key is None: continue
+            sub_today = df_pa[df_pa["FUNDO"] == pa_key]
+            dia_val = float(sub_today["dia_bps"].sum()) if not sub_today.empty else 0.0
+            hist = df_pa_daily[(df_pa_daily["FUNDO"] == pa_key) & (df_pa_daily["DATE"] < DATA_)]
+            if hist.empty: continue
+            sigma = float(hist.groupby("DATE")["dia_bps"].sum().std())
+            if sigma < 0.1: continue
+            z = abs(dia_val) / sigma
+            col = "#4ade80" if z < 1.5 else "#facc15" if z < 2.5 else "#f87171"
+            tag = f"z={z:.1f}"
+            sanity_rows += (
+                f'<tr><td style="padding:5px 12px;white-space:nowrap">{FUND_LABELS.get(short,short)}</td>'
+                f'<td style="padding:5px 12px">DIA PnL vs. σ histórico</td>'
+                f'<td style="text-align:center;padding:5px 8px">'
+                f'<span style="color:{col};font-weight:700;font-size:11px">{tag}</span></td>'
+                f'<td style="padding:5px 12px;color:var(--muted);font-size:11.5px">'
+                f'DIA {dia_val:+.1f} bps · σ={sigma:.1f} bps</td></tr>'
+            )
+
+    # ── Full HTML ─────────────────────────────────────────────────────────────
+    full_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Qualidade de Dados</span>
+        <span class="card-sub">— disponibilidade e sanidade · {DATA_STR_}</span>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;flex-wrap:wrap">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
+          Filtro:
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+          <input type="radio" name="dq_filter" value="all" checked
+                 onchange="dqFilter('all')" style="accent-color:#3b82f6"> Todos
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+          <input type="radio" name="dq_filter" value="problems"
+                 onchange="dqFilter('problems')" style="accent-color:#f87171"> Só problemas
+        </label>
+        <div style="margin-left:auto;font-size:10px;color:var(--muted)">
+          <span style="color:#4ade80;font-weight:700">TODAY</span> dados de hoje &nbsp;·&nbsp;
+          <span style="color:#facc15;font-weight:700">D-1</span> fallback &nbsp;·&nbsp;
+          <span style="color:#f87171;font-weight:700">MISSING</span> indisponível &nbsp;·&nbsp;
+          <span style="color:#94a3b8;font-weight:700">N/A</span> lacuna conhecida
+        </div>
+      </div>
+
+      <div style="overflow-x:auto;margin-bottom:24px">
+        <table id="dq-detail-table" style="border-collapse:collapse;width:100%;min-width:600px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:6px 12px;color:var(--muted);font-size:11px;text-transform:uppercase">Fundo</th>
+            <th style="text-align:left;padding:6px 12px;color:var(--muted);font-size:11px;text-transform:uppercase">Fonte</th>
+            <th style="text-align:center;padding:6px 10px;color:var(--muted);font-size:11px;text-transform:uppercase">Status</th>
+            <th style="text-align:left;padding:6px 12px;color:var(--muted);font-size:11px;text-transform:uppercase">Data</th>
+            <th style="text-align:left;padding:6px 12px;color:var(--muted);font-size:11px;text-transform:uppercase">Detalhe</th>
+          </tr></thead>
+          <tbody id="dq-detail-body">{detail_rows}</tbody>
+        </table>
+      </div>
+
+      {'<div style="border-top:1px solid var(--border);padding-top:16px"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Verificações de Sanidade</div><table style="border-collapse:collapse;width:100%"><thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:5px 12px;color:var(--muted);font-size:11px">Fundo</th><th style="text-align:left;padding:5px 12px;color:var(--muted);font-size:11px">Verificação</th><th style="text-align:center;padding:5px 8px;color:var(--muted);font-size:11px">Status</th><th style="text-align:left;padding:5px 12px;color:var(--muted);font-size:11px">Detalhe</th></tr></thead><tbody>' + sanity_rows + '</tbody></table></div>' if sanity_rows else ''}
+    </section>
+    <script>
+    window.dqFilter = function(val) {{
+      var rows = document.querySelectorAll('#dq-detail-body tr');
+      rows.forEach(function(r) {{
+        if (val === 'all') r.style.display = '';
+        else r.style.display = (r.dataset.problem === '1') ? '' : 'none';
+      }});
+    }};
+    </script>"""
+
+    # ── Compact alert for Summary page ────────────────────────────────────────
+    n_missing = sum(1 for _, _, stale in all_issues if not stale)
+    n_stale   = sum(1 for _, _, stale in all_issues if stale)
+    gaps_note = (f' · <span style="color:#94a3b8">{n_known_gaps} lacuna(s) conhecida(s)</span>'
+                 if n_known_gaps > 0 else "")
+    if n_missing == 0 and n_stale == 0:
+        status_dot = '<span style="color:#4ade80;font-size:16px">●</span>'
+        status_txt = f'<span style="color:#4ade80">Todos os dados disponíveis para hoje</span>{gaps_note}'
+    elif n_missing == 0:
+        status_dot = '<span style="color:#facc15;font-size:16px">●</span>'
+        status_txt = f'<span style="color:#facc15">{n_stale} fonte(s) usando dados de D-1</span>{gaps_note}'
+    else:
+        status_dot = '<span style="color:#f87171;font-size:16px">●</span>'
+        status_txt = f'<span style="color:#f87171">{n_missing} fonte(s) indisponível · {n_stale} usando D-1</span>{gaps_note}'
+
+    issue_lines = ""
+    for short, source, stale in all_issues:
+        c = "#facc15" if stale else "#f87171"
+        t = "D-1" if stale else "MISSING"
+        issue_lines += (f'<div style="display:flex;gap:8px;align-items:baseline;font-size:11px">'
+                        f'<span style="color:{c};min-width:60px;font-weight:700">{t}</span>'
+                        f'<span style="color:var(--muted)">{FUND_LABELS.get(short,short)} · {source}</span>'
+                        f'</div>')
+
+    compact_html = f"""
+    <section class="card" style="margin-top:12px">
+      <div class="card-head">
+        <span class="card-title">Status dos Dados</span>
+        <span class="card-sub">— {DATA_STR_}</span>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:{'8px' if issue_lines else '0'}">
+        {status_dot} {status_txt}
+        <span style="color:var(--muted);font-size:11px;margin-left:auto">
+          ver aba <em>Qualidade</em> para detalhe completo
+        </span>
+      </div>
+      {('<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;margin-top:4px">' + issue_lines + '</div>') if issue_lines else ''}
+    </section>"""
+
+    return full_html, compact_html
+
+
 def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_expo=None, df_var=None, macro_aum=None,
                df_expo_d1=None, df_var_d1=None,
@@ -2328,10 +3240,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_evo_sn=None, evo_nav=None, evo_legs=None,
                df_pa=None, cdi=None, df_pa_daily=None,
                df_alb_expo=None, alb_nav=None,
+               df_frontier=None,
+               df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
                position_changes=None,
-               dist_map=None, dist_map_prev=None, dist_actuals=None) -> str:
+               dist_map=None, dist_map_prev=None, dist_actuals=None,
+               expo_date_label=None, data_manifest=None) -> str:
     alerts = []
-    td_by_short = {cfg["short"]: td for td, cfg in FUNDS.items()}
+    td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
     sections = []  # list of (fund_short, report_id, html)
 
     def util_color(u):
@@ -2341,15 +3256,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         td = td_by_short.get(short)
         if td is None:
             continue
-        cfg = FUNDS[td]
+        cfg = ALL_FUNDS[td]
         s = series_map.get(td)
         if s is None or s.empty:
             continue
-        today_dt = DATA
-        today_row = s[s["VAL_DATE"] == today_dt]
-        if today_row.empty:
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if s_avail.empty:
             continue
-        tr = today_row.iloc[0]
+        tr = s_avail.iloc[-1]
         var_today    = abs(tr["var_pct"])
         stress_today = abs(tr["stress_pct"])
         var_util     = var_today    / cfg["var_soft"]    * 100
@@ -2415,11 +3329,78 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         sections.append((short, "risk-monitor", risk_monitor_html))
 
     # Build alerts section
+    # ── PA contribution alerts — filter by |dia_bps|, sorted by contribution ──
+    PA_ALERT_MIN_BPS   = 5.0   # minimum absolute contribution to show
+    PA_ALERT_HIGH_BPS  = 15.0  # threshold for red (large) vs yellow (medium)
+    _PA_EXCL_LIVROS    = {"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}
+    _PA_EXCL_CLASSES   = {"Caixa", "Custos"}
+
+    pa_alert_items = ""
+    if df_pa is not None and not df_pa.empty:
+        try:
+            _pa_filt = df_pa[
+                ~df_pa["LIVRO"].isin(_PA_EXCL_LIVROS) &
+                ~df_pa["CLASSE"].isin(_PA_EXCL_CLASSES) &
+                (df_pa["dia_bps"].abs() >= PA_ALERT_MIN_BPS)
+            ].copy()
+
+            # z-score enrichment (best-effort — requires df_pa_daily)
+            _zscore_map = {}
+            if df_pa_daily is not None and not df_pa_daily.empty:
+                _today = pd.Timestamp(DATA_STR)
+                _hist  = df_pa_daily[df_pa_daily["DATE"] < _today]
+                _sigma = (_hist.groupby(["FUNDO","LIVRO","PRODUCT"])["dia_bps"]
+                               .std().reset_index().rename(columns={"dia_bps":"sigma"}))
+                for r in _sigma.itertuples(index=False):
+                    _zscore_map[(r.FUNDO, r.LIVRO, r.PRODUCT)] = float(r.sigma) if r.sigma > 0 else None
+
+            _pa_filt = _pa_filt.sort_values("dia_bps", key=abs, ascending=False)
+            max_abs  = _pa_filt["dia_bps"].abs().max() if not _pa_filt.empty else 1.0
+
+            for r in _pa_filt.itertuples(index=False):
+                bps        = float(r.dia_bps)
+                abs_bps    = abs(bps)
+                color      = "var(--up)" if bps > 0 else "var(--down)"
+                bg_color   = "#0f2d1a" if bps > 0 else "#2d0f0f"
+                border_col = "#22c55e" if bps > 0 else "#f87171"
+                livro_disp = _pa_render_name(r.LIVRO)
+                fund_disp  = FUND_LABELS.get(r.FUNDO, r.FUNDO)
+
+                sigma = _zscore_map.get((r.FUNDO, r.LIVRO, r.PRODUCT))
+                z_txt = f"z = {bps/sigma:+.1f}σ" if sigma else ""
+
+                bar_pct = min(abs_bps / max_abs * 100, 100)
+                bar_color = "#22c55e" if bps > 0 else "#f87171"
+
+                pa_alert_items += f"""
+                <div style="border:1px solid {border_col};border-radius:6px;padding:12px 16px;
+                            background:{bg_color};display:flex;align-items:center;gap:16px">
+                  <div style="flex:0 0 auto;text-align:right;min-width:80px">
+                    <div style="font-size:28px;font-weight:700;color:{color};
+                                font-variant-numeric:tabular-nums;line-height:1">{bps:+.1f}</div>
+                    <div style="font-size:10px;color:var(--muted);margin-top:2px">bps</div>
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:15px;font-weight:700;color:var(--text);
+                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{r.PRODUCT}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                      {fund_disp} · {livro_disp}
+                      {f'&nbsp;·&nbsp;<span style="color:var(--muted)">{z_txt}</span>' if z_txt else ''}
+                    </div>
+                    <div style="margin-top:6px;height:4px;border-radius:2px;background:#1e293b">
+                      <div style="width:{bar_pct:.1f}%;height:100%;border-radius:2px;
+                                  background:{bar_color};opacity:0.8"></div>
+                    </div>
+                  </div>
+                </div>"""
+        except Exception as e:
+            print(f"  PA alerts failed ({e})")
+
     alerts_html = ""
+    risk_items = ""
     if alerts:
-        items = ""
         for fundo, metric, pct, val, util, comment in alerts:
-            items += f"""
+            risk_items += f"""
             <div class="alert-item">
               <div class="alert-header">
                 <span class="alert-badge">⚠</span>
@@ -2428,10 +3409,20 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
               </div>
               <div class="alert-body">{comment}</div>
             </div>"""
+    if risk_items or pa_alert_items:
+        pa_grid = (f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));'
+                   f'gap:10px;margin-top:{"12px" if risk_items else "0"}">'
+                   + pa_alert_items + '</div>') if pa_alert_items else ""
+        pa_header = (f'<div style="font-size:11px;color:var(--muted);text-transform:uppercase;'
+                     f'letter-spacing:1px;margin-top:{"16px" if risk_items else "0"};'
+                     f'margin-bottom:8px">PA — Contribuições do dia (|contrib| ≥ {PA_ALERT_MIN_BPS:.0f} bps)</div>'
+                     if pa_alert_items else "")
         alerts_html = f"""
         <div class="alerts-section">
-          <div class="alerts-header">Análise — Métricas acima do 80° percentil histórico</div>
-          {items}
+          <div class="alerts-header">Análise{' — Métricas acima do 80° percentil histórico' if risk_items else ''}</div>
+          {risk_items}
+          {pa_header}
+          {pa_grid}
         </div>"""
 
     # MACRO-specific sections
@@ -2439,8 +3430,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         sections.append(("MACRO", "stop-monitor",
                          build_stop_section(stop_hist, df_today)))
     if df_expo is not None:
-        sections.append(("MACRO", "exposure",
-                         build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem)))
+        _expo_html = build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem)
+        if expo_date_label:
+            _stale_banner = (f'<div style="background:#7c2d12;color:#fca5a5;font-size:11px;padding:4px 12px;'
+                             f'border-radius:4px;margin-bottom:6px">⚠ Dados de exposição indisponíveis para '
+                             f'{DATA_STR} — exibindo {expo_date_label}</div>')
+            _expo_html = _stale_banner + _expo_html
+        sections.append(("MACRO", "exposure", _expo_html))
 
     # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle
     if (dist_map or dist_map_prev) and dist_actuals is not None:
@@ -2483,6 +3479,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         rb_html = build_albatroz_risk_budget(df_pa)
         if rb_html:
             sections.append(("ALBATROZ", "stop-monitor", rb_html))
+
+    # FRONTIER — Long Only position/attribution tab
+    if df_frontier is not None and not df_frontier.empty:
+        frontier_html = build_frontier_lo_section(df_frontier, DATA_STR)
+        if frontier_html:
+            sections.append(("FRONTIER", "frontier-lo", frontier_html))
+        # Frontier exposure card (active weight vs IBOV/IBOD, By Name/Sector toggle)
+        if (df_frontier_ibov is not None and not df_frontier_ibov.empty):
+            expo_html = build_frontier_exposure_section(
+                df_frontier, df_frontier_ibov, df_frontier_smll, df_frontier_sectors)
+            if expo_html:
+                sections.append(("FRONTIER", "exposure", expo_html))
 
     # ── Per-fund Análise sections (outliers / movers / changes filtered by fund) ──
     _ANALISE_MOVERS_EXCLUDE = {
@@ -2674,9 +3682,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     funds_with_data = sorted({f for f, _ in available_pairs}, key=FUND_ORDER.index)
     reports_with_data = [rid for rid, _ in REPORTS if any(rid == r for _, r in available_pairs)]
 
+    # Sort sections so Per-Fund view shows reports in canonical REPORTS order
+    _REPORT_IDX = {rid: i for i, (rid, _) in enumerate(REPORTS)}
+    sections.sort(key=lambda x: (
+        FUND_ORDER.index(x[0]) if x[0] in FUND_ORDER else 99,
+        _REPORT_IDX.get(x[1], 99)
+    ))
+
     # Render all sections wrapped for data-attribute filtering
     sections_html = "".join(
-        f'<div class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
+        f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
         for f, r, h in sections
     )
 
@@ -2725,14 +3740,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             a_dia = a_mtd = a_ytd = a_m12 = 0.0
 
         var_today = var_util = dvar = None
-        if td and td in FUNDS and series_map and td in series_map:
+        if td and td in ALL_FUNDS and series_map and td in series_map:
             s = series_map[td]
-            today_r = s[s["VAL_DATE"] == DATA]
-            if not today_r.empty:
-                var_today = abs(today_r.iloc[0]["var_pct"])
-                cfg = FUNDS[td]
+            s_avail = s[s["VAL_DATE"] <= DATA]
+            if not s_avail.empty:
+                var_today = abs(s_avail.iloc[-1]["var_pct"])
+                cfg = ALL_FUNDS[td]
                 var_util = var_today / cfg["var_soft"] * 100
-                prev = s[s["VAL_DATE"] < DATA]
+                prev = s_avail.iloc[:-1]
                 if not prev.empty:
                     dvar = var_today - abs(prev.iloc[-1]["var_pct"])
 
@@ -3011,6 +4026,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         except Exception as e:
             print(f"  comments block failed ({e})")
 
+    # Data Quality section
+    dq_full_html, dq_compact_html = build_data_quality_section(
+        data_manifest, series_map, df_pa, df_pa_daily
+    )
+
     summary_html = f"""
     <div class="section-wrap" data-view="summary">
       {fund_grid_html}
@@ -3018,7 +4038,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       {comments_html}
       {movers_html}
       {changes_html}
+      {dq_compact_html}
     </div>"""
+    quality_html = f'<div class="section-wrap" data-view="quality">{dq_full_html}</div>'
     # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
     alerts_html = ""
 
@@ -3029,34 +4051,24 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         '<button class="mode-tab" data-mode="summary" onclick="selectMode(\'summary\')">Summary</button>'
         '<button class="mode-tab" data-mode="fund"    onclick="selectMode(\'fund\')">Por Fundo</button>'
         '<button class="mode-tab" data-mode="report"  onclick="selectMode(\'report\')">Por Report</button>'
-    )
-    fund_subtabs_html = "".join(
-        f'<button class="tab" data-target="{s}" onclick="selectFund(\'{s}\')">{s}</button>'
-        for s in funds_with_data
+        '<button class="mode-tab" data-mode="quality" onclick="selectMode(\'quality\')" style="opacity:0.55;font-size:11px">Qualidade</button>'
     )
     report_subtabs_html = "".join(
         f'<button class="tab" data-target="{rid}" onclick="selectReport(\'{rid}\')">{label}</button>'
         for rid, label in REPORTS if rid in reports_with_data
     )
+    fund_subtabs_html = "".join(
+        f'<button class="tab" data-target="{s}" onclick="selectFund(\'{s}\')">{s}</button>'
+        for s in funds_with_data
+    )
+    # JS constant: which reports exist per fund (for the jump bar)
+    fund_reports_js = json.dumps({
+        f: [rid for rid, _ in REPORTS if (f, rid) in available_pairs]
+        for f in FUND_ORDER
+    })
+    report_labels_js = json.dumps({rid: label for rid, label in REPORTS})
 
-    # Per-report fund switcher — visible in "Por Report > X" for any report with ≥2 funds
-    sn_switcher_html = ""
-    for rid, _ in REPORTS:
-        funds_in_rep = [
-            short for short in FUND_ORDER
-            if any(f == short and r == rid for f, r, _ in sections)
-        ]
-        if len(funds_in_rep) >= 2:
-            btns = "".join(
-                f'<button class="tab" data-fund="{s}" '
-                f'onclick="selectReportFund(\'{rid}\',\'{s}\')">{s}</button>'
-                for s in funds_in_rep
-            )
-            sn_switcher_html += (
-                f'<div class="sn-switcher report-fund-switcher" '
-                f'data-for-report="{rid}" style="display:none">'
-                f'<span class="sn-switcher-label">Fundo:</span>{btns}</div>'
-            )
+    # Por Report mode removed — no per-report fund switcher needed
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -3144,12 +4156,27 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .sub-tabs {{ display:none; }}
   .sub-tabs.active {{ display:flex; }}
   .navrow {{
-    max-width:1280px; margin:14px auto 0; padding:0 22px;
+    max-width:1280px; margin:0 auto; padding:8px 22px;
     display:flex; align-items:center; gap:14px; flex-wrap:wrap;
   }}
   .navrow-label {{
     font-size:10px; color:var(--muted); letter-spacing:.18em; text-transform:uppercase;
   }}
+  /* Report jump bar — shown below fund tabs in Por Fundo mode */
+  #report-jump-bar {{
+    display:none; gap:4px; flex-wrap:wrap; align-items:center;
+    padding:6px 22px; max-width:1280px; margin:0 auto;
+    border-top:1px solid rgba(255,255,255,0.04);
+  }}
+  body[data-mode="fund"] #report-jump-bar {{ display:flex; }}
+  .jump-btn {{
+    padding:4px 11px; font-size:11px; font-weight:600;
+    color:var(--muted); background:transparent; border:1px solid var(--line);
+    border-radius:7px; cursor:pointer; transition:all .15s ease;
+    font-family:'Gadugi','Inter',system-ui,sans-serif; letter-spacing:.03em;
+  }}
+  .jump-btn:hover {{ color:var(--text); border-color:rgba(255,255,255,0.18); }}
+  .jump-btn.active-jump {{ color:var(--accent-2); border-color:var(--accent-2); }}
 
   .controls {{ margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
   .ctrl-group {{
@@ -3293,19 +4320,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     border:1px dashed var(--line); border-radius:12px; margin-top:12px;
   }}
 
-  /* Report mode: merge sections of the same report into one visual container */
-  body[data-mode="report"] #sections-container {{
+  /* legacy placeholder — report mode removed */
+  body[data-mode="UNUSED"] #sections-container {{
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 4px 18px; margin-top: 4px;
   }}
-  body[data-mode="report"] #sections-container .section-wrap > .card {{
+  body[data-mode="UNUSED"] #sections-container .section-wrap > .card {{
     background: transparent; border: 0;
     padding: 14px 0 16px; margin-bottom: 0;
     border-bottom: 1px solid var(--line);
     border-radius: 0;
   }}
-  body[data-mode="report"] #sections-container .section-wrap:last-of-type > .card,
-  body[data-mode="report"] #sections-container .section-wrap > .card:last-child {{
+  body[data-mode="UNUSED"] #sections-container .section-wrap:last-of-type > .card,
+  body[data-mode="UNUSED"] #sections-container .section-wrap > .card:last-child {{
     border-bottom: 0;
   }}
 
@@ -3438,7 +4465,15 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
   /* Performance attribution — hierarchical tree */
   .pa-card .card-head {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; }}
-  .pa-toolbar {{ margin-left:auto; display:flex; gap:4px; }}
+  .pa-toolbar {{ margin-left:auto; display:flex; gap:6px; align-items:center; }}
+  .pa-search {{
+    background:rgba(255,255,255,0.06); border:1px solid var(--line);
+    border-radius:7px; color:var(--text); font-size:11.5px;
+    padding:4px 10px; outline:none; width:150px;
+    font-family:'JetBrains Mono',monospace;
+  }}
+  .pa-search:focus {{ border-color:var(--accent-2); background:rgba(255,255,255,0.1); }}
+  .pa-search::placeholder {{ color:var(--muted); }}
   .pa-btn {{
     background:transparent; border:1px solid var(--line); color:var(--muted);
     padding:5px 10px; border-radius:6px; font-size:11px; cursor:pointer;
@@ -3606,20 +4641,55 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       return {{ def: todayStr, today: todayStr, hour: hour }};
     }}
   }}
-  // --- Navigation state: 3 modes (summary / fund / report) driven by URL hash ---
+  // --- Navigation state: 3 modes (summary / fund / quality) driven by URL hash ---
   function parseHash() {{
     var h = (location.hash || '').slice(1);
     if (!h || h === 'summary') return {{ mode: 'summary' }};
     var m;
     if ((m = h.match(/^fund=(.*)$/)))   return {{ mode: 'fund',   sel: m[1] ? decodeURIComponent(m[1]) : '' }};
     if ((m = h.match(/^report=(.*)$/))) return {{ mode: 'report', sel: m[1] ? decodeURIComponent(m[1]) : '' }};
+    if ((m = h.match(/^quality$/)))     return {{ mode: 'quality', sel: '' }};
     return {{ mode: 'summary' }};
   }}
   function setHash(mode, sel) {{
-    var h = (mode === 'summary') ? '' : (mode + '=' + encodeURIComponent(sel));
+    var h = (mode === 'summary') ? '' : (sel ? (mode + '=' + encodeURIComponent(sel)) : mode);
     if (history.replaceState) history.replaceState(null, '', h ? ('#' + h) : location.pathname + location.search);
     else location.hash = h;
   }}
+
+  var _FUND_REPORTS = {fund_reports_js};
+  var _REPORT_LABELS = {report_labels_js};
+
+  function updateJumpBar(fund) {{
+    var bar = document.getElementById('report-jump-bar');
+    if (!bar) return;
+    var rids = _FUND_REPORTS[fund] || [];
+    bar.innerHTML = '';
+    rids.forEach(function(rid) {{
+      var btn = document.createElement('button');
+      btn.className = 'jump-btn';
+      btn.dataset.rid = rid;
+      btn.textContent = _REPORT_LABELS[rid] || rid;
+      btn.onclick = function() {{ jumpTo('sec-' + fund + '-' + rid); }};
+      bar.appendChild(btn);
+    }});
+  }}
+  window.jumpTo = function(id) {{
+    var el = document.getElementById(id);
+    if (!el) return;
+    // Account for sticky header height
+    var hdr = document.querySelector('header');
+    var offset = hdr ? hdr.offsetHeight : 0;
+    var top = el.getBoundingClientRect().top + window.pageYOffset - offset - 8;
+    window.scrollTo({{ top: top, behavior: 'smooth' }});
+    // Highlight active jump button
+    document.querySelectorAll('.jump-btn').forEach(function(b) {{ b.classList.remove('active-jump'); }});
+    var rid = id.split('-').slice(2).join('-');
+    document.querySelectorAll('.jump-btn[data-rid="' + rid + '"]').forEach(function(b) {{
+      b.classList.add('active-jump');
+    }});
+  }};
+
   function applyState() {{
     var st = parseHash();
     var mode = st.mode, sel = st.sel;
@@ -3646,37 +4716,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       var bar = t.closest('.sub-tabs');
       t.classList.toggle('active', bar.dataset.for === mode && t.dataset.target === sel);
     }});
-    // Per-report fund switcher: show bar matching the selected report (if it has ≥2 funds)
-    // and filter sections by the stored active fund for that report.
-    var activeFundByRep = {{}};
-    document.querySelectorAll('.report-fund-switcher').forEach(function(bar) {{
-      var forReport = bar.dataset.forReport;
-      var visible   = (mode === 'report' && sel === forReport);
-      bar.style.display = visible ? '' : 'none';
-      if (!visible) return;
-      var key = 'risk_monitor_rf_' + forReport;
-      var stored = '';
-      try {{ stored = sessionStorage.getItem(key) || ''; }} catch (e) {{}}
-      var btns  = bar.querySelectorAll('.tab');
-      var avail = Array.prototype.map.call(btns, function(b) {{ return b.dataset.fund; }});
-      if (!stored || avail.indexOf(stored) === -1) stored = avail[0] || '';
-      btns.forEach(function(b) {{
-        b.classList.toggle('active', b.dataset.fund === stored);
-      }});
-      activeFundByRep[forReport] = stored;
-    }});
+    // Update report jump bar (only in fund mode)
+    if (mode === 'fund' && sel) updateJumpBar(sel);
     // Section visibility
     document.querySelectorAll('.section-wrap').forEach(function(el) {{
       var show = false;
-      if (mode === 'summary')      show = el.dataset.view   === 'summary';
-      else if (mode === 'fund')    show = el.dataset.fund   === sel;
-      else if (mode === 'report') {{
-        show = el.dataset.report === sel;
-        if (show && activeFundByRep[sel]) show = el.dataset.fund === activeFundByRep[sel];
-      }}
+      if (mode === 'summary')      show = el.dataset.view === 'summary';
+      else if (mode === 'quality') show = el.dataset.view === 'quality';
+      else if (mode === 'fund')    show = el.dataset.fund === sel;
+      else if (mode === 'report')  show = el.dataset.report === sel;
       el.style.display = show ? '' : 'none';
     }});
-    // Empty-state for fund×report with no data
+    // Empty-state
     var anyVisible = Array.prototype.some.call(
       document.querySelectorAll('.section-wrap'),
       function(el) {{ return el.style.display !== 'none'; }}
@@ -3868,12 +4919,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       v.style.display = (v.dataset.mode === mode) ? '' : 'none';
     }});
   }};
-  window.selectReportFund = function(rid, name) {{
-    try {{ sessionStorage.setItem('risk_monitor_rf_' + rid, name); }} catch (e) {{}}
-    applyState();
-  }};
   // ── PDF export ─────────────────────────────────────────────────────────
-  // mode === 'current' → imprime só o que está visível (respeita mode/fund/report)
+  // mode === 'current' → imprime só o que está visível (respeita mode/fund)
   // mode === 'full'    → expande todas as PA trees e mostra todas as seções
   window.exportPdf = function(mode) {{
     var body = document.body;
@@ -3904,11 +4951,64 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   window.selectPaView = function(btn, viewId) {{
     var card = btn.closest('.pa-card');
     if (!card) return;
+    // Clear search when switching views
+    var srch = card.querySelector('.pa-search');
+    if (srch) srch.value = '';
     card.querySelectorAll('.pa-tgl').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.paView === viewId);
     }});
     card.querySelectorAll('.pa-view').forEach(function(v) {{
       v.style.display = (v.dataset.paView === viewId) ? '' : 'none';
+    }});
+  }};
+  window.filterPa = function(input) {{
+    var q = input.value.trim().toLowerCase();
+    var card = input.closest('.pa-card');
+    if (!card) return;
+    var view = Array.prototype.find.call(card.querySelectorAll('.pa-view'),
+      function(v) {{ return v.style.display !== 'none'; }});
+    if (!view) return;
+    if (!q) {{
+      // Reset to root-only visible state
+      view.querySelectorAll('tr.pa-row').forEach(function(tr) {{
+        tr.style.display = (parseInt(tr.dataset.level || '0') === 0) ? '' : 'none';
+        tr.classList.remove('expanded');
+      }});
+      return;
+    }}
+    // Force-render all lazy children (expand any not-yet-rendered has-children)
+    for (var guard = 0; guard < 50; guard++) {{
+      var pending = Array.prototype.filter.call(
+        view.querySelectorAll('tr.pa-has-children'),
+        function(tr) {{ return tr.dataset.rendered !== '1'; }}
+      );
+      if (pending.length === 0) break;
+      pending.forEach(function(tr) {{
+        if (!tr.classList.contains('expanded')) window.togglePaRow(tr);
+      }});
+    }}
+    // Build path → tr map for ancestor lookup
+    var pathMap = {{}};
+    view.querySelectorAll('tr.pa-row').forEach(function(tr) {{
+      if (tr.dataset.path) pathMap[tr.dataset.path] = tr;
+    }});
+    // Find matching paths + all their ancestors
+    var show = {{}};
+    view.querySelectorAll('tr.pa-row').forEach(function(tr) {{
+      var lbl = tr.querySelector('.pa-label');
+      if (!lbl) return;
+      if (lbl.textContent.trim().toLowerCase().indexOf(q) >= 0) {{
+        var p = tr.dataset.path;
+        while (p) {{
+          show[p] = true;
+          var anc = pathMap[p];
+          p = anc ? anc.dataset.parent : '';
+        }}
+      }}
+    }});
+    // Apply visibility
+    view.querySelectorAll('tr.pa-row').forEach(function(tr) {{
+      tr.style.display = show[tr.dataset.path] ? '' : 'none';
     }});
   }};
   // ── PA lazy render helpers ─────────────────────────────────────────────
@@ -3981,7 +5081,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       var reg = kids.filter(function(k) {{ return !k.pi; }});
       var pin = kids.filter(function(k) {{ return k.pi; }});
       reg.sort(function(a, b) {{
-        var va = Math.abs(a.a[idx]), vb = Math.abs(b.a[idx]);
+        var va = a.a[idx], vb = b.a[idx];
+        var aZ = Math.abs(va) < 1e-6, bZ = Math.abs(vb) < 1e-6;
+        if (aZ && bZ) return 0;
+        if (aZ) return 1;
+        if (bZ) return -1;
         return desc ? (vb - va) : (va - vb);
       }});
       ordered = reg.concat(pin);
@@ -4079,11 +5183,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         (byParentReg[p] = byParentReg[p] || []).push(tr);
       }}
     }});
-    // sort regular siblings by |metric|
+    // sort regular siblings: positives → negatives → zeros, signed
+    function paCmp(va, vb) {{
+      var aZ = Math.abs(va) < 1e-6, bZ = Math.abs(vb) < 1e-6;
+      if (aZ && bZ) return 0;
+      if (aZ) return 1;   // zeros always last
+      if (bZ) return -1;
+      return desc ? (vb - va) : (va - vb);
+    }}
     Object.keys(byParentReg).forEach(function(p) {{
       byParentReg[p].sort(function(a, b) {{
-        var va = Math.abs(parseCell(a, idx)), vb = Math.abs(parseCell(b, idx));
-        return desc ? (vb - va) : (va - vb);
+        return paCmp(parseCell(a, idx), parseCell(b, idx));
       }});
     }});
     // merge: regular first, pinned always last (not sorted)
@@ -4128,15 +5238,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       <button class="btn-pdf no-print" onclick="exportPdf('full')"    title="Expande todas as PA trees e imprime tudo">⇣ PDF (completo)</button>
     </div>
   </div>
+  <div class="navrow">
+    <nav class="sub-tabs" data-for="fund"   role="tablist">{fund_subtabs_html}</nav>
+    <nav class="sub-tabs" data-for="report" role="tablist">{report_subtabs_html}</nav>
+  </div>
+  <div id="report-jump-bar" role="tablist"></div>
 </header>
-<div class="navrow">
-  <nav class="sub-tabs" data-for="fund"   role="tablist">{fund_subtabs_html}</nav>
-  <nav class="sub-tabs" data-for="report" role="tablist">{report_subtabs_html}</nav>
-</div>
 <div class="subtitle">Data-base: <span class="mono">{DATA_STR}</span> &nbsp;·&nbsp; gerado em <span class="mono">{date.today().isoformat()}</span></div>
 <main>
   {summary_html}
-  {sn_switcher_html}
+  {quality_html}
   <div id="sections-container">
     {sections_html}
   </div>
@@ -4156,39 +5267,24 @@ if __name__ == "__main__":
     t0 = time.time()
     print(f"Fetching data for {DATA_STR}...")
     d1_str = _prev_bday(DATA_STR)
-
-    q_today = f"""
-    SELECT "LIVRO",
-           SUM("DIA")  * 10000 AS dia_bps,
-           SUM("MES")  * 10000 AS mes_bps
-    FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" = 'MACRO'
-      AND "DATE" = DATE '{DATA_STR}'
-      AND "MES" <> 0
-      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
-    GROUP BY "LIVRO"
-    """
-    q_ytd = f"""
-    SELECT "LIVRO", SUM("DIA") * 10000 AS ytd_bps
-    FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" = 'MACRO'
-      AND "DATE" >= DATE_TRUNC('year', DATE '{DATA_STR}')
-      AND "DATE" <= DATE '{DATA_STR}'
-      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
-    GROUP BY "LIVRO"
-    """
+    d2_str = _prev_bday(d1_str)
 
     # Fan out all independent DB queries to a thread pool.
     # Each fetch keeps its own connection; I/O-bound so GIL not an issue.
     with ThreadPoolExecutor(max_workers=12) as ex:
         fut_risk       = ex.submit(fetch_risk_history)
+        fut_risk_raw   = ex.submit(fetch_risk_history_raw)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl     = ex.submit(fetch_pm_pnl_history)
         fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
         fut_expo_d1    = ex.submit(fetch_macro_exposure, d1_str)
+        fut_expo_d2    = ex.submit(fetch_macro_exposure, d2_str)
         fut_pnl_prod   = ex.submit(fetch_macro_pnl_products, DATA_STR)
+        fut_pnl_prod_d1= ex.submit(fetch_macro_pnl_products, d1_str)
         fut_quant_sn   = ex.submit(fetch_quant_single_names, DATA_STR)
+        fut_quant_sn_d1= ex.submit(fetch_quant_single_names, d1_str)
         fut_evo_sn     = ex.submit(fetch_evolution_single_names, DATA_STR)
+        fut_evo_sn_d1  = ex.submit(fetch_evolution_single_names, d1_str)
         fut_dist       = ex.submit(fetch_pnl_distribution, DATA_STR)
         fut_dist_prev  = ex.submit(fetch_pnl_distribution, d1_str)
         fut_dist_act   = ex.submit(fetch_pnl_actual_by_cut, DATA_STR)
@@ -4196,30 +5292,66 @@ if __name__ == "__main__":
         fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
         fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
         fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
+        fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
+        fut_frontier   = ex.submit(fetch_frontier_mainboard, DATA_STR)
+        fut_frontier_expo = ex.submit(fetch_frontier_exposure_data)
         fut_chg        = {
             short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ")
         }
-        fut_today_q    = ex.submit(read_sql, q_today)
-        fut_ytd_q      = ex.submit(read_sql, q_ytd)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
-    df_risk   = fut_risk.result()
-    df_aum    = fut_aum.result()
-    df_pm_pnl = fut_pm_pnl.result()
-    series    = build_series(df_risk, df_aum)
+    df_risk     = fut_risk.result()
+    df_risk_raw = fut_risk_raw.result()
+    df_aum      = fut_aum.result()
+    df_pm_pnl   = fut_pm_pnl.result()
+    series      = build_series(df_risk, df_aum, df_risk_raw)
     stop_hist = build_stop_history(df_pm_pnl)
 
-    df_today = fut_today_q.result().merge(fut_ytd_q.result(), on="LIVRO", how="left")
-
-    df_expo, df_var, macro_aum = fut_expo.result()
+    # PM MTD/YTD from PA leaves — avoids MES column (often NULL in REPORT_ALPHA_ATRIBUTION).
     try:
-        df_expo_d1, df_var_d1, _ = fut_expo_d1.result()
+        df_pa = fut_pa.result()
     except Exception as e:
-        print(f"  D-1 fetch failed ({e}) — Δ columns will be blank")
-        df_expo_d1, df_var_d1 = None, None
+        print(f"  PA fetch failed ({e})")
+        df_pa = None
 
+    if df_pa is not None and not df_pa.empty:
+        _macro_pa = df_pa[df_pa["FUNDO"] == "MACRO"]
+        df_today = (
+            _macro_pa
+            .groupby("LIVRO", as_index=False)[["dia_bps", "mtd_bps", "ytd_bps"]]
+            .sum()
+            .rename(columns={"mtd_bps": "mes_bps"})
+        )
+    else:
+        df_today = pd.DataFrame(columns=["LIVRO", "dia_bps", "mes_bps", "ytd_bps"])
+
+    # Exposure: fall back to D-1 if today's lote hasn't landed yet.
+    # Track actual date used so we can label stale sections.
+    _expo_raw, _var_raw, _aum_raw = fut_expo.result()
+    _expo_d1_raw, _var_d1_raw, _ = fut_expo_d1.result()
+    expo_date_label = None  # None = today's data; otherwise the fallback date string
+    if _expo_raw.empty and not _expo_d1_raw.empty:
+        print(f"  Exposure missing for {DATA_STR} — using {d1_str}")
+        expo_date_label = d1_str
+        df_expo, df_var, macro_aum = _expo_d1_raw, _var_d1_raw, (_aum_raw or _latest_nav("Galapagos Macro FIM", d1_str) or 1.0)
+        # D-1 becomes the new D-0; D-2 becomes the delta reference
+        try:
+            df_expo_d1, df_var_d1, _ = fut_expo_d2.result()
+        except Exception:
+            df_expo_d1, df_var_d1 = None, None
+    else:
+        df_expo, df_var, macro_aum = _expo_raw, _var_raw, _aum_raw
+        try:
+            df_expo_d1, df_var_d1, _ = _expo_d1_raw, _var_d1_raw, None
+        except Exception as e:
+            print(f"  D-1 fetch failed ({e}) — Δ columns will be blank")
+            df_expo_d1, df_var_d1 = None, None
+
+    # Pnl products: use D-1 if today is empty
     df_pnl_prod = fut_pnl_prod.result()
+    if df_pnl_prod.empty:
+        df_pnl_prod = fut_pnl_prod_d1.result()
 
     # PM margem (budget remaining in bps) from stop history
     cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
@@ -4234,14 +5366,21 @@ if __name__ == "__main__":
         pnl_mtd = float(pnl_row["mes_bps"].iloc[0]) if not pnl_row.empty else 0.0
         pm_margem[pm] = budget + pnl_mtd
 
+    # Single-names: fall back to D-1 if today's lote is missing
     try:
         df_quant_sn, quant_nav, quant_legs = fut_quant_sn.result()
+        if df_quant_sn is None:
+            df_quant_sn, quant_nav, quant_legs = fut_quant_sn_d1.result()
+            if df_quant_sn is not None: print(f"  QUANT single-name: using {d1_str}")
     except Exception as e:
         print(f"  QUANT single-name fetch failed ({e})")
         df_quant_sn, quant_nav, quant_legs = None, None, None
 
     try:
         df_evo_sn, evo_nav, evo_legs = fut_evo_sn.result()
+        if df_evo_sn is None:
+            df_evo_sn, evo_nav, evo_legs = fut_evo_sn_d1.result()
+            if df_evo_sn is not None: print(f"  EVOLUTION single-name: using {d1_str}")
     except Exception as e:
         print(f"  EVOLUTION single-name fetch failed ({e})")
         df_evo_sn, evo_nav, evo_legs = None, None, None
@@ -4254,11 +5393,7 @@ if __name__ == "__main__":
         print(f"  Distribution fetch failed ({e})")
         dist_map, dist_map_prev, dist_actuals = None, None, None
 
-    try:
-        df_pa = fut_pa.result()
-    except Exception as e:
-        print(f"  PA fetch failed ({e})")
-        df_pa = None
+    # df_pa already resolved above (used to build df_today)
 
     try:
         df_pa_daily = fut_pa_daily.result()
@@ -4274,9 +5409,25 @@ if __name__ == "__main__":
 
     try:
         df_alb_expo, alb_nav = fut_alb.result()
+        if df_alb_expo is None or df_alb_expo.empty:
+            df_alb_expo, alb_nav = fut_alb_d1.result()
+            if df_alb_expo is not None and not df_alb_expo.empty:
+                print(f"  ALBATROZ exposure: using {d1_str}")
     except Exception as e:
         print(f"  ALBATROZ exposure fetch failed ({e})")
         df_alb_expo, alb_nav = None, None
+
+    try:
+        df_frontier = fut_frontier.result()
+    except Exception as e:
+        print(f"  Frontier LO fetch failed ({e})")
+        df_frontier = None
+
+    try:
+        df_frontier_ibov, df_frontier_smll, df_frontier_sectors = fut_frontier_expo.result()
+    except Exception as e:
+        print(f"  Frontier exposure fetch failed ({e})")
+        df_frontier_ibov = df_frontier_smll = df_frontier_sectors = pd.DataFrame()
 
     position_changes = {}
     for short, fut in fut_chg.items():
@@ -4288,14 +5439,59 @@ if __name__ == "__main__":
 
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
+    # ── Data manifest: what landed and what is stale/missing ─────────────────
+    _var_dates = {}
+    for td, cfg in FUNDS.items():
+        s = series.get(td)
+        if s is not None and not s.empty:
+            s_avail = s[s["VAL_DATE"] <= DATA]
+            if not s_avail.empty:
+                _var_dates[cfg["short"]] = s_avail.iloc[-1]["VAL_DATE"]
+    data_manifest = {
+        "requested_date": DATA_STR,
+        "d1_str":         d1_str,
+        # PA / PnL
+        "pa_ok":          df_pa is not None and not df_pa.empty,
+        "pa_has_today":   (df_pa is not None and not df_pa.empty and
+                           not df_pa[df_pa["dia_bps"].abs() > 1e-6].empty),
+        # VaR / Stress
+        "var_dates":      _var_dates,    # short → actual date used (may be D-1)
+        # Exposure
+        "expo_ok":        df_expo is not None and not df_expo.empty,
+        "expo_date":      expo_date_label or DATA_STR,
+        # Single-names
+        "quant_sn_ok":    df_quant_sn is not None,
+        "evo_sn_ok":      df_evo_sn is not None,
+        # Distribution
+        "dist_today_ok":  bool(dist_map),
+        "dist_prev_ok":   bool(dist_map_prev),
+        # ALBATROZ
+        "alb_expo_ok":    df_alb_expo is not None and not df_alb_expo.empty,
+        # Stop monitor
+        "stop_ok":        bool(pm_margem),
+        "stop_has_pnl":   any(abs(pm_margem.get(pm, STOP_BASE) - STOP_BASE) > 1 for pm in pm_margem),
+        # Detail for quality tab
+        "expo_rows":      len(df_expo) if df_expo is not None and not df_expo.empty else 0,
+        "quant_sn_rows":  len(df_quant_sn) if df_quant_sn is not None else 0,
+        "evo_sn_rows":    len(df_evo_sn)   if df_evo_sn   is not None else 0,
+        "alb_expo_rows":  len(df_alb_expo) if df_alb_expo is not None and not df_alb_expo.empty else 0,
+        "stop_pms":       sorted(pm_margem.keys()) if pm_margem else [],
+        "stop_pms_pnl":   [pm for pm, v in (pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
+    }
+
     html = build_html(series, stop_hist, df_today, df_expo, df_var, macro_aum, df_expo_d1, df_var_d1,
                       df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
                       df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
                       df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
                       df_pa=df_pa, cdi=cdi, df_pa_daily=df_pa_daily,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+                      df_frontier=df_frontier,
+                      df_frontier_ibov=df_frontier_ibov,
+                      df_frontier_smll=df_frontier_smll,
+                      df_frontier_sectors=df_frontier_sectors,
                       position_changes=position_changes,
-                      dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals)
+                      dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
+                      expo_date_label=expo_date_label, data_manifest=data_manifest)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")
     print(f"Saved: {out}")
