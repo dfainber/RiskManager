@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<title>Risk Monitor — Reports, Calculations & System Structure</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0b0d10; --bg-2:#111418; --panel:#14181d; --panel-2:#181d24;
+    --line:#232a33; --line-2:#2d3540; --text:#e7ecf2; --muted:#8892a0;
+    --accent:#0071BB; --accent-2:#1a8fd1; --accent-deep:#183C80;
+    --up:#26d07c; --down:#ff5a6a; --warn:#f5c451;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.55;
+  }
+  body {
+    min-height: 100vh; padding: 40px 24px;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(0,113,187,.06), transparent 60%),
+      radial-gradient(900px 500px at 110% 10%, rgba(26,143,209,.04), transparent 60%),
+      var(--bg);
+  }
+  .mono { font-family:'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  main { max-width: 1040px; margin: 0 auto; }
+
+  header.doc-head {
+    display: flex; align-items: center; gap: 16px;
+    padding-bottom: 24px; margin-bottom: 32px;
+    border-bottom: 1px solid var(--line);
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+    display: grid; place-items: center; flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(0,113,187,.35), 0 8px 24px -8px rgba(0,113,187,.4);
+  }
+  .logo svg { width: 30px; height: 30px; }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: .2px; }
+  header p  { font-size: 12px; color: var(--muted); letter-spacing: .14em; text-transform: uppercase; margin-top: 4px; }
+
+  section { margin-bottom: 40px; }
+  h2 {
+    font-size: 13px; font-weight: 700;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent-2); margin-bottom: 16px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  h3 {
+    font-size: 15px; font-weight: 600;
+    color: var(--text); margin: 22px 0 10px 0;
+  }
+  h4 {
+    font-size: 13px; font-weight: 600;
+    color: var(--text); margin: 16px 0 6px 0;
+  }
+  p { margin-bottom: 12px; font-size: 13.5px; color: var(--text); }
+  p.lede { color: var(--muted); }
+
+  code, .code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; background: var(--panel-2);
+    padding: 1px 6px; border-radius: 4px; color: var(--accent-2);
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px;
+    overflow-x: auto; font-size: 11.5px; line-height: 1.55;
+    font-family: 'JetBrains Mono', monospace;
+    color: #cbd5e1; margin: 10px 0 18px 0;
+  }
+  pre .kw  { color: #60a5fa; }
+  pre .str { color: #86efac; }
+  pre .com { color: var(--muted); font-style: italic; }
+  pre .num { color: #fbbf24; }
+
+  .formula {
+    background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 12px 16px; margin: 10px 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+    color: var(--text);
+  }
+  .formula .lbl { color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  ul, ol { margin: 8px 0 16px 22px; font-size: 13px; }
+  li { margin-bottom: 4px; }
+  li code { font-size: 11.5px; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 12px 0 18px 0; font-size: 12.5px;
+  }
+  th {
+    text-align: left; font-size: 10px; color: var(--muted);
+    letter-spacing: .1em; text-transform: uppercase;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 500;
+  }
+  td {
+    padding: 7px 10px; border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  td code { font-size: 11px; }
+
+  .box {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px 20px; margin: 14px 0;
+  }
+  .box-head {
+    color: var(--text); font-weight: 600; font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .box.warn  { border-left: 3px solid var(--warn); }
+  .box.info  { border-left: 3px solid var(--accent-2); }
+  .box.ok    { border-left: 3px solid var(--up); }
+
+  .toc {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 20px 24px; margin-bottom: 36px;
+  }
+  .toc h2 { border: 0; padding: 0; margin-bottom: 12px; color: var(--muted); }
+  .toc ol { margin-left: 18px; }
+  .toc a  { color: var(--accent-2); text-decoration: none; font-size: 12.5px; }
+  .toc a:hover { color: var(--text); }
+  .toc ol ol { margin-top: 4px; margin-bottom: 4px; }
+  .toc ol ol a { color: var(--muted); font-size: 11.5px; }
+  .toc ol ol a:hover { color: var(--accent-2); }
+
+  .tag {
+    display: inline-block; padding: 2px 8px;
+    font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    border-radius: 4px; margin-right: 6px; font-weight: 700;
+  }
+  .tag.macro { background: rgba(0,113,187,.15); color: var(--accent-2); }
+  .tag.quant { background: rgba(38,208,124,.12); color: var(--up); }
+  .tag.evo   { background: rgba(245,196,81,.12); color: var(--warn); }
+  .tag.all   { background: var(--panel-2); color: var(--muted); }
+
+  .up    { color: var(--up); }
+  .down  { color: var(--down); }
+  .warn  { color: var(--warn); }
+
+  footer {
+    margin-top: 56px; padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="doc-head">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 12l4-4 4 4 4-6 6 8" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <div>
+    <h1>Risk Monitor</h1>
+    <p>Reports · Cálculos · Estrutura do sistema</p>
+  </div>
+</header>
+
+<div class="toc">
+  <h2>Sumário</h2>
+  <ol>
+    <li><a href="#overview">Visão geral do sistema</a>
+      <ol>
+        <li><a href="#purpose">Finalidade</a></li>
+        <li><a href="#funds">Famílias de fundos cobertas</a></li>
+        <li><a href="#flow">Fluxo de execução</a></li>
+        <li><a href="#nav">Estrutura de navegação do HTML</a></li>
+      </ol>
+    </li>
+    <li><a href="#summary">Reports da página Summary</a>
+      <ol>
+        <li><a href="#status-consol">Status consolidado</a></li>
+        <li><a href="#risco-agregado">Risco Agregado</a></li>
+        <li><a href="#breakdown">Breakdown por Fator</a></li>
+        <li><a href="#vol-regime">Vol Regime</a></li>
+        <li><a href="#outliers">Outliers do dia</a></li>
+        <li><a href="#top-movers">Top Movers — DIA</a></li>
+        <li><a href="#mudancas">Mudanças Significativas</a></li>
+        <li><a href="#top-posicoes">Top Posições — drill-down</a></li>
+        <li><a href="#dq">Status dos Dados</a></li>
+      </ol>
+    </li>
+    <li><a href="#per-fund">Reports por fundo</a>
+      <ol>
+        <li><a href="#pa">Performance Attribution</a></li>
+        <li><a href="#risk-monitor">Risk Monitor</a></li>
+        <li><a href="#exposure">Exposure</a></li>
+        <li><a href="#exposure-map">Exposure Map (IDKAs + ALBATROZ)</a></li>
+        <li><a href="#single-name">Single-Name L/S</a></li>
+        <li><a href="#distribution">Distribuição 252d</a></li>
+        <li><a href="#risk-budget">Risk Budget</a></li>
+        <li><a href="#long-only">Long Only (Frontier)</a></li>
+      </ol>
+    </li>
+    <li><a href="#metrics">Métricas-chave (detalhadamente)</a>
+      <ol>
+        <li><a href="#var">VaR absoluto</a></li>
+        <li><a href="#ano-eq">ANO_EQ (1-year equivalent)</a></li>
+        <li><a href="#bvar-hs">HS BVaR (Frontier vs. IBOV)</a></li>
+        <li><a href="#bvar-param">BVaR paramétrico (IDKAs)</a></li>
+        <li><a href="#stop">Stop com carry forward (MACRO)</a></li>
+      </ol>
+    </li>
+    <li><a href="#structure">Estrutura de código</a></li>
+    <li><a href="#conventions">Convenções</a></li>
+    <li><a href="#extending">Como estender (adicionar fundo/report)</a></li>
+  </ol>
+</div>
+
+<!-- ========================= 1. OVERVIEW ========================= -->
+<section id="overview">
+  <h2>1 · Visão geral do sistema</h2>
+
+  <h3 id="purpose">1.1 Finalidade</h3>
+  <p>Gerar, em um único comando, um painel HTML consolidado do risco de todos os fundos da gestora, pronto para o <strong>Morning Call</strong>. O output é um único arquivo em <code>data/morning-calls/{YYYY-MM-DD}_risk_monitor.html</code> que abre no browser e reúne toda a visão da casa.</p>
+
+  <h3 id="funds">1.2 Famílias de fundos cobertas (8 hoje)</h3>
+  <table>
+    <thead>
+      <tr><th>Short</th><th>Fundo</th><th>Benchmark</th><th>Tipo</th><th>Fonte de risco</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><span class="tag macro">MACRO</span></td><td>Galapagos Macro FIM</td><td>CDI</td><td>Multimercado discr.</td><td><code>LOTE_FUND_STRESS_RPM</code> (LEVEL=2)</td></tr>
+      <tr><td><span class="tag quant">QUANT</span></td><td>Galapagos Quantitativo FIM</td><td>CDI</td><td>Multimercado sist.</td><td><code>LOTE_FUND_STRESS_RPM</code> (LEVEL=2)</td></tr>
+      <tr><td><span class="tag evo">EVOLUTION</span></td><td>Galapagos Evolution FIC FIM CP</td><td>CDI</td><td>Multi-estratégia</td><td><code>LOTE_FUND_STRESS_RPM</code> (LEVEL=3)</td></tr>
+      <tr><td><span class="tag all">MACRO_Q</span></td><td>Galapagos Global Macro Q</td><td>CDI</td><td>MM offshore</td><td><code>LOTE_FUND_STRESS</code> (product SUM)</td></tr>
+      <tr><td><span class="tag all">ALBATROZ</span></td><td>GALAPAGOS ALBATROZ FIRF LP</td><td>CDI</td><td>Renda Fixa</td><td><code>LOTE_FUND_STRESS</code> (product SUM)</td></tr>
+      <tr><td><span class="tag all">FRONTIER</span></td><td>Frontier Ações FIC FI</td><td>IBOV</td><td>Long Only equity</td><td><code>LOTE_FUND_STRESS</code> + HS BVaR próprio</td></tr>
+      <tr><td><span class="tag all">IDKA_3Y</span></td><td>IDKA IPCA 3Y FIRF</td><td>IDKA IPCA 3A</td><td>RF benchmarked</td><td><code>LOTE_PARAMETRIC_VAR_TABLE</code></td></tr>
+      <tr><td><span class="tag all">IDKA_10Y</span></td><td>IDKA IPCA 10Y FIRF</td><td>IDKA IPCA 10A</td><td>RF benchmarked</td><td><code>LOTE_PARAMETRIC_VAR_TABLE</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="flow">1.3 Fluxo de execução</h3>
+<pre><span class="com"># CLI</span>
+run_report.bat <span class="com"># Windows: pergunta a data (default hoje) e abre o HTML no browser</span>
+python generate_risk_report.py <span class="num">2026-04-17</span>
+   │
+   ▼
+<span class="kw">ThreadPoolExecutor</span>(max_workers=<span class="num">12</span>)  <span class="com"># ~30 queries em paralelo</span>
+   │
+   ▼
+_NAV_CACHE warmup  <span class="com"># 1 query bulk pra todas as NAVs de hoje + D-1</span>
+   │
+   ▼
+<span class="kw">build_html</span>(...)  <span class="com"># monta cada card; injeta CSS + JS; concatena em section-wrap divs</span>
+   │
+   ▼
+HTML salvo em data/morning-calls/  +  <span class="kw">start</span> no browser padrão</pre>
+
+  <h3 id="nav">1.4 Estrutura de navegação do HTML</h3>
+  <p>O painel tem <strong>3 modos</strong> (topo direito):</p>
+  <ul>
+    <li><code>#summary</code> — visão da casa, cards agregados cross-fundo</li>
+    <li><code>#fund=&lt;SHORT&gt;</code> — navegação fundo-a-fundo com múltiplos reports por fundo</li>
+    <li><code>#quality</code> — tabs de qualidade de dados</li>
+  </ul>
+  <p>URLs com hash permitem deep-linking. Chips de navegação no topo de cada section por fundo (<code>.fund-nav-chips</code>) para pular direto entre fundos.</p>
+</section>
+
+<!-- ========================= 2. SUMMARY ========================= -->
+<section id="summary">
+  <h2>2 · Reports da página Summary (visão da casa)</h2>
+  <p>Ordem atual, de cima pra baixo:</p>
+  <ol>
+    <li><a href="#status-consol">Status consolidado</a></li>
+    <li><a href="#risco-agregado">Risco Agregado</a></li>
+    <li><a href="#breakdown">Breakdown por Fator</a> (Bruto/Líquido)</li>
+    <li><a href="#vol-regime">Vol Regime</a></li>
+    <li>Alerts (quando houver)</li>
+    <li><a href="#outliers">Comments — Outliers do dia</a></li>
+    <li><a href="#top-movers">Top Movers — DIA</a></li>
+    <li><a href="#mudancas">Mudanças Significativas</a></li>
+    <li><a href="#top-posicoes">Top Posições — consolidado</a> (drill-down)</li>
+    <li><a href="#dq">Status dos Dados</a></li>
+  </ol>
+
+  <!-- ---------- 2.1 STATUS CONSOLIDADO ---------- -->
+  <h3 id="status-consol">2.1 Status consolidado</h3>
+  <p><strong>O que mostra:</strong> uma linha por fundo com retorno DIA/MTD/YTD/12M, VaR atual, utilização de VaR e de stop, e Δ VaR vs. D-1. No rodapé, 2 linhas "benchmark" (IBOV + CDI) para referência.</p>
+  <h4>Cálculos</h4>
+  <ul>
+    <li><strong>DIA/MTD/YTD/12M</strong> (alpha vs. CDI): soma de <code>dia_bps</code>/<code>mtd_bps</code>/<code>ytd_bps</code>/<code>m12_bps</code> da tabela <code>q_models.REPORT_ALPHA_ATRIBUTION</code>. Já net de CDI pela engine.
+      <div class="box warn" style="margin-top:8px">
+        <div class="box-head">Exceção: <span class="tag all">FRONTIER</span></div>
+        <p style="margin:0">Usa <code>TOTAL_IBVSP_{DAY,MONTH,YEAR}</code> do mainboard Long Only (ER vs. IBOV, não vs. CDI).</p>
+      </div>
+    </li>
+    <li><strong>VaR atual</strong>: última observação da série de risco por fundo. Convertido para % NAV, sempre positivo.</li>
+    <li><strong>Util VaR</strong> = VaR atual / soft limit. Fundos com <code>informative=True</code> (ex.: FRONTIER) não têm util (não há limit).</li>
+    <li><strong>Util Stop</strong> (só MACRO e ALBATROZ hoje): maior utilização de orçamento mensal entre PMs (MACRO) ou <code>abs(MTD) / 150 bps</code> (ALBATROZ).</li>
+    <li><strong>Status 🟢/🟡/🔴</strong>: <code>max(util VaR, util stop)</code>. 🟢 &lt;70%, 🟡 70–100%, 🔴 ≥100%.</li>
+    <li><strong>Δ VaR D-1</strong> = |VaR hoje| − |VaR D-1|, em bps. "flat" se |Δ| &lt; 0.5 bps.</li>
+  </ul>
+  <h4>Linhas benchmark (rodapé)</h4>
+  <ul>
+    <li><strong>IBOV</strong>: <code>fetch_ibov_returns()</code> — 4 retornos compostos de <code>public.EQUITIES_PRICES.CLOSE</code> (<code>INSTRUMENT='IBOV'</code>).</li>
+    <li><strong>CDI</strong>: <code>fetch_cdi_returns()</code> — soma simples diária de <code>public.ECO_INDEX</code> (<code>INSTRUMENT='CDI'</code>, <code>FIELD='YIELD'</code>).</li>
+  </ul>
+
+  <!-- ---------- 2.2 RISCO AGREGADO ---------- -->
+  <h3 id="risco-agregado">2.2 Risco Agregado (house-wide)</h3>
+  <p><strong>O que mostra:</strong> uma linha por fundo com NAV, VaR absoluto (% + R$), benchmark, BVaR relativo (% + R$). Linha total = soma simples (sem benefício de diversificação). Top-5 destacados: 🔺 maior abs R$ · 🔷 maior rel R$.</p>
+  <h4>Cálculos</h4>
+  <ul>
+    <li><strong>VaR abs (%)</strong>: lido do <code>series_map</code>, mesma fonte do Status consolidado.</li>
+    <li><strong>VaR abs (R$)</strong> = <code>VaR% / 100 × NAV</code>. NAV vem do <code>_NAV_CACHE</code>.</li>
+    <li><strong>BVaR rel (%)</strong>:
+      <ul>
+        <li><span class="tag all">FRONTIER</span>: <code>compute_frontier_bvar_hs()</code> — 3y HS vs. IBOV, com clip de corporate actions.</li>
+        <li><span class="tag all">IDKA_3Y / IDKA_10Y</span>: <code>RELATIVE_VAR_PCT</code> do engine (paramétrico, vs. IDKA index).</li>
+        <li>CDI-benchmarked (MACRO, QUANT, EVO, MACRO_Q, ALBATROZ): <strong>≈ VaR abs</strong>, já que CDI tem vol diária ≈ 0.</li>
+      </ul>
+    </li>
+    <li><strong>Total row</strong> = soma simples. Conservador (assume correlação = 1 entre fundos).</li>
+  </ul>
+
+  <!-- ---------- 2.3 BREAKDOWN POR FATOR ---------- -->
+  <h3 id="breakdown">2.3 Breakdown por Fator</h3>
+  <p><strong>O que mostra:</strong> matriz <strong>fator × fundo</strong> (7 fatores × 8 fundos). Toggle <strong>Bruto / Líquido</strong> (default: <em>Líquido</em>).</p>
+
+  <table>
+    <thead>
+      <tr><th>Fator</th><th>Unidade</th><th>Fonte</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Real</strong></td><td>BRL·ano (ANO_EQ)</td><td><code>rf_expo_maps</code> — NTN-B + DAP primitives (<code>IPCA Coupon</code>)</td></tr>
+      <tr><td><strong>Nominal</strong></td><td>BRL·ano</td><td><code>rf_expo_maps</code> — DI1 futures (<code>BRL Rate Curve</code>); MACRO via <code>df_expo.delta_dur</code> em RF-BZ</td></tr>
+      <tr><td><strong>IPCA Idx</strong></td><td>BRL (face)</td><td><code>rf_expo_maps</code> — primitive <code>IPCA</code> (face-value inflacionária)</td></tr>
+      <tr><td><strong>Equity BR</strong></td><td>BRL nocional</td><td>Frontier NAV × gross; QUANT + EVOLUTION-direct net deltas (ETF explosion incluída); MACRO <code>rf=RV-BZ</code></td></tr>
+      <tr><td><strong>Equity DM</strong></td><td>BRL nocional</td><td>MACRO <code>rf=RV-DM</code></td></tr>
+      <tr><td><strong>Equity EM</strong></td><td>BRL nocional</td><td>MACRO <code>rf=RV-EM</code></td></tr>
+      <tr><td><strong>Commodities</strong></td><td>BRL nocional</td><td>MACRO <code>rf=COMMODITIES + P-Metals</code></td></tr>
+      <tr><td><strong>FX</strong></td><td>BRL nocional</td><td>MACRO <code>rf ~ FX-*</code> (omitido da tabela se tudo zero)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Bruto vs. Líquido</h4>
+  <div class="formula">
+    <span class="lbl">Líquido (net of bench)</span>
+    liquido[factor, fund] = bruto[factor, fund] − bench_allocation[factor, fund]
+  </div>
+  <p>Alocações de bench:</p>
+  <ul>
+    <li><strong>Real</strong>: IDKA 3Y bench = 3.0 × NAV, IDKA 10Y bench = 10.0 × NAV. Outros = 0.</li>
+    <li><strong>IPCA Idx</strong>: IDKAs bench = 1.0 × NAV. Outros = 0.</li>
+    <li><strong>Equity BR</strong>: Frontier bench = 1.0 × NAV (IBOV 100% long). Outros = 0.</li>
+    <li><strong>Nominal / Commodities / FX / Equity DM/EM</strong>: todos bench = 0 (CDI tem zero duration).</li>
+  </ul>
+
+  <div class="box info">
+    <div class="box-head">Por que Líquido importa</div>
+    <p style="margin:0">IDKA 10Y tem <strong>+997M BRL·ano</strong> de exposição real bruta. O bench absorve 914M → líquido ~<strong>+83M</strong>. O risco <em>ativo</em> do fundo é 8× menor que o bruto sugere. No snapshot 2026-04-17, Real dropa de <strong>1,250M → 161M</strong> (8× redução); IPCA Idx de <strong>162M → 12M</strong>; Equity BR de <strong>71M → 12M</strong>.</p>
+  </div>
+
+  <h4>Convenção de sinal (fetch_rf_exposure_map)</h4>
+  <pre><span class="com"># Para recover exposição de posição a partir do DELTA (sinal de hedge-side):</span>
+rate_prims = {<span class="str">"IPCA Coupon"</span>, <span class="str">"BRL Rate Curve"</span>}
+df[<span class="str">"ano_eq_brl"</span>] = df.apply(
+    <span class="kw">lambda</span> r: -r[<span class="str">"delta_brl"</span>] <span class="kw">if</span> r[<span class="str">"PRIMITIVE_CLASS"</span>] <span class="kw">in</span> rate_prims <span class="kw">else</span> r[<span class="str">"delta_brl"</span>],
+    axis=<span class="num">1</span>,
+)</pre>
+  <p><code>-DELTA</code> é equivalente a <code>POSITION × MOD_DURATION</code> para NTN-Bs e DAPs (verificado empiricamente). O engine guarda DELTA com sinal de hedge-side (negativo p/ long bond, representando o short-DI que hedgearia a posição). Negamos para recuperar a exposição real da posição.</p>
+
+  <!-- ---------- 2.4 VOL REGIME ---------- -->
+  <h3 id="vol-regime">2.4 Vol Regime</h3>
+  <p><strong>O que mostra:</strong> realized 21d vol (anualizada) vs. janela full HS, com pct rank e classificação (low / normal / elevated / stressed).</p>
+  <h4>Cálculos</h4>
+  <div class="formula">
+    <span class="lbl">Formulas</span>
+vol_recent_pct = std(W[-21:]) × √252 × 100<br>
+vol_full_pct   = std(W)       × √252 × 100<br>
+ratio          = vol_recent / vol_full<br>
+pct_rank       = percentil de std(W[t-21:t]) entre <em>todas</em> as janelas rolling de 21d
+  </div>
+  <p>Fonte: <code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.W</code> — série sintética de P&amp;L simulada diária por portfolio (MACRO, SIST, EVOLUTION).</p>
+  <p><strong>Regime</strong>:</p>
+  <ul>
+    <li><span class="up">low</span>: pct_rank &lt; 20</li>
+    <li>normal: 20 ≤ pct_rank &lt; 70</li>
+    <li><span class="warn">elevated</span>: 70 ≤ pct_rank &lt; 90</li>
+    <li><span class="down">stressed</span>: pct_rank ≥ 90</li>
+  </ul>
+  <div class="box info">
+    <div class="box-head">Por que pct_rank, não z-score</div>
+    <p style="margin:0">Z-score do recente vs. distribuição rolling tem SE ~15% por overlap das janelas (N_eficaz ~36 em 756d). Pct_rank é não-paramétrico e imune ao overlap — sinal mais robusto.</p>
+  </div>
+
+  <!-- ---------- 2.5 OUTLIERS ---------- -->
+  <h3 id="outliers">2.5 Comments — Outliers do dia</h3>
+  <p><strong>O que mostra:</strong> por fundo, lista de produtos com contribuição anormal.</p>
+  <h4>Condição de flag</h4>
+  <div class="formula">
+flag = (|z| ≥ 2σ <span class="com">E</span> |bps| ≥ 3)  <span class="com">OU</span>  |bps| ≥ 10
+  </div>
+  <p>A cláusula absoluta (|bps| ≥ 10) captura losses materiais em nomes historicamente voláteis (AXIA, etc.) onde σ é grande demais para o z-test disparar sozinho.</p>
+  <h4>Cálculo</h4>
+  <ul>
+    <li>Fonte: <code>q_models.REPORT_ALPHA_ATRIBUTION</code> via <code>fetch_pa_daily_per_product</code>.</li>
+    <li>Para cada <code>(FUNDO, LIVRO, PRODUCT)</code>: <code>σ = std(dia_bps)</code> dos últimos 90 dias.</li>
+    <li><code>z = dia_bps_today / σ</code>.</li>
+  </ul>
+
+  <!-- ---------- 2.6 TOP MOVERS ---------- -->
+  <h3 id="top-movers">2.6 Top Movers — DIA</h3>
+  <p><strong>O que mostra:</strong> top 3 contribuintes e top 3 detratores do dia por fundo. Toggle <strong>Por Livro / Por Classe</strong>.</p>
+  <ul>
+    <li>Soma <code>dia_bps</code> por LIVRO (ou CLASSE) dentro do fundo.</li>
+    <li>Caixa / Custos / Taxas excluídos (operacionais, não-direcionais).</li>
+    <li>Top 3 positivos + top 3 negativos por |sum|; drop abaixo de 0.5 bps (ruído).</li>
+  </ul>
+  <p>Também tem toggle no Summary: <strong>Por Tamanho / Por Fundo</strong> (ordena os cards individuais de cada contribuição).</p>
+
+  <!-- ---------- 2.7 MUDANÇAS ---------- -->
+  <h3 id="mudancas">2.7 Mudanças Significativas D-0 vs. D-1</h3>
+  <p><strong>O que mostra:</strong> exposições que mudaram materialmente entre ontem e hoje. MACRO em <strong>PM × fator</strong>; outros fundos em <strong>fator agregado</strong>.</p>
+  <ul>
+    <li>Fonte: <code>LOTE_PRODUCT_EXPO</code> com <code>TRADING_DESK_SHARE_SOURCE</code> no source do fundo.</li>
+    <li>Agrega <code>DELTA / NAV × 100</code> por (PM, rf) para MACRO ou (rf) para outros.</li>
+    <li>Δ = today − D-1; flag <code>|Δ| ≥ 0.30 pp</code>.</li>
+    <li>Ordenado por |Δ| desc.</li>
+  </ul>
+
+  <!-- ---------- 2.8 TOP POSIÇÕES ---------- -->
+  <h3 id="top-posicoes">2.8 Top Posições — consolidado (drill-down)</h3>
+  <p><strong>O que mostra:</strong> hierarquia clicável <strong>Fator → Instrumento → Fundo(s)</strong>. 3 níveis:</p>
+  <ul>
+    <li><strong>Nível 0</strong> (sempre visível): linha por fator com total da casa + nº de instrumentos. Clique no <code>▶</code> expande.</li>
+    <li><strong>Nível 1</strong> (expande ao clicar no fator): top 5 instrumentos por fator, com soma através dos fundos.</li>
+    <li><strong>Nível 2</strong> (expande ao clicar no instrumento): cada fundo holder, valor e % do total desse instrumento.</li>
+  </ul>
+  <h4>Toggle Bruto / Líquido</h4>
+  <div class="formula">
+    <span class="lbl">Líquido — scale pro-rata</span>
+liquido_position = bruto_position × (1 − bench_fundo_fator / total_fundo_fator)
+  </div>
+  <p>Posições que apenas replicam o benchmark são abatidas pro-rata à sua participação na exposição total do fundo naquele fator.</p>
+  <h4>Evita double-count</h4>
+  <ul>
+    <li>Usa <code>fetch_evolution_direct_single_names</code> (<code>desk = source = Evolution</code>) em vez do look-through — sem importar posições que já estão em QUANT / Frontier.</li>
+    <li><code>via_albatroz</code> excluído (já contado em ALBATROZ direto).</li>
+  </ul>
+
+  <!-- ---------- 2.9 DQ ---------- -->
+  <h3 id="dq">2.9 Status dos Dados (DQ compact)</h3>
+  <p>Check-list compacto do status das bases que alimentam o relatório. 🟢 = ok, 🔴 = ausente/defasado. Detalhe completo no tab <strong>Qualidade</strong>.</p>
+</section>
+
+<!-- ========================= 3. PER FUND ========================= -->
+<section id="per-fund">
+  <h2>3 · Reports por fundo (tab "Por Fundo")</h2>
+  <p>Cada fundo tem <em>N</em> reports dependendo do que faz sentido. Ordem fixa:</p>
+  <ol>
+    <li><strong>Análise</strong> — outliers + top movers + mudanças filtradas só deste fundo</li>
+    <li><strong>PA</strong> (Performance Attribution) — hierárquico, Por Classe / Por Livro</li>
+    <li><strong>Risk Monitor</strong> — card com VaR/BVaR/Stress + sparkline 12m + bar vs. limits</li>
+    <li><strong>Exposure</strong> — varia por fundo</li>
+    <li><strong>Exposure Map</strong> (só <span class="tag all">IDKA_3Y</span> <span class="tag all">IDKA_10Y</span> <span class="tag all">ALBATROZ</span>)</li>
+    <li><strong>Single-Name</strong> (só <span class="tag quant">QUANT</span> <span class="tag evo">EVOLUTION</span>)</li>
+    <li><strong>Distribuição 252d</strong> (só <span class="tag macro">MACRO</span> <span class="tag evo">EVOLUTION</span>)</li>
+    <li><strong>Vol Regime</strong> — drill-down per fundo</li>
+    <li><strong>Risk Budget</strong> (só <span class="tag macro">MACRO</span> <span class="tag all">ALBATROZ</span>)</li>
+    <li><strong>Long Only</strong> (só <span class="tag all">FRONTIER</span>)</li>
+  </ol>
+
+  <!-- ---------- 3.1 PA ---------- -->
+  <h3 id="pa">3.1 Performance Attribution (PA)</h3>
+  <p>Hierárquico com 2–3 níveis:</p>
+  <ul>
+    <li><strong>Por Classe</strong>: CLASSE → PRODUCT</li>
+    <li><strong>Por Livro</strong>: LIVRO → PRODUCT. <span class="tag evo">EVOLUTION</span> tem 3 níveis: Strategy (Macro/Quant/Equities/Crédito) → Livro → PRODUCT</li>
+  </ul>
+  <p>Ordem default fixa (<code>_PA_ORDER_CLASSE</code>, <code>_PA_ORDER_LIVRO</code>, <code>_PA_ORDER_STRATEGY</code>) com tiebreak |YTD| desc. Pinned-bottom (sem sort): Caixa, Caixa USD, Taxas e Custos, Custos.</p>
+  <p><strong>Colunas</strong>: DIA · MTD · YTD · 12M (em %, 2 decimais). Sort clicável preservando hierarquia. Heatmap em células de métrica (alpha 0.14). Lazy render (HTML reduziu 4MB → 0.9MB).</p>
+  <p><strong>Footer 3 linhas</strong>: Total Alpha · Benchmark (CDI) · Retorno Nominal.</p>
+
+  <!-- ---------- 3.2 RISK MONITOR ---------- -->
+  <h3 id="risk-monitor">3.2 Risk Monitor (per fund)</h3>
+  <p>Card único por fundo com:</p>
+  <ul>
+    <li>VaR atual · Soft limit · Hard limit · Util%</li>
+    <li>Stress atual · Soft · Hard · Util% (não mostrado para <code>informative=True</code> funds)</li>
+    <li>Sparkline 12m de VaR e Stress</li>
+    <li>Bar-chart horizontal com range 12m e limits</li>
+    <li>Para IDKAs: labels <strong>BVaR 95%</strong> (primary) + <strong>VaR 95% (ref)</strong> em vez de "VaR 95% 1d" / "Stress"</li>
+  </ul>
+
+  <!-- ---------- 3.3 EXPOSURE ---------- -->
+  <h3 id="exposure">3.3 Exposure</h3>
+  <p>Varia por fundo:</p>
+  <ul>
+    <li><span class="tag macro">MACRO</span>: <code>build_exposure_section</code> — POSIÇÕES (por RF factor, expandível por PM × produto) + PM VaR (por gestor, expandível). Colunas: %NAV, σ, ΔExpo, VaR%, ΔVaR, Margem, DIA.</li>
+    <li><span class="tag all">ALBATROZ</span>: <code>build_albatroz_exposure</code> — resumo por indexador (Pré/IPCA/IGP-M/CDI/Outros) + top 15 posições por |DV01|.</li>
+    <li><span class="tag all">FRONTIER</span>: <code>build_frontier_exposure_section</code> — active weight vs. IBOV/IBOD, toggle Por Nome / Por Setor. Toggle de Benchmark (IBOV/IBOD) muda peso do bench e colunas ER simultaneamente.</li>
+  </ul>
+
+  <!-- ---------- 3.4 EXPOSURE MAP ---------- -->
+  <h3 id="exposure-map">3.4 Exposure Map (IDKAs + ALBATROZ)</h3>
+  <p>Chart único com 3 barras por bucket: <span class="warn">Fund Real (amber)</span>, <span style="color:#14b8a6">Fund Nominal (teal)</span>, <span style="color:#64748b">Bench (slate)</span>.</p>
+
+  <h4>Estrutura do chart</h4>
+  <ul>
+    <li><strong>Eixo X</strong>: 12 buckets de maturidade — [0-6m, 6-12m, 1-2y, 2-3y, 3-4y, 4-5y, 5-6y, 6-7y, 7-8y, 8-9y, 9-10y, 10y+]</li>
+    <li><strong>Eixo Y</strong>: ANO_EQ em anos (years-equivalent)</li>
+    <li><strong>Cumulative lines</strong>: fund_real_cum, fund_nom_cum, bench_cum (dashed)</li>
+  </ul>
+
+  <h4>Toggles</h4>
+  <ul>
+    <li><strong>Absoluto</strong> (default): fund + bench side-by-side</li>
+    <li><strong>Relativo</strong>: fund − bench por bucket (2 barras em vez de 3)</li>
+    <li><strong>Ambos / Real / Nominal</strong>: filtra qual fator aparece</li>
+  </ul>
+
+  <h4>Stat row</h4>
+  <p>NAV · Duração Real · Duração Nominal · Total Fund · Bench · CDI %NAV · Gap (Fund − Bench) · via Albatroz (quando &gt; 0).</p>
+
+  <h4>Tabelas colapsáveis</h4>
+  <ul>
+    <li><strong>Mostrar tabela (por bucket)</strong>: bucket × Real/Nominal/Fund Total/Bench/Relative.</li>
+    <li><strong>Mostrar posições (por ativo)</strong>: lista completa ordenada por |ANO_EQ|, com Book, Fator, Maturidade, Duration, Position R$, ANO_EQ.</li>
+  </ul>
+
+  <h4>Albatroz look-through explodido</h4>
+  <p><code>fetch_rf_exposure_map(desk)</code> faz 2 queries UNION:</p>
+  <ol>
+    <li><code>TRADING_DESK = desk</code> AND <code>SHARE_SOURCE = desk</code> → <strong>posições diretas</strong></li>
+    <li><code>TRADING_DESK = 'ALBATROZ'</code> AND <code>SHARE_SOURCE = desk</code> → <strong>slice de Albatroz</strong> que pertence ao desk</li>
+  </ol>
+  <p>Retorna coluna <code>via</code> = <code>'direct'</code> | <code>'via_albatroz'</code>. Stat row mostra "via Albatroz +X.XXyr" quando &gt; 0.</p>
+
+  <!-- ---------- 3.5 SINGLE-NAME ---------- -->
+  <h3 id="single-name">3.5 Single-Name L/S (QUANT, EVOLUTION)</h3>
+  <p>Tabela por ticker com:</p>
+  <ul>
+    <li><strong>Direct</strong>: posição direta em BRL</li>
+    <li><strong>From Idx</strong>: explosion de WIN (IBOV future), BOVA11 (IBOV ETF), SMAL11 (SMLLBV ETF), ADRs (via <code>PRIMITIVE_NAME ~ '^[A-Z]{4}[0-9]{1,2}$'</code>)</li>
+    <li><strong>Net</strong> = Direct + From Idx</li>
+    <li><strong>% NAV</strong></li>
+  </ul>
+  <p>Gross absoluto no header. Pinned-bottom por magnitude.</p>
+  <p>Para <span class="tag evo">EVOLUTION</span>, tem look-through em QUANT (Bracco, Quant_PA), Evo Strategy (FMN_*, FCO, Ações BR Long), Frontier, Macro FIM (CI_COMMODITIES). Para o Summary cross-fund, usa <code>fetch_evolution_direct_single_names</code> (só o que Evolution segura direto) p/ evitar double-count.</p>
+
+  <!-- ---------- 3.6 DISTRIBUIÇÃO ---------- -->
+  <h3 id="distribution">3.6 Distribuição 252d (MACRO, EVOLUTION)</h3>
+  <p>Toggle <strong>Backward / Forward</strong> (default: <strong>Forward</strong>).</p>
+  <ul>
+    <li><strong>Backward</strong>: D-1 carteira × 252d históricos + DIA realizado overlayed. Responde: "onde o move de hoje caiu na distribuição histórica da carteira de ontem?"</li>
+    <li><strong>Forward</strong>: D carteira × 252d históricos. Responde: "como a carteira atual se comportaria nos últimos 252d?"</li>
+  </ul>
+  <p>Fonte: <code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.W</code> por portfolio (fund-level ou PM-level). Stats por instrumento: min, max, mean, std, var95 (5° pct), var_p95 (95° pct), actual, percentile do actual, #σ.</p>
+
+  <!-- ---------- 3.7 RISK BUDGET ---------- -->
+  <h3 id="risk-budget">3.7 Risk Budget</h3>
+  <ul>
+    <li><span class="tag macro">MACRO</span>: stop por PM (CI/LF/JD/RJ/QM) com carry forward mensal. Base 63 bps/mês, semestral 128 bps, anual 252 bps. Regra implementada em <code>carry_step(...)</code>.</li>
+    <li><span class="tag all">ALBATROZ</span>: 150 bps/mês sem carry.</li>
+  </ul>
+
+  <!-- ---------- 3.8 LONG ONLY ---------- -->
+  <h3 id="long-only">3.8 Long Only (FRONTIER)</h3>
+  <p>Tabela completa de posições:</p>
+  <ul>
+    <li>% Cash · Delta · Beta · #ADTV</li>
+    <li>Ret D / MTD / YTD</li>
+    <li>Attrib D / MTD / YTD</li>
+    <li>ER IBOD D / MTD / YTD</li>
+  </ul>
+  <p>Subtotais por book + Total. Fonte: <code>frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD</code>.</p>
+</section>
+
+<!-- ========================= 4. METRICS ========================= -->
+<section id="metrics">
+  <h2>4 · Métricas-chave (detalhadamente)</h2>
+
+  <!-- ---------- 4.1 VAR ---------- -->
+  <h3 id="var">4.1 VaR (absoluto, 95% 1d)</h3>
+  <div class="formula">VaR% = -PARAMETRIC_VAR / NAV × 100</div>
+  <table>
+    <thead><tr><th>Fundo</th><th>Fonte</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag macro">MACRO</span> <span class="tag quant">QUANT</span> <span class="tag evo">EVOLUTION</span></td><td><code>LOTE45.LOTE_FUND_STRESS_RPM.PARAMETRIC_VAR</code> com <code>LEVEL = cfg["level"]</code> (2 ou 3)</td></tr>
+      <tr><td><span class="tag all">ALBATROZ</span> <span class="tag all">MACRO_Q</span></td><td><code>LOTE45.LOTE_FUND_STRESS.PVAR1DAY</code>, <code>SUM</code> por <code>TRADING_DESK</code></td></tr>
+      <tr><td><span class="tag all">FRONTIER</span></td><td>Mesmo que RAW (PVAR1DAY), mas <strong>substituído</strong> pelo HS BVaR vs. IBOV no Summary (§ 4.3)</td></tr>
+      <tr><td><span class="tag all">IDKA_3Y</span> <span class="tag all">IDKA_10Y</span></td><td><code>LOTE45.LOTE_PARAMETRIC_VAR_TABLE.ABSOLUTE_VAR_PCT</code> × -100 (já em fração decimal)</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ---------- 4.2 ANO_EQ ---------- -->
+  <h3 id="ano-eq">4.2 ANO_EQ (1-year equivalent exposure)</h3>
+  <p>Métrica canônica para exposição de taxas: quantos <strong>BRL de exposição ponderada por duration</strong> (ou equivalentemente: anos-equivalentes por 100% NAV) tem o fundo.</p>
+  <div class="formula">
+    <span class="lbl">Fórmula canônica (calculadora existente)</span>
+ANO_EQ = AMOUNT × DV01 × 10000 / AUM<br>
+       = (AMOUNT × PU) × MOD_DURATION / AUM<br>
+       = market_value × MOD_DURATION / AUM<br>
+       = position_%NAV × MOD_DURATION
+  </div>
+  <p>Nossa implementação em <code>fetch_rf_exposure_map</code> usa <code>-DELTA</code> para primitives <code>IPCA Coupon</code> / <code>BRL Rate Curve</code>, que é equivalente a <code>POSITION × MOD_DURATION</code> (verificado empiricamente).</p>
+
+  <h4>Buckets de maturidade</h4>
+<pre><span class="kw">_RF_BUCKETS</span> = [
+    (<span class="str">"0-6m"</span>, <span class="num">0</span>, <span class="num">0.5</span>), (<span class="str">"6-12m"</span>, <span class="num">0.5</span>, <span class="num">1</span>),
+    (<span class="str">"1-2y"</span>, <span class="num">1</span>, <span class="num">2</span>), (<span class="str">"2-3y"</span>, <span class="num">2</span>, <span class="num">3</span>),
+    (<span class="str">"3-4y"</span>, <span class="num">3</span>, <span class="num">4</span>), (<span class="str">"4-5y"</span>, <span class="num">4</span>, <span class="num">5</span>),
+    (<span class="str">"5-6y"</span>, <span class="num">5</span>, <span class="num">6</span>), (<span class="str">"6-7y"</span>, <span class="num">6</span>, <span class="num">7</span>),
+    (<span class="str">"7-8y"</span>, <span class="num">7</span>, <span class="num">8</span>), (<span class="str">"8-9y"</span>, <span class="num">8</span>, <span class="num">9</span>),
+    (<span class="str">"9-10y"</span>, <span class="num">9</span>, <span class="num">10</span>), (<span class="str">"10y+"</span>, <span class="num">10</span>, <span class="num">99</span>),
+]</pre>
+  <p>Bucket = <code>DAYS_TO_EXPIRATION / 365.25</code>. Fallback: <code>MOD_DURATION</code> se days não disponível.</p>
+
+  <!-- ---------- 4.3 HS BVaR FRONTIER ---------- -->
+  <h3 id="bvar-hs">4.3 HS BVaR (Frontier vs. IBOV)</h3>
+  <p><code>compute_frontier_bvar_hs(df_frontier, date_str, window_days=756)</code>:</p>
+  <ol>
+    <li>Pega pesos atuais do mainboard (<code>% Cash</code> por ticker, 17 ações hoje)</li>
+    <li>Query 3y de CLOSE (756 business days + 120 buffer) para cada ticker + IBOV em <code>public.EQUITIES_PRICES</code></li>
+    <li>Pivoteia pra wide; drop linhas sem IBOV; forward-fill stocks em dias não-trading</li>
+    <li><code>returns = wide.pct_change()</code></li>
+    <li><strong>Clip de corporate actions</strong>: <code>returns[stock_cols].mask(|r| &gt; 0.30, 0.0)</code> — B3 tem circuit breaker individual em ~15%; qualquer coisa &gt; 30% é split/bonificação (AMOB3 teve 5492% num dia, BBAS3 +50% — clipados)</li>
+    <li><code>synthetic_fund_return = Σ weight_i × return_i</code></li>
+    <li><code>ER = synthetic_fund_return − return_IBOV</code></li>
+    <li><code>BVaR_95_1d = -quantile(ER, 0.05) × 100</code> (em %NAV)</li>
+  </ol>
+
+  <div class="box ok">
+    <div class="box-head">Validação 2026-04-17</div>
+    <p style="margin:0"><code>std(ER)</code> = 0.51%/dia → parametric 1.645×std = <strong>0.84%</strong> ≈ BVaR <strong>0.85%</strong> (distribuição ~normal após clip). TE anualizada <strong>8.1%/yr</strong> — plausível p/ LO 17-names.</p>
+  </div>
+
+  <!-- ---------- 4.4 BVaR param IDKA ---------- -->
+  <h3 id="bvar-param">4.4 BVaR paramétrico (IDKAs)</h3>
+  <p>Direto de <code>LOTE45.LOTE_PARAMETRIC_VAR_TABLE.RELATIVE_VAR_PCT</code>. É a métrica do engine, vs. o índice IDKA correspondente (IDKA IPCA 3A / 10A).</p>
+
+  <!-- ---------- 4.5 STOP ---------- -->
+  <h3 id="stop">4.5 Stop com carry forward (MACRO)</h3>
+  <p><code>carry_step(budget_abs, pnl, ytd)</code>:</p>
+  <ul>
+    <li>Se <code>PnL ≥ 0</code>: <code>next_budget = STOP_BASE + pnl × 0.5</code> (mantém metade do ganho como cushion)</li>
+    <li>Se <code>PnL &lt; 0</code>: consome <code>cushion_extra × 0.25 + base × 0.50 + excesso × 1.0</code> (camada suave pro cushion, dura pro excesso)</li>
+    <li>Se <code>YTD &lt; 0</code>: cap semestral <code>STOP_SEM − |ytd|</code> aplicado</li>
+  </ul>
+  <p>Gancho (🔴) quando <code>remaining ≤ 0</code>. Constantes: <code>STOP_BASE=63</code>, <code>STOP_SEM=128</code>, <code>STOP_ANO=252</code>.</p>
+</section>
+
+<!-- ========================= 5. STRUCTURE ========================= -->
+<section id="structure">
+  <h2>5 · Estrutura de código</h2>
+
+  <h3>5.1 Arquivo único</h3>
+  <p>Todo o generator vive em <code>generate_risk_report.py</code> (~7900 linhas, ~66 funções). Mono-arquivo por design — simples de executar, de ler, de versionar. Split em módulos pode vir se chegar a 10k+.</p>
+
+  <h3>5.2 Layout interno</h3>
+<pre>imports + config
+FUNDS / RAW_FUNDS / IDKA_FUNDS / ALL_FUNDS  <span class="com"># mandatos provisórios</span>
+REPORTS list                                 <span class="com"># registra tipos de report</span>
+FUND_ORDER, FUND_LABELS, _FUND_PA_KEY
+
+fetch_* functions                            <span class="com"># todas as queries</span>
+compute_* functions                          <span class="com"># BVaR, vol regime, outliers, etc.</span>
+build_* functions                            <span class="com"># montam cada card/section</span>
+
+<span class="kw">def</span> build_html(...):                          <span class="com"># main orchestrator</span>
+    <span class="com"># loop por FUND_ORDER → monta cards por fundo</span>
+    <span class="com"># monta cards cross-fund (Risco Agregado, Breakdown, Top Posições, etc.)</span>
+    <span class="com"># concatena em section-wrap divs (summary / fund / quality)</span>
+    <span class="com"># injeta CSS + JS no &lt;head&gt; + &lt;body&gt;</span>
+
+<span class="kw">def</span> main():                                   <span class="com"># CLI entrypoint</span>
+    <span class="com"># ThreadPoolExecutor paralelo pra todos os fetches</span>
+    <span class="com"># Pré-warmup do _NAV_CACHE</span>
+    <span class="com"># Resolve futures sequencialmente com fallback D-1</span>
+    <span class="com"># Monta data_manifest</span>
+    <span class="com"># Chama build_html</span>
+    <span class="com"># Escreve arquivo + abre no browser</span></pre>
+
+  <h3>5.3 Cache em memória</h3>
+  <p><code>_NAV_CACHE: dict[(desk, date_str), float]</code>. Populado em bulk via <code>fetch_all_latest_navs</code> antes do <code>build_html</code>. <code>_latest_nav()</code> consulta cache primeiro, fallback ao DB se miss. ~6 chamadas dentro de <code>build_html</code> economizam ~500–800ms de round-trips.</p>
+
+  <h3>5.4 Skills</h3>
+  <p>9 skills em <code>.claude/skills/</code>, cada uma foca num ângulo distinto:</p>
+  <table>
+    <thead><tr><th>Skill</th><th>Função</th></tr></thead>
+    <tbody>
+      <tr><td><code>risk-manager</code></td><td>Framework de referência</td></tr>
+      <tr><td><code>risk-daily-monitor</code></td><td>Semáforo diário (MM)</td></tr>
+      <tr><td><code>macro-stop-monitor</code></td><td>Stops por PM (MACRO)</td></tr>
+      <tr><td><code>macro-risk-breakdown</code></td><td>Decomposição (MACRO)</td></tr>
+      <tr><td><code>evolution-risk-concentration</code></td><td>Concentração (EVOLUTION)</td></tr>
+      <tr><td><code>rf-idka-monitor</code></td><td>Monitor RF benchmarked (IDKAs)</td></tr>
+      <tr><td><code>performance-attribution</code></td><td>PA transversal</td></tr>
+      <tr><td><code>risk-data-collector</code></td><td>Pré-check das bases</td></tr>
+      <tr><td><code>risk-morning-call</code></td><td>Orquestrador final</td></tr>
+      <tr><td><code>wrap-session</code></td><td>Ritual de fim de sessão (commit + push + memory update)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.5 Memory</h3>
+  <p>Em <code>~/.claude/projects/.../memory/</code>:</p>
+  <ul>
+    <li><code>MEMORY.md</code> — índice</li>
+    <li><code>user_role.md</code> — role do Diego (risk manager Galapagos)</li>
+    <li><code>project_status.md</code> — fase atual</li>
+    <li><code>feedback_key_corrections.md</code> — armadilhas críticas</li>
+    <li><code>project_data_sources.md</code> — schemas das tabelas</li>
+    <li><code>project_todo_risk_analytics_roadmap.md</code> — backlog priorizado</li>
+  </ul>
+</section>
+
+<!-- ========================= 6. CONVENTIONS ========================= -->
+<section id="conventions">
+  <h2>6 · Convenções</h2>
+
+  <h3>6.1 Idioma</h3>
+  <ul>
+    <li>Código, variáveis, JSON keys: <strong>inglês</strong></li>
+    <li>UI/texto do Morning Call, comentários longos: <strong>português</strong></li>
+  </ul>
+
+  <h3>6.2 Sinais</h3>
+  <ul>
+    <li>VaR/Stress: armazenado como PnL negativo (-R$), convertido para positivo em %NAV nos outputs</li>
+    <li>DELTA em <code>LOTE_PRODUCT_EXPO</code> para primitives de rate (<code>IPCA Coupon</code>, <code>BRL Rate Curve</code>): sinal <em>hedge-side</em>, negamos para obter exposição de posição</li>
+    <li>IPCA primitive: sinal direto (long bond = long IPCA face-value)</li>
+  </ul>
+
+  <h3>6.3 Unidades</h3>
+  <ul>
+    <li>VaR/Stress: % NAV ou bps de NAV (contexto dita)</li>
+    <li>ANO_EQ: anos-equivalentes (1.0 = 100% NAV em bond de 1y duration)</li>
+    <li>Retornos PA: % (2 decimais)</li>
+    <li>Exposição RF na tabela de Breakdown: BRL·ano para duration-based; BRL nocional para equity/commodity</li>
+  </ul>
+
+  <h3>6.4 NAV lag</h3>
+  <p>NAV lag de ~1 business day vs. VaR/Expo. <code>_latest_nav</code> usa <code>VAL_DATE ≤ date_str ORDER BY VAL_DATE DESC LIMIT 1</code>. <code>merge_asof(backward)</code> em <code>build_series</code> para alinhar NAV aos dias de risco.</p>
+
+  <h3>6.5 D-1 (sem shift contábil)</h3>
+  <p>Não há "shift contábil D-1" — era um bug antigo (engine faz look-through para fundos nested). Todos os fundos usam D direto. Se dados de D faltarem, fallback explícito pra D-1 com banner ⚠ de stale.</p>
+</section>
+
+<!-- ========================= 7. EXTENDING ========================= -->
+<section id="extending">
+  <h2>7 · Como estender</h2>
+
+  <h3>7.1 Adicionar um novo fundo</h3>
+  <ol>
+    <li><strong>Mandato</strong>: criar <code>data/mandatos/mandato-{SHORT}.json</code> com soft/hard limits de VaR e Stress</li>
+    <li><strong>Dict</strong>: adicionar entrada em <code>FUNDS</code> (<code>LEVEL=2/3</code> em RPM), <code>RAW_FUNDS</code> (product-level), ou <code>IDKA_FUNDS</code> (parametric BVaR)</li>
+    <li><strong>FUND_ORDER</strong>: adicionar o short em ordem desejada</li>
+    <li><strong>FUND_LABELS</strong>: adicionar display name</li>
+    <li><strong>_FUND_PA_KEY</strong>: adicionar pa_key (nome em <code>REPORT_ALPHA_ATRIBUTION.FUNDO</code>)</li>
+    <li><strong>Reports específicos</strong>: se precisar de algo além do default (Risk Monitor, PA, Análise), adicionar builder + registrar em <code>sections.append((SHORT, "report-id", html))</code></li>
+  </ol>
+
+  <h3>7.2 Adicionar um novo report cross-fund</h3>
+  <ol>
+    <li><strong>Fetch</strong>: adicionar <code>fetch_*</code> + <code>ex.submit</code> no bloco paralelo</li>
+    <li><strong>Resolve</strong>: resolver o future com fallback</li>
+    <li><strong>Pass</strong>: passar como kwarg para <code>build_html</code></li>
+    <li><strong>Build</strong>: criar <code>build_*</code> function que gera o HTML do card</li>
+    <li><strong>Register</strong>: injetar via f-string no <code>summary_html</code></li>
+  </ol>
+</section>
+
+<footer>
+  Risk Monitor — documentação gerada 2026-04-19 · Dúvidas: dfainber@gmail.com · Fonte de verdade: <code>CLAUDE.md</code>
+</footer>
+
+</main>
+</body>
+</html>
