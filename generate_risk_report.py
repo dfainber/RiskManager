@@ -5236,8 +5236,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             return 1.0
         return 1.0 - bench / total
 
-    def _render_top_rows(liquido: bool) -> str:
-        # Scale per row (Bruto = as-is; Líquido = × (1 − bench/fund_total)).
+    def _render_top_rows(liquido: bool, mode_key: str) -> str:
+        from collections import defaultdict
         scaled = []
         for r in agg_rows:
             brl = r["brl"]
@@ -5248,13 +5248,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             rr = dict(r); rr["brl"] = brl
             scaled.append(rr)
 
-        # Group by Factor → Instrument, aggregate fund contributions per instrument
-        from collections import defaultdict
         by_fi = defaultdict(list)
         for r in scaled:
             by_fi[(r["factor"], r["product"])].append(r)
 
-        # Aggregate per instrument (sum across funds)
         instruments = []
         for (factor, product), rows in by_fi.items():
             total = sum(r["brl"] for r in rows)
@@ -5264,59 +5261,63 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 "unit": unit, "holders": rows,
             })
 
-        # Factor-level totals, rank factors by |total|
         factor_totals = defaultdict(float)
+        factor_unit   = {}
         for inst in instruments:
             factor_totals[inst["factor"]] += inst["total"]
+            factor_unit[inst["factor"]] = inst["unit"]
         factor_order = sorted(factor_totals.keys(),
                               key=lambda f: abs(factor_totals[f]), reverse=True)
 
-        # Top N per factor (to keep the card focused)
-        TOP_PER_FACTOR = 5
         html = ""
         for factor in factor_order:
             factor_insts = [i for i in instruments if i["factor"] == factor]
             factor_insts.sort(key=lambda i: abs(i["total"]), reverse=True)
-            factor_insts = factor_insts[:TOP_PER_FACTOR]
             if not factor_insts:
                 continue
-            # Factor header row
             ftot = factor_totals[factor]
             ftot_col = "var(--up)" if ftot >= 0 else "var(--down)"
+            fpath = f"{mode_key}|{factor}"
             html += (
-                '<tr class="top-pos-factor-hdr">'
-                f'<td class="sum-fund" colspan="2" style="font-weight:700; letter-spacing:.05em; text-transform:uppercase; padding-top:10px">{factor}</td>'
+                f'<tr class="tp-row tp-lvl-0" data-tp-path="{fpath}" '
+                f'onclick="toggleTopPos(this)" style="cursor:pointer">'
+                f'<td class="sum-fund" style="font-weight:700; letter-spacing:.05em; text-transform:uppercase">'
+                f'<span class="tp-caret">▶</span> {factor}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:11px">{len(factor_insts)} instrumentos</td>'
                 f'<td class="mono" style="text-align:right; color:{ftot_col}; font-weight:700">{_mm(ftot)}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{factor_insts[0]["unit"]}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{factor_unit.get(factor, "")}</td>'
                 "</tr>"
             )
-            # Instruments + per-fund holders
             for inst in factor_insts:
                 col = "var(--up)" if inst["total"] >= 0 else "var(--down)"
-                holders_html = ""
-                inst["holders"].sort(key=lambda r: abs(r["brl"]), reverse=True)
-                for h in inst["holders"]:
-                    hcol = "var(--up)" if h["brl"] >= 0 else "var(--down)"
-                    holders_html += f'<span class="mono" style="color:{hcol}; font-size:11px">{h["fund"]} {_mm(h["brl"])}</span>'
-                if len(inst["holders"]) > 1:
-                    holders_html = " · ".join(h for h in holders_html.split('</span><span') for _ in [None])
-                # Simpler: build holders with separators
-                holders_html = " · ".join(
-                    f'<span class="mono" style="color:{("var(--up)" if h["brl"] >= 0 else "var(--down)")}; font-size:11px">{h["fund"]} {_mm(h["brl"])}</span>'
-                    for h in inst["holders"]
-                )
+                ipath = f"{mode_key}|{factor}|{inst['product']}"
+                expandable = len(inst["holders"]) > 0
+                caret_html = '<span class="tp-caret">▶</span> ' if expandable else '  '
                 html += (
-                    '<tr class="top-pos-inst">'
-                    f'<td class="sum-fund" style="padding-left:20px">{inst["product"]}</td>'
-                    f'<td class="mono" style="font-size:11px">{holders_html}</td>'
+                    f'<tr class="tp-row tp-lvl-1" data-tp-parent="{fpath}" data-tp-path="{ipath}" '
+                    f'onclick="toggleTopPos(this)" style="display:none; cursor:pointer">'
+                    f'<td class="sum-fund" style="padding-left:22px">{caret_html}{inst["product"]}</td>'
+                    f'<td class="mono" style="color:var(--muted); font-size:11px">{len(inst["holders"])} fundo(s)</td>'
                     f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(inst["total"])}</td>'
                     f'<td class="mono" style="color:var(--muted); font-size:10.5px">{inst["unit"]}</td>'
                     "</tr>"
                 )
+                inst["holders"].sort(key=lambda r: abs(r["brl"]), reverse=True)
+                for h in inst["holders"]:
+                    hcol = "var(--up)" if h["brl"] >= 0 else "var(--down)"
+                    pct = (h["brl"] / inst["total"] * 100) if inst["total"] else 0
+                    html += (
+                        f'<tr class="tp-row tp-lvl-2" data-tp-parent="{ipath}" style="display:none">'
+                        f'<td class="sum-fund" style="padding-left:44px; font-size:11.5px; color:var(--muted)">{h["fund"]}</td>'
+                        f'<td class="mono" style="color:var(--muted); font-size:10.5px">{pct:+.0f}% da posição</td>'
+                        f'<td class="mono" style="text-align:right; color:{hcol}; font-size:11.5px">{_mm(h["brl"])}</td>'
+                        f'<td class="mono" style="color:var(--muted); font-size:10.5px">{h["unit"]}</td>'
+                        "</tr>"
+                    )
         return html
 
-    top_rows_liquido = _render_top_rows(liquido=True)
-    top_rows_bruto   = _render_top_rows(liquido=False)
+    top_rows_liquido = _render_top_rows(liquido=True,  mode_key="liq")
+    top_rows_bruto   = _render_top_rows(liquido=False, mode_key="bru")
 
     top_positions_html = f"""
     <section class="card">
@@ -5330,8 +5331,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       </div>
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
-          <th style="text-align:left">Produto</th>
-          <th style="text-align:left">Fundo(s) · por onde está alocado</th>
+          <th style="text-align:left">Fator / Instrumento / Fundo</th>
+          <th style="text-align:left">Detalhe</th>
           <th style="text-align:right">Total</th>
           <th style="text-align:left">Unidade</th>
         </tr></thead>
@@ -5339,7 +5340,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{top_rows_bruto}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        Agrupado por <b>Fator → Instrumento → Fundo(s) onde está alocado</b>. Top 5 instrumentos por fator. <b>Líquido</b>: cada contribuição é escalada por (1 − bench/total_fundo_fator) — abate o que apenas replica o benchmark. <b>Bruto</b>: sem abater bench. EVOLUTION usa posições diretas (FMN/FCO/FLO) — sem look-through para QUANT/Frontier (evita double-count). via_albatroz excluído (contado em ALBATROZ direto).
+        Drill-down: clique em um <b>Fator</b> (ex: Real, Nominal, Commodities) para abrir seus instrumentos; clique em um <b>Instrumento</b> para ver em quais fundos está alocado e a %. <b>Líquido</b>: cada contribuição é escalada por (1 − bench/total_fundo_fator); <b>Bruto</b>: sem abater bench. EVOLUTION usa posições diretas (sem look-through); via_albatroz excluído (contado em ALBATROZ direto).
       </div>
     </section>"""
 
@@ -6815,6 +6816,28 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     card.querySelectorAll('.mov-view').forEach(function(t) {{
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
     }});
+  }};
+  // Top Posições — drill-down (Factor → Instrument → Fund)
+  window.toggleTopPos = function(tr) {{
+    var path = tr.getAttribute('data-tp-path');
+    if (!path) return;
+    var table = tr.closest('table'); if (!table) return;
+    var direct = table.querySelectorAll('tr[data-tp-parent="' + path + '"]');
+    var anyVisible = false;
+    direct.forEach(function(r) {{ if (r.style.display !== 'none') anyVisible = true; }});
+    var willOpen = !anyVisible;
+    direct.forEach(function(r) {{ r.style.display = willOpen ? '' : 'none'; }});
+    // Collapse grandchildren when collapsing
+    if (!willOpen) {{
+      var all = table.querySelectorAll('tr[data-tp-parent^="' + path + '|"]');
+      all.forEach(function(r) {{ r.style.display = 'none'; }});
+      // caret reset on closed children
+      all.forEach(function(r) {{
+        var c = r.querySelector('.tp-caret'); if (c) c.textContent = '▶';
+      }});
+    }}
+    var caret = tr.querySelector('.tp-caret');
+    if (caret) caret.textContent = willOpen ? '▼' : '▶';
   }};
   // Breakdown por Fator — Líquido / Bruto toggle (net-of-bench vs gross)
   window.selectRfBrl = function(btn, mode) {{
