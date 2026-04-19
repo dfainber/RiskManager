@@ -4966,6 +4966,81 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_bvar_brl)}</td>'
         '</tr>'
     )
+    # ── Breakdown by risk factor — rows = factors, columns = funds (R$ exposure) ──
+    # Factor sources:
+    #   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
+    #   Equity BR (IBOV)                        → Frontier NAV (100% long); others pending
+    factor_matrix = {  # factor_key -> {short: brl, ...}
+        "Real":     {},
+        "Nominal":  {},
+        "IPCA Idx": {},
+        "Equity BR":{},
+    }
+    if rf_expo_maps:
+        for short_k, df_k in rf_expo_maps.items():
+            if df_k is None or df_k.empty:
+                continue
+            for factor_key, factor_col in [("Real", "real"), ("Nominal", "nominal"), ("IPCA Idx", "ipca_idx")]:
+                v = float(df_k[df_k["factor"] == factor_col]["ano_eq_brl"].sum())
+                if abs(v) >= 1_000:  # at least R$1k of exposure
+                    factor_matrix[factor_key][short_k] = v
+    # Frontier = 100% equity BR long (NAV in R$)
+    if df_frontier is not None and not df_frontier.empty:
+        fr_tot = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+        if not fr_tot.empty:
+            gross_pct = float(fr_tot["% Cash"].iloc[0])
+            fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
+            if gross_pct and fr_nav:
+                factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
+
+    factor_rows_html = ""
+    for factor_key in ["Real", "Nominal", "IPCA Idx", "Equity BR"]:
+        allocations = factor_matrix.get(factor_key, {})
+        if not allocations:
+            continue
+        # Row cells — one per fund in FUND_ORDER
+        cells = ""
+        total = 0.0
+        for short in FUND_ORDER:
+            v = allocations.get(short)
+            if v is None or abs(v) < 1_000:
+                cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+            else:
+                total += v
+                col = "var(--up)" if v >= 0 else "var(--down)"
+                cells += f'<td class="mono" style="text-align:right; color:{col}">{_mm(v)}</td>'
+        tot_col = "var(--up)" if total >= 0 else "var(--down)"
+        factor_rows_html += (
+            "<tr>"
+            f'<td class="sum-fund">{factor_key}</td>'
+            + cells
+            + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{_mm(total)}</td>'
+            + "</tr>"
+        )
+
+    fund_col_headers = "".join(
+        f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
+    )
+    by_factor_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Breakdown por Fator</span>
+        <span class="card-sub">— R$ exposure por fator de risco × fundo · Real/Nominal/IPCA em BRL-yr (ANO_EQ); Equity em BRL nocional</span>
+      </div>
+      <table class="summary-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Fator</th>
+          {fund_col_headers}
+          <th style="text-align:right">Total</th>
+        </tr></thead>
+        <tbody>{factor_rows_html}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
+        Unidades misturadas por fator: <b>Real / Nominal</b> são ANO_EQ em BRL·ano (posição × duration); <b>IPCA Idx</b> é face-value BRL de exposição inflacionária; <b>Equity BR</b> é nocional BRL. Compare dentro de cada linha, não entre linhas.
+        MVP: só IDKAs + Albatroz + Frontier. MACRO/QUANT/EVOLUTION equity e FX pendentes.
+      </div>
+    </section>"""
+
     house_html = f"""
     <section class="card">
       <div class="card-head">
@@ -5345,6 +5420,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     <div class="section-wrap" data-view="summary">
       {fund_grid_html}
       {house_html}
+      {by_factor_html}
       {vol_regime_html}
       {alerts_html}
       {comments_html}
