@@ -1332,25 +1332,23 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     via_df = df[df["factor"].isin(["real", "nominal"])]
     via_alb_total = float(via_df[via_df["via"] == "via_albatroz"]["ano_eq_brl"].sum() / nav) if nav else 0.0
 
-    # SVG geometry
+    # SVG geometry — 3 bars per bucket (Fund Real, Fund Nominal, Bench)
     W, H = 760, 300
     pad_l, pad_r, pad_t, pad_b = 46, 26, 26, 38
     plot_w = W - pad_l - pad_r
     plot_h = H - pad_t - pad_b
     n_buckets = len(bucket_order)
     band_w = plot_w / n_buckets
-    bar_gap = 3
-    bar_w = (band_w - 3 * bar_gap) / 2
+    bar_gap = 2
+    bar_w = (band_w - 4 * bar_gap) / 3
 
-    # Y scale: fit the largest of any view's bars or cumulatives
+    # Y scale
     all_vals = (fund_real_b + fund_nom_b + bench_real_b + bench_nom_b +
-                rel_real_b  + rel_nom_b +
-                cum_real + cum_nom + bench_cum_real + bench_cum_nom +
-                rel_cum_real + rel_cum_nom)
+                cum_real + cum_nom + bench_cum_real)
     y_max = max([abs(v) for v in all_vals] + [1.0]) * 1.15
     y_min = min([0.0] + [v for v in all_vals]) * 1.15
     if y_min >= 0:
-        y_min = -y_max * 0.10  # small headroom below zero
+        y_min = -y_max * 0.10
 
     def y_scale(v):
         return pad_t + plot_h * (1.0 - (v - y_min) / (y_max - y_min))
@@ -1358,20 +1356,24 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     def x_band(i):
         return pad_l + i * band_w
 
-    def bar_rect(x0, v, cls):
+    def bar_rect(x0, v, cls, factor):
         y_top = y_scale(max(v, 0))
         y_bot = y_scale(min(v, 0))
-        return (f'<rect class="rf-bar {cls}" '
+        return (f'<rect class="rf-bar {cls}" data-factor="{factor}" '
                 f'x="{x0:.1f}" y="{y_top:.1f}" width="{bar_w:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
 
-    def bars_for(real_arr, nom_arr):
-        pieces_r, pieces_n = [], []
-        for i in range(n_buckets):
-            x0 = x_band(i) + bar_gap
-            x1 = x0 + bar_w + bar_gap
-            pieces_r.append(bar_rect(x0, real_arr[i], 'rf-real" data-factor="real'))
-            pieces_n.append(bar_rect(x1, nom_arr[i], 'rf-nom" data-factor="nominal'))
-        return "".join(pieces_r), "".join(pieces_n)
+    # 3-bar layout per bucket: Fund Real | Fund Nominal | Bench
+    fund_bars_r, fund_bars_n, bench_bars = [], [], []
+    for i in range(n_buckets):
+        x0 = x_band(i) + bar_gap
+        x1 = x0 + bar_w + bar_gap
+        x2 = x1 + bar_w + bar_gap
+        fund_bars_r.append(bar_rect(x0, fund_real_b[i],  "rf-real", "real"))
+        fund_bars_n.append(bar_rect(x1, fund_nom_b[i],   "rf-nom",  "nominal"))
+        bench_bars.append(bar_rect(x2, bench_real_b[i] + bench_nom_b[i], "rf-benchbar", "bench"))
+    fund_bars_r = "".join(fund_bars_r)
+    fund_bars_n = "".join(fund_bars_n)
+    bench_bars  = "".join(bench_bars)
 
     def poly_points(values):
         pts = []
@@ -1380,16 +1382,9 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
             pts.append(f"{cx:.1f},{y_scale(v):.1f}")
         return " ".join(pts)
 
-    fund_bars_r, fund_bars_n = bars_for(fund_real_b, fund_nom_b)
-    bench_bars_r, bench_bars_n = bars_for(bench_real_b, bench_nom_b)
-    rel_bars_r,  rel_bars_n  = bars_for(rel_real_b,  rel_nom_b)
-
-    fund_cum_r_line  = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(cum_real)}"/>'
+    fund_cum_r_line  = f'<polyline class="rf-cum rf-cum-real" data-factor="real"    points="{poly_points(cum_real)}"/>'
     fund_cum_n_line  = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(cum_nom)}"/>'
-    bench_cum_r_line = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(bench_cum_real)}"/>'
-    bench_cum_n_line = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(bench_cum_nom)}"/>'
-    rel_cum_r_line   = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(rel_cum_real)}"/>'
-    rel_cum_n_line   = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(rel_cum_nom)}"/>'
+    bench_cum_line   = f'<polyline class="rf-cum rf-cum-bench" data-factor="bench" points="{poly_points([a + b for a, b in zip(bench_cum_real, bench_cum_nom)])}"/>'
 
     # Zero line
     y0 = y_scale(0)
@@ -1409,33 +1404,17 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         cx = x_band(i) + band_w / 2
         x_axis += f'<text class="rf-axis-lbl" x="{cx:.1f}" y="{H - 12:.1f}" text-anchor="middle">{b}</text>'
 
-    # Benchmark marker — vertical dashed line at the exact benchmark duration
-    # inside its bucket, shown on every mode so the user can always see where
-    # the bench sits. Skipped for CDI (zero duration).
-    bench_marker_svg = ""
-    if not cdi_bench:
-        bidx = bench_bucket_idx(bench_dur_yrs)
-        lo, hi = _RF_BUCKETS[bidx][1], _RF_BUCKETS[bidx][2]
-        # Proportional position of bench_dur within the bucket, mapped onto band_w
-        frac = (bench_dur_yrs - lo) / (hi - lo) if hi > lo else 0.5
-        frac = min(max(frac, 0.02), 0.98)
-        x_m = x_band(bidx) + frac * band_w
-        bench_marker_svg = (
-            f'<line class="rf-bench-marker" x1="{x_m:.1f}" y1="{pad_t}" '
-            f'x2="{x_m:.1f}" y2="{H - pad_b}"/>'
-            f'<text class="rf-axis-lbl rf-bench-marker-lbl" x="{x_m + 3:.1f}" '
-            f'y="{pad_t + 10:.1f}" text-anchor="start">Bench {bench_dur_yrs:.0f}y</text>'
-        )
-
-    # Three view groups — JS toggles which is visible
+    # Single chart — fund bars + bench bar side by side per bucket
     svg = f"""
     <svg class="rf-expo-svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
       {y_axis}
       {zero_line}
-      <g class="rf-mode-group" data-rf-mode="fund">{fund_bars_r}{fund_bars_n}{fund_cum_r_line}{fund_cum_n_line}</g>
-      <g class="rf-mode-group" data-rf-mode="bench" style="display:none">{bench_bars_r}{bench_bars_n}{bench_cum_r_line}{bench_cum_n_line}</g>
-      <g class="rf-mode-group" data-rf-mode="relative" style="display:none">{rel_bars_r}{rel_bars_n}{rel_cum_r_line}{rel_cum_n_line}</g>
-      {bench_marker_svg}
+      {fund_bars_r}
+      {fund_bars_n}
+      {bench_bars}
+      {fund_cum_r_line}
+      {fund_cum_n_line}
+      {bench_cum_line}
       {x_axis}
     </svg>
     """
@@ -1497,19 +1476,12 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         '</div>'
     )
 
-    # Two toggles — mode (Fund/Bench/Relative) and factor filter (Both/Real/Nominal)
+    # Factor filter only — fund+bench always shown side by side
     toggle_html = (
-        '<div class="rf-toggles" style="display:flex; gap:10px; margin-left:auto; flex-wrap:wrap">'
-        f'<div class="pa-view-toggle rf-mode-toggle">'
-        f'<button class="pa-tgl active" data-rf-mode="fund"     onclick="selectRfMode(this,\'fund\')">Fund</button>'
-        f'<button class="pa-tgl"        data-rf-mode="bench"    onclick="selectRfMode(this,\'bench\')">Bench</button>'
-        f'<button class="pa-tgl"        data-rf-mode="relative" onclick="selectRfMode(this,\'relative\')">Relative</button>'
-        '</div>'
-        f'<div class="pa-view-toggle rf-view-toggle">'
+        f'<div class="pa-view-toggle rf-view-toggle" style="margin-left:auto">'
         f'<button class="pa-tgl active" data-rf-view="both"    onclick="selectRfView(this,\'both\')">Ambos</button>'
         f'<button class="pa-tgl"        data-rf-view="real"    onclick="selectRfView(this,\'real\')">Real</button>'
         f'<button class="pa-tgl"        data-rf-view="nominal" onclick="selectRfView(this,\'nominal\')">Nominal</button>'
-        '</div>'
         '</div>'
     )
 
@@ -1523,11 +1495,10 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
       {stat_row}
       <div style="overflow-x:auto">{svg}</div>
       <div class="rf-legend mono" style="margin-top:6px; font-size:10.5px; color:var(--muted); text-align:center">
-        <span class="rf-legend-item"><span class="rf-swatch rf-real"></span> Real (IPCA)</span>
-        <span class="rf-legend-item"><span class="rf-swatch rf-nom"></span> Nominal (Pré)</span>
-        <span class="rf-legend-item"><span class="rf-swatch rf-cum"></span> Cumulativo</span>
-        {'<span class="rf-legend-item"><span class="rf-swatch rf-bench"></span> Benchmark cum.</span>' if not cdi_bench else ''}
-        {'<span class="rf-legend-item"><span class="rf-swatch rf-gap"></span> Gap (fund − bench)</span>' if not cdi_bench else ''}
+        <span class="rf-legend-item"><span class="rf-swatch rf-real"></span> Fund Real (IPCA)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-nom"></span> Fund Nominal (Pré)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-benchbar"></span> Benchmark</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-cum"></span> Cumulativo (Fund)</span>
       </div>
       <div style="margin-top:14px">
         <button class="rf-tbl-toggle" onclick="toggleRfTable(this)"
@@ -5859,6 +5830,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .rf-expo-svg .rf-bar {{ stroke:none; opacity:.92; }}
   .rf-expo-svg .rf-real {{ fill:#f59e0b; }}          /* amber — real/IPCA */
   .rf-expo-svg .rf-nom  {{ fill:#14b8a6; }}          /* teal — nominal/pré */
+  .rf-expo-svg .rf-benchbar {{ fill:#64748b; opacity:.9; }} /* slate — benchmark */
+  .rf-expo-svg .rf-cum-bench {{ fill:none; stroke:#64748b; stroke-width:1.6; stroke-dasharray:4 3; }}
   .rf-expo-svg .rf-cum  {{ fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }}
   .rf-expo-svg .rf-cum-real {{ stroke:#b45309; stroke-dasharray:0; }}
   .rf-expo-svg .rf-cum-nom  {{ stroke:#0f766e; stroke-dasharray:0; }}
@@ -5867,14 +5840,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .rf-expo-svg .rf-grid {{ stroke:var(--line); stroke-width:.7; opacity:.4; }}
   .rf-expo-svg .rf-zero {{ stroke:var(--muted); stroke-width:1; opacity:.6; }}
   .rf-expo-svg .rf-axis-lbl {{ fill:var(--muted); font-size:10.5px; font-family:'JetBrains Mono', monospace; }}
-  .rf-expo-svg .rf-bench-marker {{ stroke:var(--accent); stroke-width:1.6; stroke-dasharray:5 4; opacity:.75; }}
-  .rf-expo-svg .rf-bench-marker-lbl {{ fill:var(--accent); font-weight:600; }}
+  .rf-expo-svg .rf-bench-marker {{ stroke:#f97316; stroke-width:2.2; stroke-dasharray:6 4; opacity:1; }}
+  .rf-expo-svg .rf-bench-marker-lbl {{ fill:#f97316; font-weight:700; font-size:11px; }}
+  .rf-expo-svg .rf-bench-marker-lbl-bg {{ fill:var(--bg); opacity:.85; }}
 
   .rf-legend {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; align-items:center; }}
   .rf-legend-item {{ display:inline-flex; align-items:center; gap:5px; }}
   .rf-swatch {{ display:inline-block; width:12px; height:10px; border-radius:2px; vertical-align:middle; }}
   .rf-swatch.rf-real {{ background:#f59e0b; }}
   .rf-swatch.rf-nom  {{ background:#14b8a6; }}
+  .rf-swatch.rf-benchbar {{ background:#64748b; }}
   .rf-swatch.rf-cum  {{ background:#b45309; height:2px; border-radius:0; }}
   .rf-swatch.rf-bench {{ background:transparent; border-top:2px dashed #64748b; height:0; width:14px; border-radius:0; }}
   .rf-swatch.rf-gap  {{ background:#1a8fd1; height:2px; border-radius:0; }}
@@ -6504,36 +6479,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
     }});
   }};
-  // Exposure Map — Real/Nominal/Both factor toggle (respects the active mode group)
+  // Exposure Map — Real/Nominal/Both factor toggle. Bench bars stay visible always.
   window.selectRfView = function(btn, view) {{
     var card = btn.closest('.card');
     if (!card) return;
     card.querySelectorAll('.rf-view-toggle .pa-tgl').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.rfView === view);
     }});
-    card.dataset.rfFactor = view;
-    _rfApplyVisibility(card);
+    card.querySelectorAll('.rf-expo-svg [data-factor]').forEach(function(el) {{
+      var f = el.getAttribute('data-factor');
+      if (f === 'bench') {{ el.style.display = ''; return; }}
+      el.style.display = (view === 'both' || f === view) ? '' : 'none';
+    }});
   }};
-  // Exposure Map — Fund/Bench/Relative mode toggle (picks which SVG group is visible)
-  window.selectRfMode = function(btn, mode) {{
-    var card = btn.closest('.card');
-    if (!card) return;
-    card.querySelectorAll('.rf-mode-toggle .pa-tgl').forEach(function(b) {{
-      b.classList.toggle('active', b.dataset.rfMode === mode);
-    }});
-    card.dataset.rfMode = mode;
-    _rfApplyVisibility(card);
-  }};
-  function _rfApplyVisibility(card) {{
-    var factor = card.dataset.rfFactor || 'both';
-    var mode   = card.dataset.rfMode   || 'fund';
-    card.querySelectorAll('.rf-expo-svg .rf-mode-group').forEach(function(g) {{
-      g.style.display = (g.getAttribute('data-rf-mode') === mode) ? '' : 'none';
-    }});
-    card.querySelectorAll('.rf-expo-svg .rf-mode-group [data-factor]').forEach(function(el) {{
-      el.style.display = (factor === 'both' || el.getAttribute('data-factor') === factor) ? '' : 'none';
-    }});
-  }}
   // Expand/collapse the detail table under an Exposure Map card
   window.toggleRfTable = function(btn) {{
     var wrap = btn.nextElementSibling;
