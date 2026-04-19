@@ -10,7 +10,7 @@ setlocal ENABLEDELAYEDEXPANSION
 pushd "%~dp0"
 
 REM Data de hoje em YYYY-MM-DD (fallback se usuario apertar Enter)
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"`) do set TODAY=%%a
+for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "$d=(Get-Date).AddDays(-1);while($d.DayOfWeek -eq 'Saturday' -or $d.DayOfWeek -eq 'Sunday'){$d=$d.AddDays(-1)};$d.ToString('yyyy-MM-dd')"`) do set TODAY=%%a
 
 echo.
 echo Risk Monitor — Gerador de relatorio
@@ -28,7 +28,7 @@ echo.
 echo ^> Gerando relatorio para %DATA%...
 echo.
 
-python generate_risk_report.py %DATA%
+C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe generate_risk_report.py %DATA%
 if errorlevel 1 (
     echo.
     echo *** ERRO ao gerar o relatorio.

@@ -11,7 +11,32 @@
       "Read(//c/Users/diego.fainberg/OneDrive - GALAPAGOS CAPITAL/Desktop//**)",
       "Read(///fs01/FS_GALAPAGOS/Macros/DADOS/Projetos/**)",
       "Bash(/c/Users/diego.fainberg/Anaconda3/python.exe -m pip install --quiet --upgrade openpyxl)",
-      "Read(///fs01/FS_GALAPAGOS//**)"
+      "Read(///fs01/FS_GALAPAGOS//**)",
+      "Bash(pip list *)",
+      "Bash(python -m pip list)",
+      "Bash(py -3 --version)",
+      "Bash(py -3 -m pip list)",
+      "Bash(where python3 *)",
+      "Bash(where python *)",
+      "Bash(ls /c/Python*)",
+      "Read(//c/Users/diego.fainberg/AppData/Local/Programs/**)",
+      "Bash(cmd.exe /c \"where python & python --version & python -m pip list 2>&1\")",
+      "Bash(powershell.exe -Command \"Get-Command python | Select-Object -ExpandProperty Source\")",
+      "Bash(powershell.exe -Command \"& 'C:\\\\Users\\\\diego.fainberg\\\\AppData\\\\Local\\\\Microsoft\\\\WindowsApps\\\\python.exe' --version\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem -Path 'C:\\\\', 'D:\\\\', 'F:\\\\' -Filter 'python.exe' -Recurse -ErrorAction SilentlyContinue 2>&1 | Select-Object -First 10 FullName\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\diego.fainberg', 'C:\\\\ProgramData', 'C:\\\\Program Files' -Filter 'python.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 10 FullName\")",
+      "Bash(powershell.exe -Command ' *)",
+      "Bash(powershell.exe -Command \"[System.Environment]::GetEnvironmentVariable\\('PATH', 'User'\\) + ';' + [System.Environment]::GetEnvironmentVariable\\('PATH', 'Machine'\\)\")",
+      "Bash(powershell.exe -Command '[System.Environment]::GetEnvironmentVariable\\('\\\\''PATH'\\\\'', '\\\\''User'\\\\''\\) -split '\\\\'';'\\\\'' | Where-Object { $_ -ne '\\\\'''\\\\'' }')",
+      "Bash(powershell.exe -Command '[System.Environment]::GetEnvironmentVariable\\('\\\\''PATH'\\\\'', '\\\\''Machine'\\\\''\\) -split '\\\\'';'\\\\'' | Where-Object { $_ -ne '\\\\'''\\\\'' }')",
+      "Bash(powershell.exe -Command \"Get-ChildItem 'C:\\\\Users\\\\diego.fainberg\\\\.local\\\\bin\\\\' -ErrorAction SilentlyContinue | Select-Object Name\")",
+      "Bash(powershell.exe -Command \"& 'C:\\\\Users\\\\diego.fainberg\\\\.local\\\\bin\\\\uv.exe' python list 2>&1\")",
+      "Bash(powershell.exe -Command \"& 'C:\\\\Users\\\\diego.fainberg\\\\.local\\\\bin\\\\uv.exe' python install 3.12 2>&1\")",
+      "Bash(powershell.exe -Command \"node --version; npm --version\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem 'C:\\\\Program Files\\\\nodejs\\\\' -ErrorAction SilentlyContinue | Select-Object -First 5 Name; Get-ChildItem 'C:\\\\Program Files \\(x86\\)\\\\nodejs\\\\' -ErrorAction SilentlyContinue | Select-Object -First 5 Name\")",
+      "Bash(powershell.exe -Command \"& 'F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\.venv\\\\Scripts\\\\python.exe' -c 'import pandas, numpy, matplotlib, psycopg2, dotenv; print\\(\\\\\"OK\\\\\"\\)'\")",
+      "Bash(powershell.exe -Command \"Get-Item 'C:\\\\Windows\\\\System32\\\\MSVCP140.dll', 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140.dll' -ErrorAction SilentlyContinue | Select-Object Name, VersionInfo\")",
+      "Bash(powershell.exe -Command \"Get-Item 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll' -ErrorAction SilentlyContinue | Select-Object Name; Test-Path 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll'\")"
     ]
   }
 }

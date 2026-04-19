@@ -169,19 +169,32 @@ dashboards originais.
 - `compute_pa_outliers` ganha cláusula **OR absoluta**: flaga se `(|z|≥2σ AND |bps|≥3)` OR `|bps|≥10`. Captura losses materiais em nomes historicamente voláteis (AXIA, etc.) onde σ é grande demais para o z-test disparar sozinho. Ver `project_rule_outlier_or_absolute.md`.
 - `run_report.bat` — script Windows que pergunta a data e roda o generator (default = hoje no formato YYYY-MM-DD).
 
+**Fase 4 — entregues (sessão pós 2026-04-18):**
+- **ALBATROZ + MACRO_Q VaR/Stress** — fonte real descoberta: `LOTE45.LOTE_FUND_STRESS` (product-level, SUM por TRADING_DESK). `PVAR1DAY` = VaR, `SPECIFIC_STRESS` e `MACRO_STRESS` = stress. Ambos agora exibindo no Risk Monitor. Limites provisórios.
+- **Frontier Long Only** — 6º fundo (`FRONTIER`) adicionado. Report `frontier-lo` com tabela de posições completa (17 ações), métricas NAV/Gross/Beta pond., atribuição DIA/MTD/YTD vs IBOD e IBOV. Fonte: `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD`.
+- **Frontier Exposure** — report `exposure` para FRONTIER com active weight vs IBOV/IBOD:
+  - Toggle Benchmark (IBOV/IBOD) — muda peso bench, active weight E colunas ER simultaneamente via data attributes
+  - Toggle Vista (Por Nome / Por Setor) — Por Setor: colapsável por setor, weighted beta por setor, Σ ER D/MTD/YTD por setor, ▼/▶ All
+  - Cash allocation exibido no header (ex.: 10.92% caixa em 2026-04-16)
+  - TE aproximado via β (provisório — a ser substituído por TE ex-post real)
+- **sortTableByCol patcheado globalmente** — respeita `data-pinned="1"` em qualquer tabela. TOTAL e Caixa não se movem no sort.
+- Novas fontes canônicas: `public.EQUITIES_COMPOSITION` (pesos IBOV/SMLLBV), `q_models.FRONTIER_TARGETS` + `q_models.COMPANY_SECTORS` (setor por ação).
+
 **Fase 4 — pendente:**
 - **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
-- **(A) Mudanças Significativas** já cobre os 5 fundos; **(B) Main Risks** fica para próxima
+- **Setor/Macro na tabela de posições LO** — join já feito no código, colunas não exibidas (~15 min)
+- **TE real** — substituir σ_IBOV=20% por σ(Rp-Rb)×√252 via `public.EQUITIES_PRICES` (~2h)
 - Backtest de VaR (diagnóstico de calibração)
-- Cross-fund / firm-level overlap (consolidado por instrumento/emissor)
+- Cross-fund / firm-level overlap (consolidado por instrumento/emissor) — alta ROI
 - Scenario library (named shocks)
 - Drawdown trajectory (tempo underwater, velocidade)
 - Correlation breakdown (diversification benefit ao longo do tempo)
 - Style drift (PM vs mandato)
-- ALBATROZ: descobrir fonte VaR/Stress + definir mandato + clarificar sign convention LFT
+- ALBATROZ: calibrar limites definitivos + clarificar sign convention LFT (fonte VaR já descoberta)
 - Filter/search inline no PA (lazy-render-aware)
+- Stress column validation guard (sanity query no DQ check)
 
-Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) e [memory/project_todo_session_2026_04_18](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_session_2026_04_18.md) para o backlog detalhado.
+Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) para o backlog detalhado.
 
 ---
 
@@ -190,8 +203,8 @@ Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude
 Fora de escopo **até a Fase 4 no mínimo**:
 
 - Fundos **BALTRA**
-- Fundos **Long Only**
-- Fundos **FMN**
+- ~~Fundos **Long Only**~~ → **Frontier Ações FIC incorporado** (Fase 4, sessão pós 2026-04-18)
+- Fundos **FMN** (ainda fora de escopo — relatório separado via xlwings/Excel existe)
 - Família **Crédito** (só entra após MVP de Macro + RF estar estável)
 
 Isso é escolha, não descuido. Não expandir escopo sem discutir.
