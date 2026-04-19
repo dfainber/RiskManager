@@ -201,43 +201,49 @@ dashboards originais.
   - Fund names destacados nos card-subs — classe CSS `.fund-name` (accent azul, chip-style com border + background sutil), JS `highlightFundNames()` wrap automático
   - Fund nav chips — barra `.fund-nav-chips` ("Ir para: Macro | Quantitativo | …") injetada via JS no topo de cada `section-wrap[data-fund]`. Chip ativo destacado, click chama `selectFund()`
 
-**Fase 4 — entregues (sessão 2026-04-19, tarde):**
-- **Frontier Summary — alpha vs IBOV**: DIA/MTD/YTD puxados de `TOTAL_IBVSP_{DAY,MONTH,YEAR}` (excess return vs IBOV na TOTAL row do mainboard) em vez de `TOTAL_ATRIBUTION_*` (retorno bruto). Fica apples-to-apples com alpha vs CDI dos outros fundos. Subtítulo do card reflete a exceção
-- **IBOV + CDI benchmark rows** no rodapé do Status consolidado:
-  - `fetch_ibov_returns()` — 3y de `public.EQUITIES_PRICES.CLOSE` (INSTRUMENT='IBOV'), retornos compostos para DIA/MTD/YTD/12M em bps
-  - `fetch_cdi_returns()` já existia (soma simples de `public.ECO_INDEX`, CDI YIELD)
-  - 2 linhas `bench-row` após o loop de fundos, itálicas + fundo azulado sutil, CSS border-top de separação
-- **Frontier HS BVaR vs IBOV** (primeira VaR benchmark-relativa de Frontier):
-  - `compute_frontier_bvar_hs(df_frontier, date)` — pega pesos atuais (% Cash) do mainboard, puxa 3y de CLOSE por ticker de `public.EQUITIES_PRICES`, alinha ao calendário IBOV (dropna IBOV + ffill), calcula R_fund synthetic = Σ w_i × R_i, subtrai R_IBOV, pega 5° percentil negativo
-  - **Clip de corporate actions**: zera retornos diários |r|>30% por ativo (B3 tem circuit breaker, qualquer coisa acima é split/bonificação — AMOB3 tinha 5492% num dia, BBAS3 +50%)
-  - Substitui o 2.05% do `LOTE_FUND_STRESS` (VaR absoluto, não benchmark-relativo) pelo BVaR na coluna VaR do Summary para FRONTIER. Δ VaR D-1 suprimido (ainda não tem série histórica do BVaR HS)
-  - Validação: std(ER) 0.51%/dia → parametric 1.645×std = 0.84% ≈ BVaR 0.85% (distribuição normal após clip); TE anualizada 8.1%/ano — plausível pra LO 17-name
+**Fase 4 — entregues (sessão 2026-04-19, tarde — cross-fund consolidated views):**
+- **Frontier Summary — alpha vs IBOV**: `TOTAL_IBVSP_*` (ER vs IBOV) em vez de `TOTAL_ATRIBUTION_*` (retorno bruto). Apples-to-apples com alpha vs CDI dos outros fundos
+- **IBOV + CDI benchmark rows** no rodapé do Status consolidado — `fetch_ibov_returns()` (3y de `EQUITIES_PRICES.CLOSE` para IBOV) + `fetch_cdi_returns()` (ECO_INDEX)
+- **Frontier HS BVaR vs IBOV** — `compute_frontier_bvar_hs(df, date)`: pesos atuais × 3y daily retornos − IBOV, 5° pct. Clip |r|>30% p/ corporate actions. Substitui o 2.05% abs por 0.85% BVaR no Summary. Parametric cross-check: 1.645×std(ER) = 0.84%
+- **Exposure Map** (IDKA 3Y, IDKA 10Y, Albatroz) em novo report tab `exposure-map`:
+  - Bars por bucket (12: 0-6m, 6-12m, 1-2y, 2-3y, 3-4y, ..., 9-10y, 10y+) × fator (Real/Nominal/Bench flush)
+  - Toggle Absoluto/Relativo + filtro Ambos/Real/Nominal; bench sempre visível (barra slate)
+  - Tabela por bucket + tabela por ativo (ambas collapsíveis)
+  - `fetch_rf_exposure_map(desk, date)` com Albatroz look-through explodido (`TRADING_DESK = ALBATROZ` + `TRADING_DESK_SHARE_SOURCE = desk`)
+  - Sign convention: `-DELTA` em IPCA Coupon / BRL Rate Curve (recupera exposição de posição), resto = DELTA
+  - Unidades normalizadas em anos (não % × 100); labels `+X.Xy` no y-axis
+- **Risco Agregado (Main Aggregated Risk)** card no Summary — 8 fundos × NAV / VaR abs (% + R$) / BVaR rel (% + R$) / top-5 🔺 abs + 🔷 rel
+- **Breakdown por Fator** card no Summary — matriz fator × fundo (7 fatores: Real/Nominal/IPCA Idx/Equity BR/DM/EM/FX/Commodities)
+  - Toggle Bruto / Líquido (default Líquido — abate bench das IDKAs 3y/10y × NAV, Frontier 100% IBOV, CDI funds bench=0)
+  - Inclui MACRO equity/FX/commodities/rates do `df_expo`, QUANT + EVOLUTION-direct equity single-names
+- **Top Posições — consolidado** (2º da direita-pra-esquerda no Summary) — drill-down Fator → Instrumento → Fundo(s):
+  - Level 0: fator header (click expande)
+  - Level 1: top 5 instrumentos por fator (click expande)
+  - Level 2: cada fundo holder e % do total desse instrumento
+  - Toggle Bruto/Líquido (scale por (1 − bench/total_fundo_fator) no Líquido)
+  - Evolution-direct (`fetch_evolution_direct_single_names`) para evitar double-count com QUANT/Frontier
+  - via_albatroz excluído (contado em ALBATROZ direto)
+- **PA Contribuições toggle Por Tamanho / Por Fundo** — grid preserva layout side-by-side em ambos modos (fix: CSS class em vez de inline display)
+- **Distribuição 252d default Forward** — toggle Backward continua acessível
+- **IDKA HS BVaR stub** (`compute_idka_bvar_hs`) — realized ER via NAV_SHARE.SHARE × IDKA index; não wired ainda (pendente diff vs calculadora Option B)
 
-**Fase 4 — pendente:**
-- **Página de ETFs** (user 2026-04-19) — adicionar família ETF como view. Escopo a definir (quais ETFs, métricas, fonte)
-- **Navigation checklist / "como ler os relatórios"** (user 2026-04-19) — guia sistemático para monitorar tudo na ordem certa
-- **Exposure Map — calibração de ANO_EQ vs calculadora existente** (user 2026-04-19) — fundo mostra +3.97yr (IDKA 3Y) e +11.32yr (IDKA 10Y) enquanto a calculadora em `F:\Bloomberg\Quant\Rotinas\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\SHEETS\IDKA_TABLES_GRAPHS.py` indica "a bit less than 3 / 10". Metodologia usada: `-DELTA` em `PRIMITIVE_CLASS IN ('IPCA Coupon','BRL Rate Curve')`, equivalente a `POSITION × MOD_DURATION / NAV`. A fórmula da calculadora existente é `AMOUNT × DV01 × 10000 / AUM` — matematicamente igual. Diferença pode ser escopo (positions excluded). Diff lado-a-lado necessário
-- **IDKA HS BVaR — current-positions (Option B)** — aplicar posições atuais (exploded) a 3y de moves de NTN-B yields + DI1 yields + IPCA fixing, subtrair retorno do IDKA index. Fontes: `public.PRICES_ANBIMA_BR_PUBLIC_BONDS` (NTN-B yields históricos), `LOTE_PRODUCT_EXPO` (posições atuais), `ECO_INDEX` (IDKA_IPCA_3A / 10A). Função `compute_idka_bvar_hs` realized-NAV stub já commitada em `76b1080`; wire depois
-- **IDKA BVaR no Summary** — depois de calibrar a metodologia, exibir como VaR column do Summary (como Frontier faz)
-- **IDKA 3y HS BVaR** (user 2026-04-19, tarde) — replicar abordagem do Frontier pros IDKAs. Complica: IDKA é RF, não equity — precisa de DV01 × daily curve moves (DI1/NTN-B) vs daily IDKA benchmark return. Alternativa: time series de ER do fundo via NAV_SHARE (net de aportes/resgates via LOTE_APORTES) menos IDKA index return. Parametric BVaR do engine já existe — o HS 3y é complementar
-- **RF exposure mapping — IDKAs + Albatroz** (user 2026-04-19, tarde, ask grande):
-  - Mapear exposição em 3 fatores: Índice IPCA, juros reais, juros nominais
-  - Gap analysis por bucket: 6 meses, depois ano-a-ano
-  - Agregado (exposição total) E broken down: direta (IDKA posições próprias) vs indireta via Albatroz (o book RF_LF pode alocar Albatroz; IDKA tem share de Albatroz)
-  - Comparação Albatroz vs CDI (benchmark do Albatroz)
-  - Gap chart: barras ANO_EQ (1yr equivalent) por bucket + toggle real/nominal + linha cumulativa de gap vs benchmark
-  - Fonte: `LOTE_PRODUCT_EXPO` / `LOTE_PRODUCT_BOOK_POSITION_PL` + ANO_EQ canônico + look-through Albatroz
-- **IDKA limites definitivos** — atuais são provisórios (util ~80%). Substituir quando mandato confirmar
-- **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
-- **Setor/Macro na tabela de posições LO** — join já feito no código, colunas não exibidas (~15 min)
-- **TE real** — substituir σ_IBOV=20% por σ(Rp-Rb)×√252 via `public.EQUITIES_PRICES` (~2h)
+**Fase 4 — pendente (consolidado e priorizado):**
+- **Página de ETFs** — adicionar família ETF como view. Escopo a definir
+- **Navigation checklist** — guia de leitura dos relatórios na ordem certa
+- **IDKA HS BVaR — current-positions** — aplicar posições atuais (exploded) a 3y de yield moves (`PRICES_ANBIMA_BR_PUBLIC_BONDS` + DI1 yields + IPCA) − retorno do IDKA index. Stub realized-NAV em `76b1080`; wire depois de calibrar
+- **Exposure Map — calibração ANO_EQ vs calculadora existente** — overshoot de ~1yr (IDKA 3Y 3.97 vs ref 2.8; IDKA 10Y 11.32 vs ref 10). Fórmula minha (`-DELTA` p/ IPCA Coupon) == `AMOUNT × DV01 × 10000 / AUM` da calculadora matematicamente. Precisa diff lado-a-lado p/ descobrir diferença (escopo? positions excluded? convention?)
+- **QUANT + EVOLUTION equity direct wiring** — Evolution-direct stub pronto; se FMN/FCO/FLO tiverem equity significativo, devem aparecer no Breakdown por Fator
+- **IDKA limites definitivos** — provisórios ~80% util; aguarda mandato
+- **Setor/Macro na tabela de posições LO** — join já feito, colunas não exibidas (~15 min)
+- **TE real** — substituir σ_IBOV=20% por σ(Rp−Rb)×√252 via `EQUITIES_PRICES` (~2h)
+- **ALBATROZ: calibrar limites definitivos + clarificar sign convention LFT**
+- Main Risks cross-fund por CLASSE (via `df_pa`)
 - Backtest de VaR (diagnóstico de calibração)
-- Cross-fund / firm-level overlap (consolidado por instrumento/emissor) — alta ROI
+- Cross-fund / firm-level overlap por instrumento/emissor — alta ROI
 - Scenario library (named shocks)
 - Drawdown trajectory (tempo underwater, velocidade)
 - Correlation breakdown (diversification benefit ao longo do tempo)
 - Style drift (PM vs mandato)
-- ALBATROZ: calibrar limites definitivos + clarificar sign convention LFT (fonte VaR já descoberta)
 - Filter/search inline no PA (lazy-render-aware)
 - Stress column validation guard (sanity query no DQ check)
 

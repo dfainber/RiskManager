@@ -1,6 +1,6 @@
 ---
 name: risk-daily-monitor
-description: Rotina diária de monitoramento de risco para os fundos Multimercados da Galapagos (Galapagos Macro FIM, Galapagos Quantitativo FIM, Galapagos Evolution FIC FIM CP). Lê dados direto do banco GLPG-DB01 (tabelas LOTE_FUND_STRESS_RPM, LOTE_BOOK_STRESS_RPM, PORTIFOLIO_DAILY_HISTORICAL_SIMULATION, LOTE_TRADING_DESKS_NAV_SHARE), cruza com mandatos e emite estado verde/amarelo/vermelho por fundo × métrica. Use sempre que o usuário pedir "rodar o monitor", "checar o risco hoje", "como está o MACRO/SISTEMATICO/EVOLUTION", "varredura diária", "VaR dos MM", "preparação Morning Call" ou mencionar qualquer fundo MM no contexto de risco diário. Suporte para outras famílias (RF, Crédito, RV) será adicionado incrementalmente.
+description: Rotina diária de monitoramento de risco para os fundos Multimercados da Galapagos (Galapagos Macro FIM, Galapagos Quantitativo FIM, Galapagos Evolution FIC FIM CP). Lê dados direto do banco GLPG-DB01 (tabelas LOTE_FUND_STRESS_RPM, LOTE_BOOK_STRESS_RPM, PORTIFOLIO_DAILY_HISTORICAL_SIMULATION, LOTE_TRADING_DESKS_NAV_SHARE), cruza com mandatos e emite estado verde/amarelo/vermelho por fundo × métrica. Use sempre que o usuário pedir "rodar o monitor", "checar o risco hoje", "como está o MACRO/QUANT/EVOLUTION", "varredura diária", "VaR dos MM", "preparação Morning Call" ou mencionar qualquer fundo MM no contexto de risco diário. Suporte para outras famílias (RF, Crédito, RV) será adicionado incrementalmente.
 ---
 
 # Risk Daily Monitor — Multimercados
@@ -10,7 +10,7 @@ Rotina diária de monitoramento para os três fundos MM ativos:
 | Subfamília | TRADING_DESK | Descrição |
 |-----------|--------------|-----------|
 | MACRO | `Galapagos Macro FIM` | Multimercado macro discricionário |
-| SISTEMATICO | `Galapagos Quantitativo FIM` | Multimercado sistemático/quantitativo |
+| QUANT | `Galapagos Quantitativo FIM` | Multimercado sistemático/quantitativo (era `SISTEMATICO` no design original — renomeado p/ bater com o nome do banco) |
 | EVOLUTION | `Galapagos Evolution FIC FIM CP` | Guarda-chuva multi-estratégia (FRONTIER, MACRO, CREDITO, CAIXA) |
 
 **Dependência conceitual:** `risk-manager` (taxonomia, semáforo, schema de mandato). **Dependência técnica:** `glpg-data-fetch` (conexão ao GLPG-DB01 via `GLPG_DBAPI`).
