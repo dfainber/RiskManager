@@ -2508,12 +2508,12 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
           <span class="card-sub">— {fund_short} · bps de NAV</span>
         </div>
         <div class="dist-toggle">
-          <button class="dist-btn active" data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
-          <button class="dist-btn"        data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
+          <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
+          <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
         </div>
       </div>
-      <div class="dist-view active" data-mode="backward">{bw_table or '<div class="empty-view">Sem dados backward (D-1 sem simulação).</div>'}</div>
-      <div class="dist-view"        data-mode="forward" style="display:none">{fw_table or '<div class="empty-view">Sem dados forward (D sem simulação).</div>'}</div>
+      <div class="dist-view"        data-mode="backward" style="display:none">{bw_table or '<div class="empty-view">Sem dados backward (D-1 sem simulação).</div>'}</div>
+      <div class="dist-view active" data-mode="forward">{fw_table or '<div class="empty-view">Sem dados forward (D sem simulação).</div>'}</div>
     </section>"""
 
 def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -> str:
