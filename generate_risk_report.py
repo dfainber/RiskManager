@@ -1332,7 +1332,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     via_df = df[df["factor"].isin(["real", "nominal"])]
     via_alb_total = float(via_df[via_df["via"] == "via_albatroz"]["ano_eq_brl"].sum() / nav) if nav else 0.0
 
-    # SVG geometry — 3 bars per bucket (Fund Real, Fund Nominal, Bench)
+    # SVG geometry — absoluto uses 3 bars/bucket; relativo uses 2 bars/bucket
     W, H = 760, 300
     pad_l, pad_r, pad_t, pad_b = 46, 26, 26, 38
     plot_w = W - pad_l - pad_r
@@ -1340,11 +1340,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     n_buckets = len(bucket_order)
     band_w = plot_w / n_buckets
     bar_gap = 2
-    bar_w = (band_w - 4 * bar_gap) / 3
+    bar_w_abs = (band_w - 4 * bar_gap) / 3   # absoluto: 3 bars/bucket
+    bar_w_rel = (band_w - 3 * bar_gap) / 2   # relativo: 2 bars/bucket
 
-    # Y scale
+    # Y scale — fit both absoluto and relativo series
     all_vals = (fund_real_b + fund_nom_b + bench_real_b + bench_nom_b +
-                cum_real + cum_nom + bench_cum_real)
+                rel_real_b + rel_nom_b +
+                cum_real + cum_nom + bench_cum_real + rel_cum_real + rel_cum_nom)
     y_max = max([abs(v) for v in all_vals] + [1.0]) * 1.15
     y_min = min([0.0] + [v for v in all_vals]) * 1.15
     if y_min >= 0:
@@ -1356,24 +1358,31 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     def x_band(i):
         return pad_l + i * band_w
 
-    def bar_rect(x0, v, cls, factor):
+    def bar_rect(x0, v, cls, factor, bw):
         y_top = y_scale(max(v, 0))
         y_bot = y_scale(min(v, 0))
         return (f'<rect class="rf-bar {cls}" data-factor="{factor}" '
-                f'x="{x0:.1f}" y="{y_top:.1f}" width="{bar_w:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
+                f'x="{x0:.1f}" y="{y_top:.1f}" width="{bw:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
 
-    # 3-bar layout per bucket: Fund Real | Fund Nominal | Bench
-    fund_bars_r, fund_bars_n, bench_bars = [], [], []
+    # Absoluto: Fund Real | Fund Nominal | Bench
+    abs_bars = []
     for i in range(n_buckets):
         x0 = x_band(i) + bar_gap
-        x1 = x0 + bar_w + bar_gap
-        x2 = x1 + bar_w + bar_gap
-        fund_bars_r.append(bar_rect(x0, fund_real_b[i],  "rf-real", "real"))
-        fund_bars_n.append(bar_rect(x1, fund_nom_b[i],   "rf-nom",  "nominal"))
-        bench_bars.append(bar_rect(x2, bench_real_b[i] + bench_nom_b[i], "rf-benchbar", "bench"))
-    fund_bars_r = "".join(fund_bars_r)
-    fund_bars_n = "".join(fund_bars_n)
-    bench_bars  = "".join(bench_bars)
+        x1 = x0 + bar_w_abs + bar_gap
+        x2 = x1 + bar_w_abs + bar_gap
+        abs_bars.append(bar_rect(x0, fund_real_b[i], "rf-real", "real", bar_w_abs))
+        abs_bars.append(bar_rect(x1, fund_nom_b[i],  "rf-nom",  "nominal", bar_w_abs))
+        abs_bars.append(bar_rect(x2, bench_real_b[i] + bench_nom_b[i], "rf-benchbar", "bench", bar_w_abs))
+    abs_bars_svg = "".join(abs_bars)
+
+    # Relativo: Relative Real | Relative Nominal (fund − bench per bucket)
+    rel_bars = []
+    for i in range(n_buckets):
+        x0 = x_band(i) + bar_gap
+        x1 = x0 + bar_w_rel + bar_gap
+        rel_bars.append(bar_rect(x0, rel_real_b[i], "rf-real", "real", bar_w_rel))
+        rel_bars.append(bar_rect(x1, rel_nom_b[i],  "rf-nom",  "nominal", bar_w_rel))
+    rel_bars_svg = "".join(rel_bars)
 
     def poly_points(values):
         pts = []
@@ -1382,9 +1391,11 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
             pts.append(f"{cx:.1f},{y_scale(v):.1f}")
         return " ".join(pts)
 
-    fund_cum_r_line  = f'<polyline class="rf-cum rf-cum-real" data-factor="real"    points="{poly_points(cum_real)}"/>'
-    fund_cum_n_line  = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(cum_nom)}"/>'
-    bench_cum_line   = f'<polyline class="rf-cum rf-cum-bench" data-factor="bench" points="{poly_points([a + b for a, b in zip(bench_cum_real, bench_cum_nom)])}"/>'
+    abs_cum_r = f'<polyline class="rf-cum rf-cum-real" data-factor="real"    points="{poly_points(cum_real)}"/>'
+    abs_cum_n = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(cum_nom)}"/>'
+    abs_cum_b = f'<polyline class="rf-cum rf-cum-bench" data-factor="bench" points="{poly_points([a + b for a, b in zip(bench_cum_real, bench_cum_nom)])}"/>'
+    rel_cum_r = f'<polyline class="rf-cum rf-cum-real" data-factor="real"    points="{poly_points(rel_cum_real)}"/>'
+    rel_cum_n = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(rel_cum_nom)}"/>'
 
     # Zero line
     y0 = y_scale(0)
@@ -1404,17 +1415,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         cx = x_band(i) + band_w / 2
         x_axis += f'<text class="rf-axis-lbl" x="{cx:.1f}" y="{H - 12:.1f}" text-anchor="middle">{b}</text>'
 
-    # Single chart — fund bars + bench bar side by side per bucket
+    # Single chart with two mode groups — JS toggles between Absoluto / Relativo
     svg = f"""
     <svg class="rf-expo-svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
       {y_axis}
       {zero_line}
-      {fund_bars_r}
-      {fund_bars_n}
-      {bench_bars}
-      {fund_cum_r_line}
-      {fund_cum_n_line}
-      {bench_cum_line}
+      <g class="rf-mode-group" data-rf-mode="absoluto">{abs_bars_svg}{abs_cum_r}{abs_cum_n}{abs_cum_b}</g>
+      <g class="rf-mode-group" data-rf-mode="relativo" style="display:none">{rel_bars_svg}{rel_cum_r}{rel_cum_n}</g>
       {x_axis}
     </svg>
     """
@@ -1476,12 +1483,18 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         '</div>'
     )
 
-    # Factor filter only — fund+bench always shown side by side
+    # Absoluto / Relativo mode + Ambos/Real/Nominal factor filter
     toggle_html = (
-        f'<div class="pa-view-toggle rf-view-toggle" style="margin-left:auto">'
+        '<div class="rf-toggles" style="display:flex; gap:10px; margin-left:auto; flex-wrap:wrap">'
+        f'<div class="pa-view-toggle rf-mode-toggle">'
+        f'<button class="pa-tgl active" data-rf-mode="absoluto" onclick="selectRfMode(this,\'absoluto\')">Absoluto</button>'
+        f'<button class="pa-tgl"        data-rf-mode="relativo" onclick="selectRfMode(this,\'relativo\')">Relativo</button>'
+        '</div>'
+        f'<div class="pa-view-toggle rf-view-toggle">'
         f'<button class="pa-tgl active" data-rf-view="both"    onclick="selectRfView(this,\'both\')">Ambos</button>'
         f'<button class="pa-tgl"        data-rf-view="real"    onclick="selectRfView(this,\'real\')">Real</button>'
         f'<button class="pa-tgl"        data-rf-view="nominal" onclick="selectRfView(this,\'nominal\')">Nominal</button>'
+        '</div>'
         '</div>'
     )
 
@@ -6479,19 +6492,38 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
     }});
   }};
-  // Exposure Map — Real/Nominal/Both factor toggle. Bench bars stay visible always.
+  // Exposure Map — Ambos/Real/Nominal factor filter. Bench bars always visible.
   window.selectRfView = function(btn, view) {{
     var card = btn.closest('.card');
     if (!card) return;
     card.querySelectorAll('.rf-view-toggle .pa-tgl').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.rfView === view);
     }});
-    card.querySelectorAll('.rf-expo-svg [data-factor]').forEach(function(el) {{
+    card.dataset.rfFactor = view;
+    _rfApplyVisibility(card);
+  }};
+  // Exposure Map — Absoluto / Relativo mode toggle
+  window.selectRfMode = function(btn, mode) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.rf-mode-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.rfMode === mode);
+    }});
+    card.dataset.rfMode = mode;
+    _rfApplyVisibility(card);
+  }};
+  function _rfApplyVisibility(card) {{
+    var factor = card.dataset.rfFactor || 'both';
+    var mode   = card.dataset.rfMode   || 'absoluto';
+    card.querySelectorAll('.rf-expo-svg .rf-mode-group').forEach(function(g) {{
+      g.style.display = (g.getAttribute('data-rf-mode') === mode) ? '' : 'none';
+    }});
+    card.querySelectorAll('.rf-expo-svg .rf-mode-group [data-factor]').forEach(function(el) {{
       var f = el.getAttribute('data-factor');
       if (f === 'bench') {{ el.style.display = ''; return; }}
-      el.style.display = (view === 'both' || f === view) ? '' : 'none';
+      el.style.display = (factor === 'both' || f === factor) ? '' : 'none';
     }});
-  }};
+  }}
   // Expand/collapse the detail table under an Exposure Map card
   window.toggleRfTable = function(btn) {{
     var wrap = btn.nextElementSibling;
