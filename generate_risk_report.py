@@ -4483,11 +4483,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             </div>"""
     if risk_items or pa_alert_items:
         if pa_alert_items:
-            _grid_style = ('display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));'
-                           f'gap:10px;margin-top:{"4px" if risk_items else "0"}')
+            _top_margin = "4px" if risk_items else "0"
             pa_grid = (
-                f'<div class="pa-alert-view" data-pa-sort="size" style="{_grid_style}">{pa_alert_items_size}</div>'
-                f'<div class="pa-alert-view" data-pa-sort="fund" style="{_grid_style};display:none">{pa_alert_items_fund}</div>'
+                f'<div class="pa-alert-view" data-pa-sort="size" style="margin-top:{_top_margin}">{pa_alert_items_size}</div>'
+                f'<div class="pa-alert-view pa-alert-view-hidden" data-pa-sort="fund" style="margin-top:{_top_margin}">{pa_alert_items_fund}</div>'
             )
         else:
             pa_grid = ""
@@ -5232,7 +5231,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     house_html = f"""
     <section class="card">
       <div class="card-head">
-        <span class="card-title">Main Aggregated Risk</span>
+        <span class="card-title">Risco Agregado</span>
         <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
       </div>
       <table class="summary-table" data-no-sort="1">
@@ -6050,6 +6049,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   .rf-tbl-toggle:hover {{ background:var(--panel-2); color:var(--text); }}
 
+  /* PA Contribuições — Por Tamanho / Por Fundo grid (flows side-by-side) */
+  .pa-alert-view {{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));
+    gap:10px;
+  }}
+  .pa-alert-view-hidden {{ display:none; }}
+
   /* Top Movers split (per-fund) */
   .mov-split {{ display:grid; grid-template-columns:1fr 1fr; gap:24px; }}
   .mov-col-title {{
@@ -6669,14 +6676,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
     }});
   }};
-  // PA alerts — Por Tamanho / Por Fundo toggle
+  // PA alerts — Por Tamanho / Por Fundo toggle (preserves grid layout)
   window.selectPaAlertSort = function(btn, mode) {{
     var container = btn.closest('.alerts-section') || document;
     container.querySelectorAll('.pa-alert-toggle .pa-tgl').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.paSort === mode);
     }});
     container.querySelectorAll('.pa-alert-view').forEach(function(v) {{
-      v.style.display = (v.dataset.paSort === mode) ? '' : 'none';
+      v.classList.toggle('pa-alert-view-hidden', v.dataset.paSort !== mode);
     }});
   }};
   // Exposure Map — Ambos/Real/Nominal factor filter. Bench bars always visible.
