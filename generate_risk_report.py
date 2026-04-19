@@ -5204,25 +5204,60 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 "brl": brl, "unit": "BRL",
             })
 
-    agg_rows.sort(key=lambda r: abs(r["brl"]), reverse=True)
-    top_n = 15
-    top_rows_html = ""
-    for r in agg_rows[:top_n]:
-        col = "var(--up)" if r["brl"] >= 0 else "var(--down)"
-        top_rows_html += (
-            "<tr>"
-            f'<td class="sum-fund">{r["product"]}</td>'
-            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
-            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["fund"]}</td>'
-            f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(r["brl"])}</td>'
-            f'<td class="mono" style="color:var(--muted); font-size:10.5px">{r["unit"]}</td>'
-            "</tr>"
-        )
+    # Bruto total per (fund, factor) for pro-rata bench subtraction in Líquido view.
+    fund_factor_gross = {}
+    for r in agg_rows:
+        key = (r["fund"], r["factor"])
+        fund_factor_gross[key] = fund_factor_gross.get(key, 0.0) + r["brl"]
+
+    # Líquido scale factor: (1 − bench/total_fund_factor_gross). Positions that
+    # just replicate bench get scaled down pro-rata to their share of fund exposure.
+    def _liquido_scale(fund_label, factor_label) -> float:
+        short = next((s for s, lbl in FUND_LABELS.items() if lbl == fund_label), fund_label)
+        factor_key = factor_label  # already matches bench_matrix keys
+        bench = bench_matrix.get(factor_key, {}).get(short, 0.0)
+        total = fund_factor_gross.get((fund_label, factor_label), 0.0)
+        if abs(total) < 1e-6 or abs(bench) < 1e-6:
+            return 1.0
+        return 1.0 - bench / total
+
+    def _render_top_rows(liquido: bool) -> str:
+        rows = []
+        for r in agg_rows:
+            brl = r["brl"]
+            if liquido:
+                brl = brl * _liquido_scale(r["fund"], r["factor"])
+            if abs(brl) < 1_000:
+                continue
+            rr = dict(r); rr["brl"] = brl
+            rows.append(rr)
+        rows.sort(key=lambda x: abs(x["brl"]), reverse=True)
+        html = ""
+        for r in rows[:15]:
+            col = "var(--up)" if r["brl"] >= 0 else "var(--down)"
+            html += (
+                "<tr>"
+                f'<td class="sum-fund">{r["product"]}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:11px">{r["fund"]}</td>'
+                f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(r["brl"])}</td>'
+                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{r["unit"]}</td>'
+                "</tr>"
+            )
+        return html
+
+    top_rows_liquido = _render_top_rows(liquido=True)
+    top_rows_bruto   = _render_top_rows(liquido=False)
+
     top_positions_html = f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Top Posições — consolidado</span>
-        <span class="card-sub">— top {top_n} posições da casa por |exposure| · via_albatroz excluído (contado em ALBATROZ direto)</span>
+        <span class="card-sub">— top 15 posições da casa por |exposure| · via_albatroz excluído (contado em ALBATROZ direto)</span>
+        <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
+          <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
+          <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
+        </div>
       </div>
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
@@ -5232,10 +5267,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           <th style="text-align:right">Exposure</th>
           <th style="text-align:left">Unidade</th>
         </tr></thead>
-        <tbody>{top_rows_html}</tbody>
+        <tbody class="rf-brl-body" data-rf-brl="liquido">{top_rows_liquido}</tbody>
+        <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{top_rows_bruto}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        Unidades misturadas (BRL-yr para duration-based, BRL nominal para equity/commodity). Ranking por magnitude absoluta dentro da unidade. IDKAs + Albatroz em BRL-yr (ANO_EQ); Frontier/QUANT/EVO/MACRO em BRL nocional.
+        <b>Líquido</b>: cada posição é escalada por <tt>(1 − bench/total_fundo_fator)</tt>, abatendo a parcela da posição que apenas replica o benchmark. <b>Bruto</b>: exposição total sem abater bench.
+        Unidades misturadas (BRL·ano para duration-based, BRL nominal para equity/commodity). IDKAs + Albatroz em BRL·ano; Frontier/QUANT/EVO/MACRO em BRL nocional.
       </div>
     </section>"""
 
