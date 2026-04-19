@@ -5029,6 +5029,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
             if gross_pct and fr_nav:
                 factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
+    # QUANT + EVOLUTION equity BR — net delta from single-name tables (includes ETF explosion)
+    if df_quant_sn is not None and not df_quant_sn.empty:
+        q_equity = float(df_quant_sn["net"].sum())
+        if abs(q_equity) >= 1_000:
+            factor_matrix["Equity BR"]["QUANT"] = q_equity
+    if df_evo_sn is not None and not df_evo_sn.empty:
+        e_equity = float(df_evo_sn["net"].sum())
+        if abs(e_equity) >= 1_000:
+            factor_matrix["Equity BR"]["EVOLUTION"] = e_equity
+
     # MACRO from df_expo (rf column = RV-BZ / RV-DM / RV-EM / FX-* / RF-BZ / COMMODITIES / P-Metals)
     if df_expo is not None and not df_expo.empty and macro_aum:
         rf_to_factor = {
@@ -5098,7 +5108,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
         Unidades misturadas por fator: <b>Real / Nominal</b> são ANO_EQ em BRL·ano (posição × duration); <b>IPCA Idx</b> é face-value BRL de exposição inflacionária; <b>Equity BR</b> é nocional BRL. Compare dentro de cada linha, não entre linhas.
-        Cobre IDKAs + Albatroz + Frontier + MACRO (equity e FX). QUANT e EVOLUTION equity pendentes; crédito omitido.
+        Cobre IDKAs + Albatroz + Frontier + MACRO (equity/FX/commodities/rates) + QUANT + EVOLUTION (equity BR, com ETF explosion). Crédito omitido por escopo.
       </div>
     </section>"""
 
