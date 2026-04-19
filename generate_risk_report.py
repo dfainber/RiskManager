@@ -5092,6 +5092,100 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     fund_col_headers = "".join(
         f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
     )
+    # ── Cross-fund top positions — consolidated list ──────────────────────────
+    # One row per (fund, factor, product); exclude via_albatroz to avoid double-counting
+    # (those positions are already captured under ALBATROZ direct).
+    agg_rows = []
+    if rf_expo_maps:
+        for short_k, df_k in rf_expo_maps.items():
+            if df_k is None or df_k.empty:
+                continue
+            d = df_k[(df_k["via"] == "direct") & (df_k["factor"].isin(["real", "nominal"]))].copy()
+            if d.empty:
+                continue
+            # ANO_EQ ×  NAV not needed — ano_eq_brl is already signed BRL-years
+            for _, r in d.iterrows():
+                brl = float(r["ano_eq_brl"])
+                if abs(brl) < 1_000: continue
+                agg_rows.append({
+                    "fund":    FUND_LABELS.get(short_k, short_k),
+                    "factor":  "Real" if r["factor"] == "real" else "Nominal",
+                    "product": r["PRODUCT"],
+                    "brl":     brl,
+                    "unit":    "BRL-yr",
+                })
+    # Frontier stocks
+    if df_frontier is not None and not df_frontier.empty:
+        fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
+        stocks = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])]
+        stocks = stocks[stocks["% Cash"].notna()]
+        for _, r in stocks.iterrows():
+            brl = float(r["% Cash"]) * fr_nav
+            if abs(brl) < 1_000: continue
+            agg_rows.append({
+                "fund": "Frontier", "factor": "Equity BR",
+                "product": r["PRODUCT"], "brl": brl, "unit": "BRL",
+            })
+    # QUANT + EVOLUTION single-names (net delta per ticker)
+    for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_sn)]:
+        if df_sn is None or df_sn.empty:
+            continue
+        for _, r in df_sn.iterrows():
+            brl = float(r["net"])
+            if abs(brl) < 10_000: continue
+            agg_rows.append({
+                "fund": FUND_LABELS.get(short_k, short_k), "factor": "Equity BR",
+                "product": r["ticker"], "brl": brl, "unit": "BRL",
+            })
+    # MACRO equity (RV-DM / RV-EM) and commodities, aggregated by PRODUCT
+    if df_expo is not None and not df_expo.empty:
+        macro_focus = df_expo[df_expo["rf"].isin(["RV-BZ", "RV-DM", "RV-EM", "COMMODITIES", "P-Metals"])]
+        grp = macro_focus.groupby(["rf", "PRODUCT"], as_index=False).agg(delta=("delta", "sum"))
+        for _, r in grp.iterrows():
+            brl = float(r["delta"])
+            if abs(brl) < 10_000: continue
+            factor_label = {"RV-BZ": "Equity BR", "RV-DM": "Equity DM", "RV-EM": "Equity EM",
+                            "COMMODITIES": "Commodities", "P-Metals": "Commodities"}[r["rf"]]
+            agg_rows.append({
+                "fund": "Macro", "factor": factor_label, "product": r["PRODUCT"],
+                "brl": brl, "unit": "BRL",
+            })
+
+    agg_rows.sort(key=lambda r: abs(r["brl"]), reverse=True)
+    top_n = 15
+    top_rows_html = ""
+    for r in agg_rows[:top_n]:
+        col = "var(--up)" if r["brl"] >= 0 else "var(--down)"
+        top_rows_html += (
+            "<tr>"
+            f'<td class="sum-fund">{r["product"]}</td>'
+            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
+            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["fund"]}</td>'
+            f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(r["brl"])}</td>'
+            f'<td class="mono" style="color:var(--muted); font-size:10.5px">{r["unit"]}</td>'
+            "</tr>"
+        )
+    top_positions_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Top Posições — consolidado</span>
+        <span class="card-sub">— top {top_n} posições da casa por |exposure| · via_albatroz excluído (contado em ALBATROZ direto)</span>
+      </div>
+      <table class="summary-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Produto</th>
+          <th style="text-align:left">Fator</th>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">Exposure</th>
+          <th style="text-align:left">Unidade</th>
+        </tr></thead>
+        <tbody>{top_rows_html}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
+        Unidades misturadas (BRL-yr para duration-based, BRL nominal para equity/commodity). Ranking por magnitude absoluta dentro da unidade. IDKAs + Albatroz em BRL-yr (ANO_EQ); Frontier/QUANT/EVO/MACRO em BRL nocional.
+      </div>
+    </section>"""
+
     by_factor_html = f"""
     <section class="card">
       <div class="card-head">
@@ -5492,6 +5586,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       {fund_grid_html}
       {house_html}
       {by_factor_html}
+      {top_positions_html}
       {vol_regime_html}
       {alerts_html}
       {comments_html}
