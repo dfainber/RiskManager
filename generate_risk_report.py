@@ -4394,7 +4394,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     _PA_EXCL_LIVROS    = {"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}
     _PA_EXCL_CLASSES   = {"Caixa", "Custos"}
 
-    pa_alert_items = ""
+    pa_alert_items_size = ""
+    pa_alert_items_fund = ""
     if df_pa is not None and not df_pa.empty:
         try:
             _pa_filt = df_pa[
@@ -4403,7 +4404,6 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 (df_pa["dia_bps"].abs() >= PA_ALERT_MIN_BPS)
             ].copy()
 
-            # z-score enrichment (best-effort — requires df_pa_daily)
             _zscore_map = {}
             if df_pa_daily is not None and not df_pa_daily.empty:
                 _today = pd.Timestamp(DATA_STR)
@@ -4413,25 +4413,21 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 for r in _sigma.itertuples(index=False):
                     _zscore_map[(r.FUNDO, r.LIVRO, r.PRODUCT)] = float(r.sigma) if r.sigma > 0 else None
 
-            _pa_filt = _pa_filt.sort_values("dia_bps", key=abs, ascending=False)
-            max_abs  = _pa_filt["dia_bps"].abs().max() if not _pa_filt.empty else 1.0
+            max_abs = _pa_filt["dia_bps"].abs().max() if not _pa_filt.empty else 1.0
+            _fund_order_idx = {k: i for i, k in enumerate(FUND_ORDER)}
 
-            for r in _pa_filt.itertuples(index=False):
-                bps        = float(r.dia_bps)
-                abs_bps    = abs(bps)
+            def _card_html(r):
+                bps = float(r.dia_bps); abs_bps = abs(bps)
                 color      = "var(--up)" if bps > 0 else "var(--down)"
                 bg_color   = "#0f2d1a" if bps > 0 else "#2d0f0f"
                 border_col = "#22c55e" if bps > 0 else "#f87171"
                 livro_disp = _pa_render_name(r.LIVRO)
                 fund_disp  = FUND_LABELS.get(r.FUNDO, r.FUNDO)
-
                 sigma = _zscore_map.get((r.FUNDO, r.LIVRO, r.PRODUCT))
                 z_txt = f"z = {bps/sigma:+.1f}σ" if sigma else ""
-
                 bar_pct = min(abs_bps / max_abs * 100, 100)
                 bar_color = "#22c55e" if bps > 0 else "#f87171"
-
-                pa_alert_items += f"""
+                return f"""
                 <div style="border:1px solid {border_col};border-radius:6px;padding:12px 16px;
                             background:{bg_color};display:flex;align-items:center;gap:16px">
                   <div style="flex:0 0 auto;text-align:right;min-width:80px">
@@ -4452,8 +4448,25 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                     </div>
                   </div>
                 </div>"""
+
+            # Sort by |size| desc (current behavior)
+            _by_size = _pa_filt.sort_values("dia_bps", key=abs, ascending=False)
+            for r in _by_size.itertuples(index=False):
+                pa_alert_items_size += _card_html(r)
+
+            # Sort by fund (canonical FUND_ORDER), then |size| desc within fund
+            _pa_filt["_fund_ord"] = _pa_filt["FUNDO"].map(
+                {pa_key: _fund_order_idx.get(short, 99)
+                 for short, pa_key in _FUND_PA_KEY.items()}
+            ).fillna(99)
+            _pa_filt["_abs"] = _pa_filt["dia_bps"].abs()
+            _by_fund = _pa_filt.sort_values(["_fund_ord", "_abs"], ascending=[True, False])
+            for r in _by_fund.itertuples(index=False):
+                pa_alert_items_fund += _card_html(r)
         except Exception as e:
             print(f"  PA alerts failed ({e})")
+
+    pa_alert_items = pa_alert_items_size  # keep existing consumers happy
 
     alerts_html = ""
     risk_items = ""
@@ -4469,13 +4482,23 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
               <div class="alert-body">{comment}</div>
             </div>"""
     if risk_items or pa_alert_items:
-        pa_grid = (f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));'
-                   f'gap:10px;margin-top:{"12px" if risk_items else "0"}">'
-                   + pa_alert_items + '</div>') if pa_alert_items else ""
-        pa_header = (f'<div style="font-size:11px;color:var(--muted);text-transform:uppercase;'
-                     f'letter-spacing:1px;margin-top:{"16px" if risk_items else "0"};'
-                     f'margin-bottom:8px">PA — Contribuições do dia (|contrib| ≥ {PA_ALERT_MIN_BPS:.0f} bps)</div>'
-                     if pa_alert_items else "")
+        if pa_alert_items:
+            _grid_style = ('display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));'
+                           f'gap:10px;margin-top:{"4px" if risk_items else "0"}')
+            pa_grid = (
+                f'<div class="pa-alert-view" data-pa-sort="size" style="{_grid_style}">{pa_alert_items_size}</div>'
+                f'<div class="pa-alert-view" data-pa-sort="fund" style="{_grid_style};display:none">{pa_alert_items_fund}</div>'
+            )
+        else:
+            pa_grid = ""
+        pa_header = (
+            f'<div style="display:flex;align-items:center;gap:12px;margin-top:{"16px" if risk_items else "0"};margin-bottom:8px">'
+            f'<span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">PA — Contribuições do dia (|contrib| ≥ {PA_ALERT_MIN_BPS:.0f} bps)</span>'
+            f'<div class="pa-view-toggle pa-alert-toggle" style="margin-left:auto">'
+            f'<button class="pa-tgl active" data-pa-sort="size" onclick="selectPaAlertSort(this,\'size\')">Por Tamanho</button>'
+            f'<button class="pa-tgl"        data-pa-sort="fund" onclick="selectPaAlertSort(this,\'fund\')">Por Fundo</button>'
+            f'</div></div>'
+        ) if pa_alert_items else ""
         alerts_html = f"""
         <div class="alerts-section">
           <div class="alerts-header">Análise{' — Métricas acima do 80° percentil histórico' if risk_items else ''}</div>
@@ -6644,6 +6667,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     }});
     card.querySelectorAll('.mov-view').forEach(function(t) {{
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
+    }});
+  }};
+  // PA alerts — Por Tamanho / Por Fundo toggle
+  window.selectPaAlertSort = function(btn, mode) {{
+    var container = btn.closest('.alerts-section') || document;
+    container.querySelectorAll('.pa-alert-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.paSort === mode);
+    }});
+    container.querySelectorAll('.pa-alert-view').forEach(function(v) {{
+      v.style.display = (v.dataset.paSort === mode) ? '' : 'none';
     }});
   }};
   // Exposure Map — Ambos/Real/Nominal factor filter. Bench bars always visible.
