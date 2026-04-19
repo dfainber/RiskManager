@@ -1409,6 +1409,24 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         cx = x_band(i) + band_w / 2
         x_axis += f'<text class="rf-axis-lbl" x="{cx:.1f}" y="{H - 12:.1f}" text-anchor="middle">{b}</text>'
 
+    # Benchmark marker — vertical dashed line at the exact benchmark duration
+    # inside its bucket, shown on every mode so the user can always see where
+    # the bench sits. Skipped for CDI (zero duration).
+    bench_marker_svg = ""
+    if not cdi_bench:
+        bidx = bench_bucket_idx(bench_dur_yrs)
+        lo, hi = _RF_BUCKETS[bidx][1], _RF_BUCKETS[bidx][2]
+        # Proportional position of bench_dur within the bucket, mapped onto band_w
+        frac = (bench_dur_yrs - lo) / (hi - lo) if hi > lo else 0.5
+        frac = min(max(frac, 0.02), 0.98)
+        x_m = x_band(bidx) + frac * band_w
+        bench_marker_svg = (
+            f'<line class="rf-bench-marker" x1="{x_m:.1f}" y1="{pad_t}" '
+            f'x2="{x_m:.1f}" y2="{H - pad_b}"/>'
+            f'<text class="rf-axis-lbl rf-bench-marker-lbl" x="{x_m + 3:.1f}" '
+            f'y="{pad_t + 10:.1f}" text-anchor="start">Bench {bench_dur_yrs:.0f}y</text>'
+        )
+
     # Three view groups — JS toggles which is visible
     svg = f"""
     <svg class="rf-expo-svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
@@ -1417,6 +1435,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
       <g class="rf-mode-group" data-rf-mode="fund">{fund_bars_r}{fund_bars_n}{fund_cum_r_line}{fund_cum_n_line}</g>
       <g class="rf-mode-group" data-rf-mode="bench" style="display:none">{bench_bars_r}{bench_bars_n}{bench_cum_r_line}{bench_cum_n_line}</g>
       <g class="rf-mode-group" data-rf-mode="relative" style="display:none">{rel_bars_r}{rel_bars_n}{rel_cum_r_line}{rel_cum_n_line}</g>
+      {bench_marker_svg}
       {x_axis}
     </svg>
     """
@@ -5632,6 +5651,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .rf-expo-svg .rf-grid {{ stroke:var(--line); stroke-width:.7; opacity:.4; }}
   .rf-expo-svg .rf-zero {{ stroke:var(--muted); stroke-width:1; opacity:.6; }}
   .rf-expo-svg .rf-axis-lbl {{ fill:var(--muted); font-size:10.5px; font-family:'JetBrains Mono', monospace; }}
+  .rf-expo-svg .rf-bench-marker {{ stroke:var(--accent); stroke-width:1.6; stroke-dasharray:5 4; opacity:.75; }}
+  .rf-expo-svg .rf-bench-marker-lbl {{ fill:var(--accent); font-weight:600; }}
 
   .rf-legend {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; align-items:center; }}
   .rf-legend-item {{ display:inline-flex; align-items:center; gap:5px; }}
