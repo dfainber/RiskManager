@@ -892,19 +892,57 @@ def compute_distribution_stats(w_series, actual_bps=None):
         out["nvols"]      = actual_bps / sd if sd > 1e-9 else None
     return out
 
+# Module-level cache for latest-NAV lookups; populated by fetch_all_latest_navs
+# or on-demand by _latest_nav. Key: (desk, date_str).
+_NAV_CACHE: dict = {}
+
+
+def fetch_all_latest_navs(date_str: str) -> dict:
+    """Bulk-fetch latest NAV (on or before date_str) for all known funds in one query.
+       Side effect: populates the module-level _NAV_CACHE so subsequent _latest_nav
+       calls hit memory instead of the DB. Returns the {desk: nav} dict as well.
+    """
+    desks = list(ALL_FUNDS.keys())
+    # Include MACRO family names that aren't in ALL_FUNDS under the desk key we use at call sites
+    extras = ["Galapagos Macro FIM", "GALAPAGOS ALBATROZ FIRF LP",
+              "Frontier A\u00e7\u00f5es FIC FI"]
+    desks = list({*desks, *extras})
+    tds = ", ".join(f"'{d}'" for d in desks)
+    df = read_sql(f"""
+        SELECT DISTINCT ON ("TRADING_DESK") "TRADING_DESK", "NAV"
+        FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+        WHERE "TRADING_DESK" IN ({tds})
+          AND "VAL_DATE" <= DATE '{date_str}'
+        ORDER BY "TRADING_DESK", "VAL_DATE" DESC
+    """)
+    out = {}
+    for _, r in df.iterrows():
+        v = float(r["NAV"]) if pd.notna(r["NAV"]) else None
+        _NAV_CACHE[(r["TRADING_DESK"], date_str)] = v
+        out[r["TRADING_DESK"]] = v
+    # Ensure every requested desk has a sentinel entry (avoids re-querying on misses)
+    for d in desks:
+        _NAV_CACHE.setdefault((d, date_str), None)
+    return out
+
+
 def _latest_nav(desk: str, date_str: str):
     """
-    Most recent NAV on or before `date_str` for `desk`.
-    NAV often lags the risk feed by up to a business day (admin process),
-    so callers should tolerate forward-filling from D-1.
+    Most recent NAV on or before `date_str` for `desk`. Hits _NAV_CACHE first;
+    falls back to a direct query only for desks/dates not warmed up.
     """
+    key = (desk, date_str)
+    if key in _NAV_CACHE:
+        return _NAV_CACHE[key]
     df = read_sql(f"""
         SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
         WHERE "TRADING_DESK" = '{desk}'
           AND "VAL_DATE" <= DATE '{date_str}'
         ORDER BY "VAL_DATE" DESC LIMIT 1
     """)
-    return float(df["NAV"].iloc[0]) if not df.empty else None
+    v = float(df["NAV"].iloc[0]) if not df.empty else None
+    _NAV_CACHE[key] = v
+    return v
 
 
 def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
@@ -3569,11 +3607,11 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
 
     # ── Positions ──────────────────────────────────────────────────────────────
     EXCLUDE = {"TOTAL", "SUBTOTAL"}
-    # Handle encoding issues with "AÇÕES ALIENADAS"
-    stocks = df_lo[df_lo["BOOK"].astype(str).str.strip() != ""].copy()
-    stocks = stocks[~stocks["PRODUCT"].isin(EXCLUDE)].copy()
-    stocks = stocks[stocks["% Cash"].notna()].copy()
-    stocks = stocks.sort_values("% Cash", ascending=False).reset_index(drop=True)
+    # Chain filters once; copy once at the end via sort_values/reset_index.
+    _mask = (df_lo["BOOK"].astype(str).str.strip() != "") & \
+            (~df_lo["PRODUCT"].isin(EXCLUDE)) & \
+            (df_lo["% Cash"].notna())
+    stocks = df_lo[_mask].sort_values("% Cash", ascending=False).reset_index(drop=True)
 
     if stocks.empty:
         return ""
@@ -7255,6 +7293,9 @@ if __name__ == "__main__":
             "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
             "ALBATROZ":  ex.submit(fetch_rf_exposure_map, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR),
         }
+        # Pre-warm NAV cache for today + D-1 so every _latest_nav() call hits memory.
+        fut_navs    = ex.submit(fetch_all_latest_navs, DATA_STR)
+        fut_navs_d1 = ex.submit(fetch_all_latest_navs, d1_str)
         fut_frontier   = ex.submit(fetch_frontier_mainboard, DATA_STR)
         fut_frontier_expo = ex.submit(fetch_frontier_exposure_data)
         fut_chg        = {
@@ -7435,6 +7476,13 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  {short} position changes failed ({e})")
             position_changes[short] = None
+
+    # Resolve NAV pre-warms (side effect is populating _NAV_CACHE)
+    try:
+        fut_navs.result()
+        fut_navs_d1.result()
+    except Exception as e:
+        print(f"  NAV warmup failed ({e})")
 
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
