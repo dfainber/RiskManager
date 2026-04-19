@@ -37,11 +37,21 @@ FUNDS = {
     "Galapagos Evolution FIC FIM CP":{"short": "EVOLUTION",  "level": 3, "stress_col": "spec",  "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 10.5, "stress_hard": 15.0},
 }
 # Funds in LOTE_FUND_STRESS (product-level, not RPM). Limits provisional — to be calibrated.
+# informative=True → VaR/Stress shown as reference (no limit, no util %). Used for Frontier (LO equity).
 RAW_FUNDS = {
     "GALAPAGOS ALBATROZ FIRF LP": {"short": "ALBATROZ", "stress_col": "macro", "var_soft": 1.0, "var_hard": 1.5, "stress_soft": 5.0, "stress_hard": 8.0},
     "Galapagos Global Macro Q":   {"short": "MACRO_Q",  "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
+    "Frontier A\u00e7\u00f5es FIC FI": {"short": "FRONTIER", "stress_col": "macro", "var_soft": 99.0, "var_hard": 99.0, "stress_soft": 99.0, "stress_hard": 99.0, "informative": True},
 }
-ALL_FUNDS = {**FUNDS, **RAW_FUNDS}
+# IDKA funds — benchmarked RF. Primary metric = BVaR (relative), secondary = VaR (reference, no limit).
+# Data source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE (RELATIVE_VAR_PCT, ABSOLUTE_VAR_PCT).
+# Shape mirrors FUNDS/RAW_FUNDS but maps: var_* -> BVaR limits, stress_* -> VaR (no hard limit).
+# Limits provisional — to be calibrated against the official mandate.
+IDKA_FUNDS = {
+    "IDKA IPCA 3Y FIRF":  {"short": "IDKA_3Y",  "primary": "bvar", "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 99.0, "stress_hard": 99.0},
+    "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 3.50, "var_hard": 5.00, "stress_soft": 99.0, "stress_hard": 99.0},
+}
+ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
 OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -100,6 +110,31 @@ def fetch_risk_history_raw():
     df = read_sql(q)
     df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
     return df
+
+def fetch_risk_history_idka():
+    """BVaR (RELATIVE_VAR_PCT) + VaR (ABSOLUTE_VAR_PCT) history for IDKA funds.
+       Source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE. Values are decimal fractions
+       (0.029 = 2.9% of NAV). Positions summed to fund level.
+    """
+    tds = ", ".join(f"'{td}'" for td in IDKA_FUNDS)
+    q = f"""
+    SELECT "TRADING_DESK", "VAL_DATE",
+           SUM("RELATIVE_VAR_PCT") AS bvar_pct_raw,
+           SUM("ABSOLUTE_VAR_PCT") AS var_pct_raw
+    FROM "LOTE45"."LOTE_PARAMETRIC_VAR_TABLE"
+    WHERE "VAL_DATE" >= DATE '{DATE_1Y.date()}'
+      AND "TRADING_DESK" IN ({tds})
+    GROUP BY "TRADING_DESK", "VAL_DATE"
+    ORDER BY "TRADING_DESK", "VAL_DATE"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return df
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
+    # Engine stores decimal fractions; convert to pct-of-NAV (same units as MACRO/QUANT)
+    df["var_pct"]    = -df["bvar_pct_raw"] * 100.0   # BVaR as % (primary slot)
+    df["stress_pct"] = -df["var_pct_raw"]  * 100.0   # VaR as % (secondary / reference)
+    return df[["TRADING_DESK", "VAL_DATE", "var_pct", "stress_pct"]]
 
 def fetch_frontier_mainboard(date_str: str) -> pd.DataFrame:
     """Latest available Long Only mainboard on or before date_str."""
@@ -161,8 +196,9 @@ def fetch_aum_history():
     df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).astype("datetime64[us]")
     return df
 
+
 # ── Build series ─────────────────────────────────────────────────────────────
-def build_series(df_risk, df_aum, df_risk_raw=None):
+def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
     result = {}
     for td, cfg in FUNDS.items():
         rsk = df_risk[df_risk["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
@@ -196,6 +232,14 @@ def build_series(df_risk, df_aum, df_risk_raw=None):
             merged["macro_pct"] = merged["macro_stress"] * -1 / merged["NAV"] * 100
             merged["stress_pct"] = merged[f"{cfg['stress_col']}_pct"]
             result[td] = merged.sort_values("VAL_DATE")
+    # IDKA funds — BVaR/VaR already in pct units, no NAV normalization needed.
+    if df_risk_idka is not None and not df_risk_idka.empty:
+        for td in IDKA_FUNDS:
+            rsk = df_risk_idka[df_risk_idka["TRADING_DESK"] == td].copy()
+            if rsk.empty:
+                continue
+            rsk["VAL_DATE"] = rsk["VAL_DATE"].astype("datetime64[us]")
+            result[td] = rsk.sort_values("VAL_DATE").reset_index(drop=True)
     return result
 
 # ── Sparkline ────────────────────────────────────────────────────────────────
@@ -571,6 +615,132 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
         for rf, v in rf_agg.items():
             actuals[f'rf:{rf}'] = float(v)
     return actuals
+
+def compute_portfolio_vol_regime(dist_map: dict, vol_window: int = 21) -> dict:
+    """Vol regime from the Historical-Simulation W series (today's portfolio
+    × N historical days). Isolates carteira-driven vol regime: independent
+    of flows, consistent with the 252d distribution card.
+
+    For each portfolio key (e.g. "MACRO", "EVOLUTION"):
+      vol_recent  = std(W[-21:]) * sqrt(252)    — last 21 historical days
+      vol_full    = std(W)       * sqrt(252)    — full available window
+      ratio       = vol_recent / vol_full
+      pct_rank    = percentile of std(W[-21:]) among all rolling 21d stds in W
+      regime      = low/normal/elevated/stressed based on pct_rank
+
+    W is in bps of NAV. Returned vols are in %.
+    """
+    out = {}
+    if not dist_map:
+        return out
+    for pkey, w in dist_map.items():
+        if w is None:
+            continue
+        w = np.asarray(w, dtype=float)
+        w = w[~np.isnan(w)]
+        if len(w) < vol_window + 30:
+            continue
+        vol_recent_bps = float(np.std(w[-vol_window:], ddof=1))
+        vol_full_bps   = float(np.std(w,               ddof=1))
+        if vol_full_bps < 1e-9:
+            continue
+        # Annualized vol in % of NAV: bps * sqrt(252) / 100
+        vol_recent_pct = vol_recent_bps * np.sqrt(252) / 100.0
+        vol_full_pct   = vol_full_bps   * np.sqrt(252) / 100.0
+        ratio          = vol_recent_pct / vol_full_pct
+
+        # Rolling 21d std across W → percentile + z-score of most-recent window
+        n_roll = len(w) - vol_window + 1
+        rolling_std = np.array([
+            np.std(w[i:i+vol_window], ddof=1) for i in range(n_roll)
+        ])
+        cur_std = rolling_std[-1]
+        pct_rank = float((rolling_std[:-1] < cur_std).mean()) * 100.0 \
+                   if len(rolling_std) > 1 else None
+
+        # Range stats (annualized %), for the visual strip
+        sqrt252 = np.sqrt(252)
+        rolling_ann_pct = rolling_std * sqrt252 / 100.0
+        vol_min_pct = float(np.min(rolling_ann_pct))
+        vol_max_pct = float(np.max(rolling_ann_pct))
+        vol_p25_pct = float(np.percentile(rolling_ann_pct, 25))
+        vol_p50_pct = float(np.percentile(rolling_ann_pct, 50))
+        vol_p75_pct = float(np.percentile(rolling_ann_pct, 75))
+
+        # z-score of current rolling std within the rolling-std distribution.
+        # Note: samples overlap by construction (21d window, shift 1), so
+        # N_eff ~ n_roll / 21. Treat z as directional, not a hard threshold.
+        roll_mean = float(np.mean(rolling_std))
+        roll_sd   = float(np.std(rolling_std, ddof=1))
+        if roll_sd > 1e-12:
+            z_series = (rolling_std - roll_mean) / roll_sd
+            z_cur   = float(z_series[-1])
+            z_min   = float(np.min(z_series))
+            z_max   = float(np.max(z_series))
+            z_p25   = float(np.percentile(z_series, 25))
+            z_p50   = float(np.percentile(z_series, 50))
+            z_p75   = float(np.percentile(z_series, 75))
+        else:
+            z_cur = z_min = z_max = z_p25 = z_p50 = z_p75 = None
+
+        if pct_rank is None:        regime = "—"
+        elif pct_rank < 20:         regime = "low"
+        elif pct_rank < 70:         regime = "normal"
+        elif pct_rank < 90:         regime = "elevated"
+        else:                       regime = "stressed"
+
+        out[pkey] = {
+            "vol_recent_pct": vol_recent_pct,
+            "vol_full_pct":   vol_full_pct,
+            "ratio":          ratio,
+            "pct_rank":       pct_rank,
+            "regime":         regime,
+            "n_obs":          len(w),
+            "n_roll":         n_roll,
+            "vol_min_pct":    vol_min_pct,
+            "vol_max_pct":    vol_max_pct,
+            "vol_p25_pct":    vol_p25_pct,
+            "vol_p50_pct":    vol_p50_pct,
+            "vol_p75_pct":    vol_p75_pct,
+            "z":              z_cur,
+            "z_min":          z_min,
+            "z_max":          z_max,
+            "z_p25":          z_p25,
+            "z_p50":          z_p50,
+            "z_p75":          z_p75,
+        }
+    return out
+
+def range_line_svg(v_cur, v_min, v_max, v_p50=None,
+                   width=220, height=28, fmt="{:.2f}") -> str:
+    """Simple horizontal line from min to max with a highlighted dot at current.
+       Optional median tick if v_p50 given. Labels for min and max at edges.
+    """
+    if v_cur is None or v_min is None or v_max is None or v_max <= v_min:
+        return ""
+    pad = 6
+    x_min = pad
+    x_max = width - pad
+    def _x(v):
+        return x_min + (v - v_min) / (v_max - v_min) * (x_max - x_min)
+    cur_x = _x(v_cur)
+    p50_x = _x(v_p50) if v_p50 is not None else None
+    # Dot color by position within range (terciles)
+    third = (v_max - v_min) / 3.0
+    if v_cur >= v_min + 2*third:     dot_color = "#f87171"
+    elif v_cur <= v_min + third:     dot_color = "#4ade80"
+    else:                            dot_color = "#facc15"
+    y = height // 2
+    p50_svg = f'<line x1="{p50_x:.1f}" y1="{y-5}" x2="{p50_x:.1f}" y2="{y+5}" stroke="#64748b" stroke-width="1" opacity="0.7"/>' if p50_x is not None else ""
+    return f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+  <line x1="{x_min}" y1="{y}" x2="{x_max}" y2="{y}" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="{x_min}" cy="{y}" r="2.5" fill="#475569"/>
+  <circle cx="{x_max}" cy="{y}" r="2.5" fill="#475569"/>
+  {p50_svg}
+  <circle cx="{cur_x:.1f}" cy="{y}" r="5.5" fill="{dot_color}" stroke="#0b1220" stroke-width="1.5"/>
+  <text x="0" y="{height-2}" font-size="8" fill="#64748b" font-family="monospace">{fmt.format(v_min)}</text>
+  <text x="{width}" y="{height-2}" font-size="8" fill="#64748b" font-family="monospace" text-anchor="end">{fmt.format(v_max)}</text>
+</svg>"""
 
 def compute_distribution_stats(w_series, actual_bps=None):
     """Returns dict with forward-looking stats and (optional) backward comparison."""
@@ -1585,7 +1755,164 @@ def _kind_tag(kind):
     color = {"FUND":"var(--accent-2)", "PM":"var(--text)", "FATOR":"var(--muted)"}.get(label, "var(--muted)")
     return label, color
 
-def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: dict, actuals: dict) -> str:
+_VR_PORTFOLIOS = {
+    # fund_short -> list of (pkey, label, kind). kind in {"fund","livro"}.
+    # Scope = fund total + books/PMs only (factor breakdown excluded).
+    "MACRO": [
+        (pk, lbl, kd) for pk, lbl, kd, _, fs in _DIST_PORTFOLIOS
+        if fs == "MACRO" and kd in ("fund", "livro")
+    ],
+    "EVOLUTION": [("EVOLUTION", "EVOLUTION total", "fund")],
+    "QUANT": [
+        ("SIST",        "QUANT total",  "fund"),
+        ("SIST_RF",     "Sub · RF",     "livro"),
+        ("SIST_FX",     "Sub · FX",     "livro"),
+        ("SIST_COMMO",  "Sub · Commo",  "livro"),
+        ("SIST_GLOBAL", "Sub · Global", "livro"),
+        ("Bracco",      "Bracco",       "livro"),
+        ("Quant_PA",    "Quant PA",     "livro"),
+    ],
+}
+
+def build_vol_regime_section(fund_short: str, vol_regime_map: dict) -> str:
+    """Per-fund Vol Regime card: fund total + per-book rows.
+       Carteira atual × janela HS. std rolling 21d vs. std da janela completa.
+       Primary: pct_rank (non-parametric). Ratio = vol 21d / vol full."""
+    portfolios = _VR_PORTFOLIOS.get(fund_short, [])
+    if not portfolios or not vol_regime_map:
+        return ""
+
+    regime_col = {
+        "low": "var(--up)", "normal": "var(--muted)",
+        "elevated": "var(--warn)", "stressed": "var(--down)", "—": "var(--muted)",
+    }
+    def _pct_col(p):
+        if p is None: return "var(--muted)"
+        if p >= 90: return "var(--down)"
+        if p >= 70: return "var(--warn)"
+        if p < 20:  return "var(--up)"
+        return "var(--text)"
+    def _ratio_col(r):
+        if r is None: return "var(--muted)"
+        if r >= 1.5: return "var(--down)"
+        if r >= 1.2: return "var(--warn)"
+        if r <= 0.7: return "var(--up)"
+        return "var(--text)"
+
+    def _z_col(z):
+        if z is None:      return "var(--muted)"
+        if abs(z) >= 2:    return "var(--down)"
+        if abs(z) >= 1:    return "var(--warn)"
+        return "var(--text)"
+
+    rows = ""
+    any_data = False
+    any_book_with_data = False
+    n_obs_ref = None
+    fund_label = FUND_LABELS.get(fund_short, fund_short)
+    for pkey, label, kind in portfolios:
+        r = vol_regime_map.get(pkey)
+        tag, tag_c = _kind_tag(kind)
+        is_fund = (kind == "fund")
+        # Parent fund row = pinned, never sorts away. Children = hidden by default,
+        # toggled via the ▶ caret in the parent.
+        if is_fund:
+            caret = f'<span class="vr-caret" data-fs="{fund_short}" style="cursor:pointer;user-select:none;color:var(--accent-2);font-weight:700;margin-right:4px">▶</span>'
+            row_cls = 'metric-row vr-row vr-fund'
+            row_attr = f' data-pinned="1" data-fs="{fund_short}"'
+        else:
+            caret = ""
+            row_cls = 'metric-row vr-row vr-book'
+            row_attr = f' data-parent="{fund_short}" style="display:none"'
+
+        if not r:
+            rows += (
+                f'<tr class="{row_cls}"{row_attr}>'
+                f'<td class="dist-tag" style="color:{tag_c}">{caret}{tag}</td>'
+                f'<td class="dist-name">{label}</td>'
+                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
+                '<td style="text-align:center">—</td>'
+                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
+                '<td style="text-align:center">—</td>'
+                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
+                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
+                '<td class="mono" style="color:var(--muted); text-align:center">—</td>'
+                "</tr>"
+            )
+            continue
+        any_data = True
+        if not is_fund:
+            any_book_with_data = True
+        if n_obs_ref is None:
+            n_obs_ref = r["n_obs"]
+        vol_r = r["vol_recent_pct"]
+        ratio = r["ratio"]
+        pct_v = r["pct_rank"]
+        z_v   = r["z"]
+        regime = r["regime"]
+        pct_s = f'{pct_v:.0f}°' if pct_v is not None else '—'
+        z_s   = f'{z_v:+.2f}'   if z_v is not None   else '—'
+
+        vol_range = range_line_svg(
+            vol_r, r["vol_min_pct"], r["vol_max_pct"],
+            v_p50=r["vol_p50_pct"], fmt="{:.2f}%",
+        )
+        z_range = range_line_svg(
+            z_v, r["z_min"], r["z_max"],
+            v_p50=r["z_p50"], fmt="{:+.1f}",
+        ) if z_v is not None else ""
+
+        rows += (
+            f'<tr class="{row_cls}"{row_attr}>'
+            f'<td class="dist-tag" style="color:{tag_c}">{caret}{tag}</td>'
+            f'<td class="dist-name">{label}</td>'
+            f'<td class="dist-num mono">{vol_r:.2f}%</td>'
+            f'<td style="text-align:center;padding:4px 6px">{vol_range}</td>'
+            f'<td class="dist-num mono" style="color:{_ratio_col(ratio)}; font-weight:700">{ratio:.2f}x</td>'
+            f'<td style="text-align:center;padding:4px 6px">{z_range}</td>'
+            f'<td class="dist-num mono" style="color:{_z_col(z_v)}; font-weight:700">{z_s}</td>'
+            f'<td class="dist-num mono" style="color:{_pct_col(pct_v)}; font-weight:700">{pct_s}</td>'
+            f'<td class="mono" style="color:{regime_col.get(regime,"var(--muted)")}; text-align:center; font-weight:700">{regime}</td>'
+            "</tr>"
+        )
+    if not any_data:
+        return ""
+    sub = f"— {fund_short} · carteira atual × HS ({n_obs_ref}d)"
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Vol Regime</span>
+        <span class="card-sub">{sub}</span>
+      </div>
+      <table class="metric-table dist-table">
+        <thead>
+          <tr class="col-headers">
+            <th style="text-align:left;width:70px">Tipo</th>
+            <th style="text-align:left">Nome</th>
+            <th style="text-align:right;width:80px">Vol 21d</th>
+            <th style="text-align:center;width:230px">Range Vol</th>
+            <th style="text-align:right;width:70px">Ratio</th>
+            <th style="text-align:center;width:230px">Range z</th>
+            <th style="text-align:right;width:70px">z</th>
+            <th style="text-align:right;width:70px">Pct</th>
+            <th style="text-align:center;width:90px">Regime</th>
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+      <div class="bar-legend">
+        <b>▶</b> clique no caret para expandir books/PMs do fundo ·
+        <b>Range Vol / Range z</b>: linha = [min, max] da janela HS; tick cinza = mediana; dot = atual ·
+        <b>Ratio</b> = vol 21d / vol full (&gt;1.2 amarelo · &gt;1.5 vermelho · &lt;0.7 verde) ·
+        <b>z</b> = (std 21d − média) / σ das rolling windows (direcional; N_eff baixo pela sobreposição) ·
+        <b>Pct</b> = percentil da std(21d) ·
+        <b>Regime</b>: low/normal/elevated/stressed via pct
+      </div>
+    </section>"""
+
+
+def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: dict,
+                            actuals: dict) -> str:
     """Single card with toggle between Backward (D-1 carteira + realized DIA) and Forward (D carteira profile)."""
     bw_table = _build_backward_table(fund_short, dist_map_prev, actuals)
     fw_table = _build_forward_table(fund_short, dist_map_now)
@@ -1861,7 +2188,7 @@ def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" = DATE '{date_str}'
                THEN COALESCE("POSITION",0) ELSE 0 END) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ')
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','IDKAIPCAY3','IDKAIPCAY10')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","CLASSE","GRUPO","LIVRO","BOOK","PRODUCT"
@@ -2977,13 +3304,15 @@ REPORTS = [
     ("risk-monitor", "Risk Monitor"),
     ("analise",      "Análise"),
     ("distribution", "Distribuição 252d"),
+    ("vol-regime",   "Vol Regime"),
     ("stop-monitor", "Risk Budget"),
     ("frontier-lo",  "Long Only"),
 ]
-FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER"]
+FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
 FUND_LABELS = {
     "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
     "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "FRONTIER": "Frontier",
+    "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
 }
 
 # PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short
@@ -2993,6 +3322,8 @@ _FUND_PA_KEY = {
     "EVOLUTION": "EVOLUTION",
     "MACRO_Q":   "GLOBAL",
     "ALBATROZ":  "ALBATROZ",
+    "IDKA_3Y":   "IDKAIPCAY3",
+    "IDKA_10Y":  "IDKAIPCAY10",
 }
 
 def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_daily):
@@ -3109,8 +3440,8 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
                     detail=detail + ("" if has_pnl else " · PnL zero/ausente"))
 
     _SRC_DEFS = [
-        ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ"], _pa_item),
-        ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ"], _var_item),
+        ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _pa_item),
+        ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _var_item),
         ("Exposição",         ["MACRO","QUANT","ALBATROZ"],                       _expo_item),
         ("Single-Name",       ["QUANT","EVOLUTION"],                              _sn_item),
         ("Distribuição 252d", ["MACRO","EVOLUTION"],                              _dist_item),
@@ -3319,6 +3650,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
                position_changes=None,
                dist_map=None, dist_map_prev=None, dist_actuals=None,
+               vol_regime_map=None,
                expo_date_label=None, data_manifest=None) -> str:
     alerts = []
     td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
@@ -3351,9 +3683,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         var_range_pct    = (var_abs - var_min_abs)  / (var_max_abs - var_min_abs) * 100  if var_max_abs != var_min_abs else 0
         stress_range_pct = (str_abs - str_min_abs)  / (str_max_abs - str_min_abs) * 100  if str_max_abs != str_min_abs else 0
 
-        if var_range_pct >= ALERT_THRESHOLD:
-            alerts.append((short, "VaR", var_range_pct, var_today, var_util, ALERT_COMMENTS.get(("var", short), "")))
-        if stress_range_pct >= ALERT_THRESHOLD:
+        _is_idka = cfg.get("primary") == "bvar"
+        _is_inf  = cfg.get("informative") is True
+        if not _is_inf and var_range_pct >= ALERT_THRESHOLD:
+            alerts.append((short, "BVaR" if _is_idka else "VaR", var_range_pct, var_today, var_util, ALERT_COMMENTS.get(("var", short), "")))
+        if not (_is_idka or _is_inf) and stress_range_pct >= ALERT_THRESHOLD:
             alerts.append((short, "Stress", stress_range_pct, stress_today, str_util, ALERT_COMMENTS.get(("stress", short), "")))
 
         var_bar    = range_bar_svg(var_abs,  var_min_abs,  var_max_abs,  cfg["var_soft"],    cfg["var_hard"])
@@ -3361,6 +3695,30 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
         spark_var    = make_sparkline(s.set_index("VAL_DATE")["var_pct"],    "#1a8fd1")
         spark_stress = make_sparkline(s.set_index("VAL_DATE")["stress_pct"], "#f472b6")
+
+        # IDKA: primary metric is BVaR (relative to benchmark); secondary is absolute VaR
+        # shown for reference only (no util %, no hard limit highlighted).
+        # Frontier: LO equity — no limits, both VaR and Stress shown as informative.
+        is_idka = cfg.get("primary") == "bvar"
+        is_informative = cfg.get("informative") is True
+        if is_idka:
+            primary_label   = "BVaR 95%"
+            secondary_label = "VaR 95% (ref)"
+            secondary_util_html = (
+                f'<td class="util-cell mono" style="color:var(--muted)">ref</td>'
+            )
+        elif is_informative:
+            primary_label   = "VaR 95% (ref)"
+            secondary_label = "Stress (ref)"
+            secondary_util_html = (
+                f'<td class="util-cell mono" style="color:var(--muted)">ref</td>'
+            )
+        else:
+            primary_label   = "VaR 95% 1d"
+            secondary_label = "Stress"
+            secondary_util_html = (
+                f'<td class="util-cell mono" style="color:{util_color(str_util)}">{str_util:.0f}% soft</td>'
+            )
 
         risk_monitor_html = f"""
         <section class="card">
@@ -3380,17 +3738,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             </thead>
             <tbody>
               <tr class="metric-row">
-                <td class="metric-name">VaR 95% 1d</td>
-                <td class="value-cell mono" style="color:{util_color(var_util)}">{var_today:.2f}%</td>
-                <td class="bar-cell">{var_bar}</td>
-                <td class="util-cell mono" style="color:{util_color(var_util)}">{var_util:.0f}% soft</td>
+                <td class="metric-name">{primary_label}</td>
+                <td class="value-cell mono" style="color:{'var(--muted)' if is_informative else util_color(var_util)}">{var_today:.2f}%</td>
+                <td class="bar-cell">{'' if is_informative else var_bar}</td>
+                <td class="util-cell mono" style="color:{'var(--muted)' if is_informative else util_color(var_util)}">{'ref' if is_informative else f'{var_util:.0f}% soft'}</td>
                 <td class="spark-cell"><img src="data:image/png;base64,{spark_var}" height="38"/></td>
               </tr>
               <tr class="metric-row">
-                <td class="metric-name">Stress</td>
-                <td class="value-cell mono" style="color:{util_color(str_util)}">{stress_today:.2f}%</td>
-                <td class="bar-cell">{stress_bar}</td>
-                <td class="util-cell mono" style="color:{util_color(str_util)}">{str_util:.0f}% soft</td>
+                <td class="metric-name">{secondary_label}</td>
+                <td class="value-cell mono" style="color:{'var(--muted)' if (is_idka or is_informative) else util_color(str_util)}">{stress_today:.2f}%</td>
+                <td class="bar-cell">{'' if (is_idka or is_informative) else stress_bar}</td>
+                {secondary_util_html}
                 <td class="spark-cell"><img src="data:image/png;base64,{spark_stress}" height="38"/></td>
               </tr>
             </tbody>
@@ -3516,9 +3874,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle
     if (dist_map or dist_map_prev) and dist_actuals is not None:
         for fs in ["MACRO", "EVOLUTION"]:
-            html_sect = build_distribution_card(fs, dist_map or {}, dist_map_prev or {}, dist_actuals)
+            html_sect = build_distribution_card(
+                fs, dist_map or {}, dist_map_prev or {}, dist_actuals,
+            )
             if html_sect:
                 sections.append((fs, "distribution", html_sect))
+
+    # Vol Regime sections (per fund) — standalone card using HS W series
+    if vol_regime_map:
+        for fs in ("MACRO", "EVOLUTION", "QUANT"):
+            html_vr = build_vol_regime_section(fs, vol_regime_map)
+            if html_vr:
+                sections.append((fs, "vol-regime", html_vr))
 
     # Single-name L/S — inline full-detail section per fund (no modal)
     sn_quant = build_single_names_section(
@@ -3811,6 +4178,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             a_mtd = float(sub["mtd_bps"].sum()) if not sub.empty else 0.0
             a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
             a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
+        elif short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
+            # Frontier has no PA in REPORT_ALPHA_ATRIBUTION — aggregate from LONG_ONLY mainboard
+            # TOTAL_ATRIBUTION_{DAY,MONTH,YEAR} are decimal fractions; convert to bps.
+            a_dia = float(df_frontier["TOTAL_ATRIBUTION_DAY"].sum())   * 10000
+            a_mtd = float(df_frontier["TOTAL_ATRIBUTION_MONTH"].sum()) * 10000
+            a_ytd = float(df_frontier["TOTAL_ATRIBUTION_YEAR"].sum())  * 10000
+            a_m12 = 0.0  # no 12M column in mainboard
         else:
             a_dia = a_mtd = a_ytd = a_m12 = 0.0
 
@@ -3821,7 +4195,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if not s_avail.empty:
                 var_today = abs(s_avail.iloc[-1]["var_pct"])
                 cfg = ALL_FUNDS[td]
-                var_util = var_today / cfg["var_soft"] * 100
+                # Informative funds (e.g., Frontier LO) show VaR but without util/limit check
+                if not cfg.get("informative"):
+                    var_util = var_today / cfg["var_soft"] * 100
                 prev = s_avail.iloc[:-1]
                 if not prev.empty:
                     dvar = var_today - abs(prev.iloc[-1]["var_pct"])
@@ -3884,6 +4260,107 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <span style="color:var(--warn)">🟡</span> 70–100% &nbsp;·&nbsp;
         <span style="color:var(--down)">🔴</span> ≥ 100% &nbsp;·&nbsp;
         <span style="color:var(--muted)">Status = pior entre utilização de VaR e stop mensal</span>
+      </div>
+    </section>"""
+
+    # ── Vol Regime card ──────────────────────────────────────────────────
+    # Realized 21d vol (annualized) vs. 3y baseline. Primary signal = pct_rank
+    # (non-parametric). Z-score is shown as secondary (N_eff ~36 from 21d
+    # overlap → ~15% SE; use for direction, not hard thresholds).
+    def _regime_tag(regime: str) -> str:
+        colors = {
+            "low":      ("var(--up)",     "low"),
+            "normal":   ("var(--muted)",  "normal"),
+            "elevated": ("var(--warn)",   "elevated"),
+            "stressed": ("var(--down)",   "stressed"),
+            "—":        ("var(--muted)",  "—"),
+        }
+        c, lbl = colors.get(regime, ("var(--muted)", regime))
+        return f'<span class="mono" style="color:{c}; font-weight:700">{lbl}</span>'
+
+    def _pct_color(p):
+        if p is None or pd.isna(p):
+            return "var(--muted)"
+        if p >= 90: return "var(--down)"
+        if p >= 70: return "var(--warn)"
+        if p < 20:  return "var(--up)"
+        return "var(--text)"
+
+    def _z_color(z):
+        if z is None or pd.isna(z):
+            return "var(--muted)"
+        if abs(z) >= 2: return "var(--down)"
+        if abs(z) >= 1: return "var(--warn)"
+        return "var(--text)"
+
+    # fund_short -> portfolio key inside PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.
+    # Only funds whose W-series exists show vol regime; others fall through to "—".
+    _FUND_PORTFOLIO_KEY = {
+        "MACRO":     "MACRO",
+        "EVOLUTION": "EVOLUTION",
+        "QUANT":     "SIST",
+    }
+
+    vol_rows_html = ""
+    if vol_regime_map:
+        for short in FUND_ORDER:
+            pkey = _FUND_PORTFOLIO_KEY.get(short)
+            r    = vol_regime_map.get(pkey) if pkey else None
+            if not r:
+                vol_rows_html += (
+                    "<tr>"
+                    f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
+                    '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+                    '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+                    '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+                    '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+                    '<td class="mono" style="color:var(--muted); text-align:center">—</td>'
+                    "</tr>"
+                )
+                continue
+            vol_r   = r["vol_recent_pct"]
+            vol_f   = r["vol_full_pct"]
+            ratio   = r["ratio"]
+            pct_v   = r["pct_rank"]
+            n_obs   = r["n_obs"]
+            vol_rows_html += (
+                "<tr>"
+                f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
+                f'<td class="mono" style="text-align:right">{vol_r:.2f}%</td>'
+                f'<td class="mono" style="color:var(--muted); text-align:right">{vol_f:.2f}%</td>'
+                f'<td class="mono" style="text-align:right; font-weight:700">{ratio:.2f}x</td>'
+                f'<td class="mono" style="color:{_pct_color(pct_v)}; text-align:right; font-weight:700">'
+                f'{pct_v:.0f}°</td>'
+                f'<td style="text-align:center">{_regime_tag(r["regime"])}</td>'
+                "</tr>"
+            )
+
+    vol_regime_html = ""
+    if vol_rows_html and any(v for v in (vol_regime_map or {}).values()):
+        vol_regime_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Vol Regime</span>
+        <span class="card-sub">— carteira atual · vol 21d vs. janela total HS</span>
+      </div>
+      <table class="summary-table">
+        <thead><tr>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">Vol 21d</th>
+          <th style="text-align:right">Vol full</th>
+          <th style="text-align:right">Ratio</th>
+          <th style="text-align:right">Pct</th>
+          <th style="text-align:center">Regime</th>
+        </tr></thead>
+        <tbody>{vol_rows_html}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:12px">
+        Carteira atual aplicada à janela de simulação histórica (W series). ·
+        <b>Vol 21d</b> = std(W dos 21 dias mais recentes) × √252 ·
+        <b>Vol full</b> = std(W da janela completa) × √252 ·
+        <b>Ratio</b> = vol 21d / vol full ·
+        <b>Pct</b> = percentil de std(21d) entre todas as janelas rolling de 21d ·
+        <b>Regime</b>: low &lt;p20 · normal p20–70 · elevated p70–90 · stressed ≥p90
       </div>
     </section>"""
 
@@ -4109,6 +4586,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     summary_html = f"""
     <div class="section-wrap" data-view="summary">
       {fund_grid_html}
+      {vol_regime_html}
       {alerts_html}
       {comments_html}
       {movers_html}
@@ -4142,6 +4620,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         for f in FUND_ORDER
     })
     report_labels_js = json.dumps({rid: label for rid, label in REPORTS})
+    fund_shorts_js   = json.dumps(list(FUND_ORDER))
+    fund_labels_js   = json.dumps(FUND_LABELS)
+    fund_order_js    = json.dumps(list(FUND_ORDER))
 
     # Por Report mode removed — no per-report fund switcher needed
 
@@ -4461,6 +4942,34 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     color:var(--text); font-weight:700;
   }}
   .card-sub {{ font-size:11px; color:var(--muted); letter-spacing:.05em; }}
+  .card-sub .fund-name {{
+    color:var(--accent); font-weight:700; letter-spacing:.08em;
+    padding:1px 6px; border-radius:4px;
+    background:rgba(26,143,209,0.10); border:1px solid rgba(26,143,209,0.25);
+  }}
+
+  /* Per-fund nav chips — appear at the top of each fund's section-wrap */
+  .fund-nav-chips {{
+    display:flex; flex-wrap:wrap; gap:6px;
+    padding:8px 12px; margin-bottom:14px;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    font-size:11px; letter-spacing:.03em;
+  }}
+  .fund-nav-chips .chip-label {{
+    color:var(--muted); text-transform:uppercase; letter-spacing:.12em;
+    font-size:10px; padding:4px 6px; align-self:center;
+  }}
+  .fund-nav-chips .chip {{
+    background:transparent; color:var(--muted);
+    border:1px solid var(--line); border-radius:4px;
+    padding:4px 10px; cursor:pointer; font-family:inherit;
+    transition:all .12s ease;
+  }}
+  .fund-nav-chips .chip:hover {{ color:var(--text); border-color:var(--accent); }}
+  .fund-nav-chips .chip.active {{
+    background:var(--accent); color:#0b1220;
+    border-color:var(--accent); font-weight:700;
+  }}
 
   table {{ width:100%; border-collapse:collapse; }}
   .col-headers th {{
@@ -4855,7 +5364,79 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     applyState();
     injectCsvButtons();
     attachUniversalSort();
+    attachVrCaretToggle();
+    highlightFundNames();
+    injectFundNavChips();
   }});
+  // --- Wrap fund shortnames in card-sub elements with an accent chip ---
+  function highlightFundNames() {{
+    var SHORTS = {fund_shorts_js};
+    // Sort by length desc so "MACRO_Q" matches before "MACRO"
+    SHORTS.sort(function(a,b) {{ return b.length - a.length; }});
+    var subs = document.querySelectorAll('.card-sub');
+    subs.forEach(function(el) {{
+      if (el.dataset.fundHighlighted) return;
+      var html = el.innerHTML;
+      for (var i = 0; i < SHORTS.length; i++) {{
+        var s = SHORTS[i];
+        // Word-boundary match; avoid wrapping inside existing tags
+        var re = new RegExp('(^|[^A-Za-z0-9_>])(' + s + ')(?![A-Za-z0-9_])', 'g');
+        html = html.replace(re, '$1<span class="fund-name">$2</span>');
+      }}
+      el.innerHTML = html;
+      el.dataset.fundHighlighted = '1';
+    }});
+  }}
+  // --- Fund-nav chip bar injected above each per-fund section ---
+  function injectFundNavChips() {{
+    var LABELS = {fund_labels_js};
+    var ORDER  = {fund_order_js};
+    // Collect available funds (those with at least one visible section-wrap)
+    var available = ORDER.filter(function(s) {{
+      return document.querySelector('.section-wrap[data-fund="' + s + '"]');
+    }});
+    if (available.length < 2) return;
+    // Build one chip bar per fund — insert at the top of the first section-wrap
+    // for each fund (user sees it once, highlighting the active fund).
+    available.forEach(function(fs) {{
+      var wrap = document.querySelector('.section-wrap[data-fund="' + fs + '"]');
+      if (!wrap || wrap.querySelector('.fund-nav-chips')) return;
+      var bar = document.createElement('div');
+      bar.className = 'fund-nav-chips';
+      var lbl = document.createElement('span');
+      lbl.className = 'chip-label';
+      lbl.textContent = 'Ir para:';
+      bar.appendChild(lbl);
+      available.forEach(function(s) {{
+        var btn = document.createElement('button');
+        btn.className = 'chip' + (s === fs ? ' active' : '');
+        btn.textContent = LABELS[s] || s;
+        btn.onclick = function() {{ window.selectFund(s); }};
+        bar.appendChild(btn);
+      }});
+      wrap.insertBefore(bar, wrap.firstChild);
+    }});
+  }}
+  // --- Vol Regime: expand/collapse books under a fund row ---
+  function attachVrCaretToggle() {{
+    document.querySelectorAll('.vr-caret').forEach(function(el) {{
+      el.addEventListener('click', function(e) {{
+        e.stopPropagation();
+        var fs = el.getAttribute('data-fs');
+        if (!fs) return;
+        var rows = document.querySelectorAll('tr.vr-book[data-parent="' + fs + '"]');
+        if (!rows.length) return;
+        // Decide toggle direction from the first row's current visibility.
+        // display may be '' (visible) or 'none' (hidden); decide once to keep
+        // all sibling rows in sync.
+        var shouldOpen = (rows[0].style.display === 'none');
+        rows.forEach(function(r) {{
+          r.style.display = shouldOpen ? '' : 'none';
+        }});
+        el.textContent = shouldOpen ? '▼' : '▶';
+      }});
+    }});
+  }}
   window.goToDate = function(val) {{
     if (!val) return;
     var base = window.location.href.replace(/[^/\\\\]*$/, '').replace(/#.*$/, '');
@@ -5352,6 +5933,7 @@ if __name__ == "__main__":
     with ThreadPoolExecutor(max_workers=12) as ex:
         fut_risk       = ex.submit(fetch_risk_history)
         fut_risk_raw   = ex.submit(fetch_risk_history_raw)
+        fut_risk_idka  = ex.submit(fetch_risk_history_idka)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl     = ex.submit(fetch_pm_pnl_history)
         fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
@@ -5381,9 +5963,14 @@ if __name__ == "__main__":
     # ── Resolve results (sequential, with per-task fallback) ──────────────
     df_risk     = fut_risk.result()
     df_risk_raw = fut_risk_raw.result()
+    try:
+        df_risk_idka = fut_risk_idka.result()
+    except Exception as e:
+        print(f"  IDKA risk fetch failed ({e})")
+        df_risk_idka = None
     df_aum      = fut_aum.result()
     df_pm_pnl   = fut_pm_pnl.result()
-    series      = build_series(df_risk, df_aum, df_risk_raw)
+    series      = build_series(df_risk, df_aum, df_risk_raw, df_risk_idka)
     stop_hist = build_stop_history(df_pm_pnl)
 
     # PM MTD/YTD from PA leaves — avoids MES column (often NULL in REPORT_ALPHA_ATRIBUTION).
@@ -5507,6 +6094,12 @@ if __name__ == "__main__":
         print(f"  Frontier exposure fetch failed ({e})")
         df_frontier_ibov = df_frontier_smll = df_frontier_sectors = pd.DataFrame()
 
+    try:
+        vol_regime_map = compute_portfolio_vol_regime(dist_map or {})
+    except Exception as e:
+        print(f"  Vol regime failed ({e})")
+        vol_regime_map = {}
+
     position_changes = {}
     for short, fut in fut_chg.items():
         try:
@@ -5519,7 +6112,7 @@ if __name__ == "__main__":
 
     # ── Data manifest: what landed and what is stale/missing ─────────────────
     _var_dates = {}
-    for td, cfg in FUNDS.items():
+    for td, cfg in ALL_FUNDS.items():
         s = series.get(td)
         if s is not None and not s.empty:
             s_avail = s[s["VAL_DATE"] <= DATA]
@@ -5569,6 +6162,7 @@ if __name__ == "__main__":
                       df_frontier_sectors=df_frontier_sectors,
                       position_changes=position_changes,
                       dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
+                      vol_regime_map=vol_regime_map,
                       expo_date_label=expo_date_label, data_manifest=data_manifest)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")

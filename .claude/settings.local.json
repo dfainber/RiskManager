@@ -36,7 +36,12 @@
       "Bash(powershell.exe -Command \"Get-ChildItem 'C:\\\\Program Files\\\\nodejs\\\\' -ErrorAction SilentlyContinue | Select-Object -First 5 Name; Get-ChildItem 'C:\\\\Program Files \\(x86\\)\\\\nodejs\\\\' -ErrorAction SilentlyContinue | Select-Object -First 5 Name\")",
       "Bash(powershell.exe -Command \"& 'F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\.venv\\\\Scripts\\\\python.exe' -c 'import pandas, numpy, matplotlib, psycopg2, dotenv; print\\(\\\\\"OK\\\\\"\\)'\")",
       "Bash(powershell.exe -Command \"Get-Item 'C:\\\\Windows\\\\System32\\\\MSVCP140.dll', 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140.dll' -ErrorAction SilentlyContinue | Select-Object Name, VersionInfo\")",
-      "Bash(powershell.exe -Command \"Get-Item 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll' -ErrorAction SilentlyContinue | Select-Object Name; Test-Path 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll'\")"
+      "Bash(powershell.exe -Command \"Get-Item 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll' -ErrorAction SilentlyContinue | Select-Object Name; Test-Path 'C:\\\\Windows\\\\System32\\\\VCRUNTIME140_1.dll'\")",
+      "Bash(python generate_risk_report.py)",
+      "Bash(.venv/Scripts/python.exe generate_risk_report.py)",
+      "Bash(\"C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe\" -c \"import pandas; print\\(pandas.__version__\\)\")",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe -c ' *)",
+      "Bash(awk '/function attachVrCaretToggle/,/^  \\\\}$/' \"data/morning-calls/2026-04-17_risk_monitor.html\")"
     ]
   }
 }

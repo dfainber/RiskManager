@@ -56,7 +56,9 @@ Schemas e tabelas principais:
 | Schema      | Tabela                            | Uso                          |
 |-------------|-----------------------------------|------------------------------|
 | `LOTE45`    | `LOTE_TRADING_DESKS_NAV_SHARE`    | NAV share por mesa/fundo     |
-| `LOTE45`    | `LOTE_FUND_STRESS_RPM`            | VaR/Stress nível fundo (LEVEL=10) e série histórica |
+| `LOTE45`    | `LOTE_FUND_STRESS_RPM`            | VaR/Stress nível fundo (LEVEL=10) e série histórica — MACRO/QUANT/EVOLUTION |
+| `LOTE45`    | `LOTE_FUND_STRESS`                | VaR/Stress nível produto — ALBATROZ + MACRO_Q (SUM por TRADING_DESK) |
+| `LOTE45`    | `LOTE_PARAMETRIC_VAR_TABLE`       | BVaR (`RELATIVE_VAR_PCT`) + VaR (`ABSOLUTE_VAR_PCT`) para IDKAs; fração decimal |
 | `LOTE45`    | `LOTE_BOOK_STRESS_RPM`            | VaR por book/RF (LEVEL=3), fonte para MACRO via Evolution |
 | `LOTE45`    | `LOTE_PRODUCT_EXPO`               | Exposição/delta por produto — usar `TRADING_DESK_SHARE_SOURCE` |
 | `q_models`  | `REPORT_ALPHA_ATRIBUTION`         | PnL por PM (LIVRO) e por instrumento |
@@ -180,7 +182,30 @@ dashboards originais.
 - **sortTableByCol patcheado globalmente** — respeita `data-pinned="1"` em qualquer tabela. TOTAL e Caixa não se movem no sort.
 - Novas fontes canônicas: `public.EQUITIES_COMPOSITION` (pesos IBOV/SMLLBV), `q_models.FRONTIER_TARGETS` + `q_models.COMPANY_SECTORS` (setor por ação).
 
+**Fase 4 — entregues (sessão 2026-04-19):**
+- **Vol Regime** — carteira atual × janela HS (`PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.W`):
+  - Card no Summary (1 linha por fundo: MACRO, QUANT via `SIST`, EVOLUTION)
+  - Report dedicado "Vol Regime" per-fund com drag-down ▶/▼ (default só fund-level; click expande books/PMs — MACRO 4 PMs; QUANT sub-books + Bracco + Quant_PA; EVOLUTION só fund)
+  - Métricas: `vol_recent_pct = std(W[-21:]) × √252`, `vol_full_pct = std(W) × √252`, `ratio`, `z-score`, `pct_rank`, `regime` (low/normal/elevated/stressed)
+  - Visual **range line SVG** (min→max com dot destacado por tercil, tick cinza na mediana) para vol e z
+  - Primary = **pct_rank** (não-paramétrico, imune ao overlap). z-score só informativo (N_ef ~36 em 756d, ~12 em 252d — SE ~15%)
+  - Bug resolvido: abordagem inicial usava NAV pct_change mas `NAV_SHARE` inclui flows e dá valores absurdos. Pivot para W-series validou
+- **IDKA 3Y + IDKA 10Y onboarded** como 7º e 8º fundos:
+  - Dict `IDKA_FUNDS` com `primary: "bvar"`. Limites provisórios: IDKA_3Y soft 1.75%/hard 2.50%; IDKA_10Y soft 3.50%/hard 5.00%
+  - Fonte: `LOTE45.LOTE_PARAMETRIC_VAR_TABLE` — `RELATIVE_VAR_PCT` (BVaR, primary), `ABSOLUTE_VAR_PCT` (VaR, reference-only, no limit). Valores em fração decimal
+  - `fetch_risk_history_idka()` + `build_series(..., df_risk_idka=...)` — BVaR vai no slot `var_pct`, VaR no slot `stress_pct`
+  - Risk Monitor card parametrizado: labels "BVaR 95%" + "VaR 95% (ref)" em vez de "VaR 95% 1d"/"Stress" quando `cfg["primary"] == "bvar"`. Linha VaR sem bar de range nem util %
+  - PA: `fetch_pa_leaves` inclui `IDKAIPCAY3` e `IDKAIPCAY10` no filtro. PA keys mapeadas em `_FUND_PA_KEY`
+  - Summary grid agora cobre 8 fundos
+- **UX navigation polish**:
+  - Fund names destacados nos card-subs — classe CSS `.fund-name` (accent azul, chip-style com border + background sutil), JS `highlightFundNames()` wrap automático
+  - Fund nav chips — barra `.fund-nav-chips` ("Ir para: Macro | Quantitativo | …") injetada via JS no topo de cada `section-wrap[data-fund]`. Chip ativo destacado, click chama `selectFund()`
+
 **Fase 4 — pendente:**
+- **Página de ETFs** (user 2026-04-19) — adicionar família ETF como view. Escopo a definir (quais ETFs, métricas, fonte)
+- **Navigation checklist / "como ler os relatórios"** (user 2026-04-19) — guia sistemático para monitorar tudo na ordem certa
+- **Frontier no Summary** — returns agregados de `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD` (`TOTAL_ATRIBUTION_DAY/MONTH/YEAR`) + linha VaR informativa (no limit). Investigação parcial: nome da coluna de data não é `DATE` — a descobrir
+- **IDKA limites definitivos** — atuais são provisórios (util ~80%). Substituir quando mandato confirmar
 - **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
 - **Setor/Macro na tabela de posições LO** — join já feito no código, colunas não exibidas (~15 min)
 - **TE real** — substituir σ_IBOV=20% por σ(Rp-Rb)×√252 via `public.EQUITIES_PRICES` (~2h)
