@@ -184,6 +184,65 @@ def fetch_frontier_exposure_data() -> tuple:
     except Exception:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
+def compute_frontier_bvar_hs(df_frontier: pd.DataFrame, date_str: str = DATA_STR,
+                              window_days: int = 756) -> dict | None:
+    """Frontier BVaR 95% 1d vs. IBOV via historical simulation on current weights.
+       window_days ≈ 3 business years. Returns None if data is insufficient.
+    """
+    if df_frontier is None or df_frontier.empty:
+        return None
+
+    stocks = df_frontier[df_frontier["BOOK"].astype(str).str.strip() != ""].copy()
+    stocks = stocks[~stocks["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])]
+    stocks = stocks[stocks["% Cash"].notna()][["PRODUCT", "% Cash"]]
+    stocks = stocks.rename(columns={"PRODUCT": "ticker", "% Cash": "weight"})
+    if stocks.empty:
+        return None
+    weights = dict(zip(stocks["ticker"], stocks["weight"].astype(float)))
+
+    tks = ",".join(f"'{t}'" for t in list(weights.keys()) + ["IBOV"])
+    q = f"""
+    SELECT "INSTRUMENT", "DATE", "CLOSE"
+    FROM public."EQUITIES_PRICES"
+    WHERE "INSTRUMENT" IN ({tks})
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '{window_days + 120} days'
+      AND "DATE" <= DATE '{date_str}'
+    """
+    df = read_sql(q)
+    if df.empty or "IBOV" not in df["INSTRUMENT"].unique():
+        return None
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    wide = (df.pivot_table(index="DATE", columns="INSTRUMENT",
+                           values="CLOSE", aggfunc="last")
+              .sort_index())
+    wide = wide.dropna(subset=["IBOV"])  # align to IBOV trading days
+    wide = wide.ffill()                   # carry last known close across non-trading days
+    rets = wide.pct_change().dropna(subset=["IBOV"])
+    # EQUITIES_PRICES.CLOSE is raw (non-split-adjusted). Drop corporate-action jumps
+    # by zeroing per-stock returns with |r| > 30% (B3 individual circuit breakers
+    # cap real daily moves well below this — anything larger is a data artifact).
+    stock_cols = [c for c in rets.columns if c != "IBOV"]
+    mask_ca = rets[stock_cols].abs() > 0.30
+    rets[stock_cols] = rets[stock_cols].mask(mask_ca, 0.0)
+    rets = rets.tail(window_days)
+    if len(rets) < 50:
+        return None
+
+    fund_ret = pd.Series(0.0, index=rets.index)
+    for t, w in weights.items():
+        if t in rets.columns:
+            fund_ret = fund_ret + w * rets[t].fillna(0.0)
+    er = fund_ret - rets["IBOV"]
+
+    return {
+        "bvar_pct":    -float(er.quantile(0.05)) * 100,  # 1d 95% BVaR, % of NAV
+        "n_obs":       int(len(er)),
+        "window_days": int(window_days),
+        "mean_er_pct": float(er.mean()) * 100,
+        "std_er_pct":  float(er.std())  * 100,
+    }
+
+
 def fetch_aum_history():
     tds = ", ".join(f"'{t}'" for t in ALL_FUNDS)
     q = f"""
@@ -1000,6 +1059,391 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
     for c in ("delta_brl", "mod_dur", "dv01_brl"):
         df[c] = df[c].astype(float).fillna(0.0)
     return df, nav
+
+
+# ── RF Exposure Map (IDKAs + Albatroz) ───────────────────────────────────────
+# Factor classification by PRODUCT_CLASS. Real = IPCA-linked (sens to real rates).
+# Nominal = pre-fixed rate. CDI = floating (no rate sensitivity). Other = everything else.
+_RF_FACTOR_MAP = {
+    # Real rates (IPCA-linked)
+    "NTN-B": "real", "NTN-C": "real",
+    "DAP Future": "real", "DAPFuture": "real", "DAC Future": "real",
+    # Nominal rates (pre)
+    "DI1Future": "nominal", "NTN-F": "nominal", "LTN": "nominal",
+    # CDI / floating
+    "LFT": "cdi", "Cash": "cdi", "Cash BRL": "cdi",
+    "Overnight": "cdi", "Compromissada": "cdi",
+}
+
+# Maturity buckets: 6m, then 1-yr blocks to concentrate allocation granularity
+# key → (lower_yrs, upper_yrs, label)
+_RF_BUCKETS = [
+    ("0-6m",   0.0,  0.5),
+    ("6-12m",  0.5,  1.0),
+    ("1-2y",   1.0,  2.0),
+    ("2-3y",   2.0,  3.0),
+    ("3-4y",   3.0,  4.0),
+    ("4-5y",   4.0,  5.0),
+    ("5-6y",   5.0,  6.0),
+    ("6-7y",   6.0,  7.0),
+    ("7-8y",   7.0,  8.0),
+    ("8-9y",   8.0,  9.0),
+    ("9-10y",  9.0, 10.0),
+    ("10y+",  10.0, 99.0),
+]
+
+
+def _rf_classify(product_class: str) -> str:
+    return _RF_FACTOR_MAP.get(product_class, "other")
+
+
+def _rf_bucket(yrs: float) -> str | None:
+    if yrs is None or yrs != yrs or yrs < 0:  # NaN-safe
+        return None
+    for label, lo, hi in _RF_BUCKETS:
+        if lo <= yrs < hi:
+            return label
+    return _RF_BUCKETS[-1][0]
+
+
+def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
+    """Fetch position-level RF exposure for a desk with look-through to Albatroz.
+       LOTE_PRODUCT_EXPO decomposes each bond into multiple PRIMITIVE_CLASS rows
+       (IPCA / IPCA Coupon / Brazil Sovereign Yield / BRL Rate Curve). To avoid
+       double-counting rate exposure, pick ONE primitive per position to represent
+       the dominant rate factor:
+         - Real-rate instruments  (NTN-B, NTN-C, DAP Future) → 'IPCA Coupon'
+         - Nominal instruments    (DI1Future, NTN-F, LTN)    → 'BRL Rate Curve'
+         - CDI/floating           (LFT, Cash, Compromissada) → 'Brazil Sovereign Yield'
+       Additional 'IPCA' primitive rows are kept separately for IPCA-index carry
+       (face-value exposure to inflation).
+       Returns columns: source, via (direct/via_albatroz), BOOK, PRODUCT_CLASS,
+                        PRIMITIVE_CLASS, PRODUCT, expiry, days_to_exp,
+                        delta_brl, mod_dur, ano_eq_brl, factor, bucket
+    """
+    q = f"""
+    SELECT "TRADING_DESK_SHARE_SOURCE" AS source,
+           "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
+           MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
+           SUM("DELTA")               AS delta_brl,
+           MAX("MOD_DURATION")        AS mod_dur,
+           SUM("POSITION")            AS position_brl
+    FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+    WHERE "TRADING_DESK" = '{desk}'
+      AND "TRADING_DESK_SHARE_SOURCE" IN ('{desk}', 'GALAPAGOS ALBATROZ FIRF LP')
+      AND "VAL_DATE" = DATE '{date_str}'
+      AND "DELTA" <> 0
+    GROUP BY "TRADING_DESK_SHARE_SOURCE", "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
+             "PRODUCT", "EXPIRY"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return df
+    for c in ("delta_brl", "mod_dur", "days_to_exp", "position_brl"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["delta_brl"] = df["delta_brl"].fillna(0.0)
+
+    # Pick ONE primitive per (PRODUCT_CLASS, PRODUCT, EXPIRY) to represent the
+    # dominant rate factor (avoids double-counting the decomposed legs).
+    _RATE_PRIM_BY_CLASS = {
+        "NTN-B": "IPCA Coupon", "NTN-C": "IPCA Coupon",
+        "DAP Future": "IPCA Coupon", "DAPFuture": "IPCA Coupon",
+        "DAC Future": "IPCA Coupon",
+        "DI1Future": "BRL Rate Curve", "NTN-F": "BRL Rate Curve",
+        "LTN": "BRL Rate Curve",
+        "LFT": "Brazil Sovereign Yield",
+    }
+    df["_rate_prim"] = df["PRODUCT_CLASS"].map(_RATE_PRIM_BY_CLASS)
+    # Keep only the chosen rate primitive per product, OR the 'IPCA' primitive
+    # (which separately represents inflation-index carry, never double-counts rates).
+    keep_mask = (
+        (df["PRIMITIVE_CLASS"] == df["_rate_prim"]) |
+        (df["PRIMITIVE_CLASS"] == "IPCA") |
+        df["_rate_prim"].isna()  # keep unknown product classes as 'other'
+    )
+    df = df[keep_mask].drop(columns="_rate_prim").copy()
+
+    df["yrs_to_mat"] = (df["days_to_exp"].fillna(0.0) / 365.25)
+    df["position_brl"] = df["position_brl"].fillna(0.0)
+    # DELTA in LOTE_PRODUCT_EXPO is the duration-weighted notional (= POSITION × MOD_DURATION)
+    # but with hedge-side sign convention: a long bond position carries NEGATIVE delta in the
+    # IPCA Coupon / BRL Rate Curve primitives (representing the short-DI hedge).
+    # Negate it to recover the position's actual rate exposure (long bond → positive ANO_EQ).
+    rate_prims = {"IPCA Coupon", "BRL Rate Curve"}
+    df["ano_eq_brl"] = df.apply(
+        lambda r: -r["delta_brl"] if r["PRIMITIVE_CLASS"] in rate_prims else r["delta_brl"],
+        axis=1,
+    )
+    df["factor"]    = df["PRODUCT_CLASS"].map(_rf_classify).fillna("other")
+    # 'IPCA' primitive rows represent inflation-index carry (face value); override factor.
+    df.loc[df["PRIMITIVE_CLASS"] == "IPCA", "factor"] = "ipca_idx"
+    df["bucket"]    = df["yrs_to_mat"].apply(_rf_bucket)
+    df["via"]       = df["source"].apply(
+        lambda s: "via_albatroz" if (s == "GALAPAGOS ALBATROZ FIRF LP" and desk != s)
+        else "direct"
+    )
+    return df
+
+
+def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
+                                   bench_dur_yrs: float, bench_label: str) -> str:
+    """Grouped bar chart of ANO_EQ (% NAV) by maturity bucket × factor,
+       with Fund/Bench/Relative toggle and cumulative lines.
+    """
+    if df is None or df.empty or not nav:
+        return ""
+
+    rel = df[df["factor"].isin(["real", "nominal"])].copy()
+    if rel.empty:
+        return ""
+    rel["pct"] = rel["ano_eq_brl"] / nav * 100.0
+    pivot = (rel.pivot_table(index="bucket", columns="factor", values="pct",
+                             aggfunc="sum", fill_value=0.0))
+    bucket_order = [b[0] for b in _RF_BUCKETS]
+    pivot = pivot.reindex(index=bucket_order, columns=["real", "nominal"], fill_value=0.0)
+
+    # Per-bucket arrays (ANO_EQ %NAV × 100 = "yr × 100" i.e. years equivalent)
+    fund_real_b = pivot["real"].tolist()
+    fund_nom_b  = pivot["nominal"].tolist()
+
+    cdi_bench = (bench_dur_yrs == 0)
+
+    def bench_bucket_idx(bench_dur: float) -> int:
+        for i, (_, lo, hi) in enumerate(_RF_BUCKETS):
+            if lo <= bench_dur < hi:
+                return i
+        return len(_RF_BUCKETS) - 1
+
+    # Benchmark per-bucket: IDKAs = 100% NAV concentrated at bench_dur bucket, real only
+    bench_real_b = [0.0] * len(bucket_order)
+    bench_nom_b  = [0.0] * len(bucket_order)
+    if not cdi_bench:
+        bench_real_b[bench_bucket_idx(bench_dur_yrs)] = bench_dur_yrs
+
+    # Relative = fund - bench per bucket
+    rel_real_b = [fund_real_b[i] - bench_real_b[i] for i in range(len(bucket_order))]
+    rel_nom_b  = [fund_nom_b[i]  - bench_nom_b[i]  for i in range(len(bucket_order))]
+
+    # Cumulative series
+    def cumsum(arr):
+        out, s = [], 0.0
+        for v in arr:
+            s += v
+            out.append(s)
+        return out
+
+    cum_real = cumsum(fund_real_b)
+    cum_nom  = cumsum(fund_nom_b)
+    bench_cum_real = cumsum(bench_real_b)
+    bench_cum_nom  = cumsum(bench_nom_b)
+    rel_cum_real   = cumsum(rel_real_b)
+    rel_cum_nom    = cumsum(rel_nom_b)
+
+    # Legacy names kept for the stat-row / legend blocks below
+    bench_real = bench_cum_real
+    bench_nom  = bench_cum_nom
+
+    # Via-Albatroz breakdown
+    via_df = df[df["factor"].isin(["real", "nominal"])]
+    via_alb_total = float(via_df[via_df["via"] == "via_albatroz"]["ano_eq_brl"].sum() / nav) if nav else 0.0
+
+    # SVG geometry
+    W, H = 760, 300
+    pad_l, pad_r, pad_t, pad_b = 46, 26, 26, 38
+    plot_w = W - pad_l - pad_r
+    plot_h = H - pad_t - pad_b
+    n_buckets = len(bucket_order)
+    band_w = plot_w / n_buckets
+    bar_gap = 3
+    bar_w = (band_w - 3 * bar_gap) / 2
+
+    # Y scale: fit the largest of any view's bars or cumulatives
+    all_vals = (fund_real_b + fund_nom_b + bench_real_b + bench_nom_b +
+                rel_real_b  + rel_nom_b +
+                cum_real + cum_nom + bench_cum_real + bench_cum_nom +
+                rel_cum_real + rel_cum_nom)
+    y_max = max([abs(v) for v in all_vals] + [1.0]) * 1.15
+    y_min = min([0.0] + [v for v in all_vals]) * 1.15
+    if y_min >= 0:
+        y_min = -y_max * 0.10  # small headroom below zero
+
+    def y_scale(v):
+        return pad_t + plot_h * (1.0 - (v - y_min) / (y_max - y_min))
+
+    def x_band(i):
+        return pad_l + i * band_w
+
+    def bar_rect(x0, v, cls):
+        y_top = y_scale(max(v, 0))
+        y_bot = y_scale(min(v, 0))
+        return (f'<rect class="rf-bar {cls}" '
+                f'x="{x0:.1f}" y="{y_top:.1f}" width="{bar_w:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
+
+    def bars_for(real_arr, nom_arr):
+        pieces_r, pieces_n = [], []
+        for i in range(n_buckets):
+            x0 = x_band(i) + bar_gap
+            x1 = x0 + bar_w + bar_gap
+            pieces_r.append(bar_rect(x0, real_arr[i], 'rf-real" data-factor="real'))
+            pieces_n.append(bar_rect(x1, nom_arr[i], 'rf-nom" data-factor="nominal'))
+        return "".join(pieces_r), "".join(pieces_n)
+
+    def poly_points(values):
+        pts = []
+        for i, v in enumerate(values):
+            cx = x_band(i) + band_w / 2
+            pts.append(f"{cx:.1f},{y_scale(v):.1f}")
+        return " ".join(pts)
+
+    fund_bars_r, fund_bars_n = bars_for(fund_real_b, fund_nom_b)
+    bench_bars_r, bench_bars_n = bars_for(bench_real_b, bench_nom_b)
+    rel_bars_r,  rel_bars_n  = bars_for(rel_real_b,  rel_nom_b)
+
+    fund_cum_r_line  = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(cum_real)}"/>'
+    fund_cum_n_line  = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(cum_nom)}"/>'
+    bench_cum_r_line = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(bench_cum_real)}"/>'
+    bench_cum_n_line = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(bench_cum_nom)}"/>'
+    rel_cum_r_line   = f'<polyline class="rf-cum rf-cum-real" data-factor="real" points="{poly_points(rel_cum_real)}"/>'
+    rel_cum_n_line   = f'<polyline class="rf-cum rf-cum-nom"  data-factor="nominal" points="{poly_points(rel_cum_nom)}"/>'
+
+    # Zero line
+    y0 = y_scale(0)
+    zero_line = f'<line class="rf-zero" x1="{pad_l}" y1="{y0:.1f}" x2="{W - pad_r}" y2="{y0:.1f}"/>'
+
+    # Y-axis ticks (5 ticks)
+    y_axis = ""
+    for k in range(5):
+        t = y_min + (y_max - y_min) * k / 4
+        y = y_scale(t)
+        y_axis += f'<line class="rf-grid" x1="{pad_l}" y1="{y:.1f}" x2="{W - pad_r}" y2="{y:.1f}"/>'
+        y_axis += f'<text class="rf-axis-lbl" x="{pad_l - 6:.1f}" y="{y + 3:.1f}" text-anchor="end">{t/100:+.2f}</text>'
+
+    # X-axis labels
+    x_axis = ""
+    for i, b in enumerate(bucket_order):
+        cx = x_band(i) + band_w / 2
+        x_axis += f'<text class="rf-axis-lbl" x="{cx:.1f}" y="{H - 12:.1f}" text-anchor="middle">{b}</text>'
+
+    # Three view groups — JS toggles which is visible
+    svg = f"""
+    <svg class="rf-expo-svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
+      {y_axis}
+      {zero_line}
+      <g class="rf-mode-group" data-rf-mode="fund">{fund_bars_r}{fund_bars_n}{fund_cum_r_line}{fund_cum_n_line}</g>
+      <g class="rf-mode-group" data-rf-mode="bench" style="display:none">{bench_bars_r}{bench_bars_n}{bench_cum_r_line}{bench_cum_n_line}</g>
+      <g class="rf-mode-group" data-rf-mode="relative" style="display:none">{rel_bars_r}{rel_bars_n}{rel_cum_r_line}{rel_cum_n_line}</g>
+      {x_axis}
+    </svg>
+    """
+
+    # ── Summary stats ─────────────────────────────────────────────────────────
+    dur_real  = sum(fund_real_b) / 100
+    dur_nom   = sum(fund_nom_b)  / 100
+    dur_total = dur_real + dur_nom
+    bench_total = bench_dur_yrs
+    gap_total = dur_total - bench_total
+    cdi_weight = float(df[df["factor"] == "cdi"]["delta_brl"].sum() / nav * 100) if nav else 0.0
+
+    # Table: one row per bucket, showing Fund / Bench / Relative totals (sum real+nominal).
+    def pct_cell(v, color_bias=True):
+        if abs(v) < 0.005:
+            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        col = ("var(--up)" if v >= 0 else "var(--down)") if color_bias else "var(--text)"
+        return f'<td class="mono" style="text-align:right; color:{col}">{v:+.2f}</td>'
+
+    tbl_rows = ""
+    for i, b in enumerate(bucket_order):
+        f_r = fund_real_b[i]; f_n = fund_nom_b[i]; f_t = f_r + f_n
+        b_r = bench_real_b[i]; b_n = bench_nom_b[i]; b_t = b_r + b_n
+        r_t = f_t - b_t
+        tbl_rows += (
+            "<tr>"
+            f'<td class="pa-name" style="font-weight:600">{b}</td>'
+            + pct_cell(f_r) + pct_cell(f_n) + pct_cell(f_t)
+            + pct_cell(b_t, color_bias=False)
+            + pct_cell(r_t)
+            + "</tr>"
+        )
+    tbl_footer = (
+        '<tr class="pa-total-row">'
+        '<td class="pa-name" style="font-weight:700">Total (yr eq.)</td>'
+        + pct_cell(sum(fund_real_b)) + pct_cell(sum(fund_nom_b)) + pct_cell(sum(fund_real_b) + sum(fund_nom_b))
+        + pct_cell(sum(bench_real_b) + sum(bench_nom_b), color_bias=False)
+        + pct_cell((sum(fund_real_b) + sum(fund_nom_b)) - (sum(bench_real_b) + sum(bench_nom_b)))
+        + "</tr>"
+    )
+
+    bench_note = (f"benchmark {bench_label} · constant-maturity {bench_total:.1f}yr, 100% NAV"
+                  if not cdi_bench else f"benchmark {bench_label} · duração zero")
+    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    via_chip = (f'<span class="sn-stat"><span class="sn-lbl">via Albatroz</span>'
+                f'<span class="sn-val mono">{via_alb_total:+.2f}yr</span></span>'
+                if abs(via_alb_total) > 0.005 and short.startswith("IDKA") else "")
+    stat_row = (
+        '<div class="sn-inline-stats mono" style="margin-bottom:12px; flex-wrap:wrap; gap:6px 18px">'
+        f'<span class="sn-stat"><span class="sn-lbl">NAV</span><span class="sn-val mono">R$ {nav_fmt}M</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Duração Real</span><span class="sn-val mono">{dur_real:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Duração Nominal</span><span class="sn-val mono">{dur_nom:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Total Fund</span><span class="sn-val mono">{dur_total:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Bench</span><span class="sn-val mono">{bench_total:+.2f}yr</span></span>'
+        '<span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">CDI</span><span class="sn-val mono">{cdi_weight:+.1f}%NAV</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Gap (Fund − Bench)</span><span class="sn-val mono" style="color:{"var(--down)" if abs(gap_total)>0.5 else "var(--text)"}">{gap_total:+.2f}yr</span></span>'
+        + via_chip +
+        '</div>'
+    )
+
+    # Two toggles — mode (Fund/Bench/Relative) and factor filter (Both/Real/Nominal)
+    toggle_html = (
+        '<div class="rf-toggles" style="display:flex; gap:10px; margin-left:auto; flex-wrap:wrap">'
+        f'<div class="pa-view-toggle rf-mode-toggle">'
+        f'<button class="pa-tgl active" data-rf-mode="fund"     onclick="selectRfMode(this,\'fund\')">Fund</button>'
+        f'<button class="pa-tgl"        data-rf-mode="bench"    onclick="selectRfMode(this,\'bench\')">Bench</button>'
+        f'<button class="pa-tgl"        data-rf-mode="relative" onclick="selectRfMode(this,\'relative\')">Relative</button>'
+        '</div>'
+        f'<div class="pa-view-toggle rf-view-toggle">'
+        f'<button class="pa-tgl active" data-rf-view="both"    onclick="selectRfView(this,\'both\')">Ambos</button>'
+        f'<button class="pa-tgl"        data-rf-view="real"    onclick="selectRfView(this,\'real\')">Real</button>'
+        f'<button class="pa-tgl"        data-rf-view="nominal" onclick="selectRfView(this,\'nominal\')">Nominal</button>'
+        '</div>'
+        '</div>'
+    )
+
+    return f"""
+    <section class="card" id="rf-expo-{short}">
+      <div class="card-head">
+        <span class="card-title">Exposure Map — fatores RF</span>
+        <span class="card-sub">— {short} · ANO_EQ (%NAV) por bucket de maturidade · {bench_note}</span>
+        {toggle_html}
+      </div>
+      {stat_row}
+      <div style="overflow-x:auto">{svg}</div>
+      <div class="rf-legend mono" style="margin-top:6px; font-size:10.5px; color:var(--muted); text-align:center">
+        <span class="rf-legend-item"><span class="rf-swatch rf-real"></span> Real (IPCA)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-nom"></span> Nominal (Pré)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-cum"></span> Cumulativo</span>
+        {'<span class="rf-legend-item"><span class="rf-swatch rf-bench"></span> Benchmark cum.</span>' if not cdi_bench else ''}
+        {'<span class="rf-legend-item"><span class="rf-swatch rf-gap"></span> Gap (fund − bench)</span>' if not cdi_bench else ''}
+      </div>
+      <div style="margin-top:14px">
+        <button class="rf-tbl-toggle" onclick="toggleRfTable(this)"
+                aria-expanded="false">▸ Mostrar tabela</button>
+        <div class="rf-tbl-wrap" style="display:none">
+          <table class="pa-table" style="margin-top:8px" data-no-sort="1">
+            <thead><tr>
+              <th style="text-align:left">Bucket</th>
+              <th style="text-align:right">Real (yr)</th>
+              <th style="text-align:right">Nominal (yr)</th>
+              <th style="text-align:right">Fund Total</th>
+              <th style="text-align:right">Bench</th>
+              <th style="text-align:right">Relative</th>
+            </tr></thead>
+            <tbody>{tbl_rows}</tbody>
+            <tfoot>{tbl_footer}</tfoot>
+          </table>
+        </div>
+      </div>
+    </section>"""
 
 
 def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
@@ -2378,6 +2822,50 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
     return flagged
 
 
+def fetch_ibov_returns(date_str: str = DATA_STR) -> dict:
+    """IBOV cumulative returns over DIA/MTD/YTD/12M windows (bps).
+       Compound (1+r_i) products from EQUITIES_PRICES.CLOSE. One date per row (INSTRUMENT='IBOV').
+    """
+    q = f"""
+    SELECT "DATE", "CLOSE"
+    FROM public."EQUITIES_PRICES"
+    WHERE "INSTRUMENT" = 'IBOV'
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '400 days'
+      AND "DATE" <= DATE '{date_str}'
+    ORDER BY "DATE"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    df = df.drop_duplicates(subset=["DATE"]).set_index("DATE").sort_index()
+    target = pd.Timestamp(date_str)
+    last = df[df.index <= target]
+    if last.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    p_now = float(last["CLOSE"].iloc[-1])
+
+    def ret(anchor_date):
+        prior = df[df.index <= anchor_date]
+        if prior.empty:
+            return 0.0
+        p0 = float(prior["CLOSE"].iloc[-1])
+        return (p_now / p0 - 1.0) * 10000 if p0 else 0.0
+
+    # DIA: vs. previous trading day
+    prev_day = last["CLOSE"].iloc[-2] if len(last) >= 2 else p_now
+    dia = (p_now / float(prev_day) - 1.0) * 10000 if prev_day else 0.0
+    # MTD: vs. close on the last trading day before month-start
+    month_start = target.to_period("M").to_timestamp()
+    mtd = ret(month_start - pd.Timedelta(days=1))
+    # YTD: vs. close on the last trading day before year-start
+    year_start = pd.Timestamp(f"{target.year}-01-01")
+    ytd = ret(year_start - pd.Timedelta(days=1))
+    # 12M: vs. close 12 months ago
+    m12 = ret(target - pd.DateOffset(years=1))
+    return {"dia": dia, "mtd": mtd, "ytd": ytd, "m12": m12}
+
+
 def fetch_cdi_returns(date_str: str = DATA_STR) -> dict:
     """CDI cumulative simple-sum over DIA/MTD/YTD/12M windows (bps). Daily rate stored in ECO_INDEX."""
     q = f"""
@@ -3300,6 +3788,7 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
 REPORTS = [
     ("performance",  "PA"),
     ("exposure",     "Exposure"),
+    ("exposure-map", "Exposure Map"),
     ("single-name",  "Single-Name"),
     ("risk-monitor", "Risk Monitor"),
     ("analise",      "Análise"),
@@ -3644,9 +4133,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_pnl_prod=None, pm_margem=None,
                df_quant_sn=None, quant_nav=None, quant_legs=None,
                df_evo_sn=None, evo_nav=None, evo_legs=None,
-               df_pa=None, cdi=None, df_pa_daily=None,
-               df_alb_expo=None, alb_nav=None,
-               df_frontier=None,
+               df_pa=None, cdi=None, ibov=None, df_pa_daily=None,
+               df_alb_expo=None, alb_nav=None, rf_expo_maps=None,
+               df_frontier=None, frontier_bvar=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
                position_changes=None,
                dist_map=None, dist_map_prev=None, dist_actuals=None,
@@ -3916,6 +4405,26 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         if alb_html:
             sections.append(("ALBATROZ", "exposure", alb_html))
 
+    # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz) — factor buckets + gap vs benchmark
+    _RF_MAP_CFG = {
+        "IDKA_3Y":  {"desk": "IDKA IPCA 3Y FIRF",           "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
+        "IDKA_10Y": {"desk": "IDKA IPCA 10Y FIRF",          "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
+        "ALBATROZ": {"desk": "GALAPAGOS ALBATROZ FIRF LP",  "bench_dur": 0.0,  "bench_label": "CDI"},
+    }
+    if rf_expo_maps:
+        for short_k, cfg_k in _RF_MAP_CFG.items():
+            df_k = rf_expo_maps.get(short_k)
+            if df_k is None or df_k.empty:
+                continue
+            nav_k = _latest_nav(cfg_k["desk"], DATA_STR)
+            if not nav_k:
+                continue
+            html_k = build_rf_exposure_map_section(
+                short_k, df_k, nav_k, cfg_k["bench_dur"], cfg_k["bench_label"],
+            )
+            if html_k:
+                sections.append((short_k, "exposure-map", html_k))
+
     # ALBATROZ — Risk Budget (150 bps/month stop)
     if df_pa is not None and not df_pa.empty:
         rb_html = build_albatroz_risk_budget(df_pa)
@@ -4179,11 +4688,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
             a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
         elif short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
-            # Frontier has no PA in REPORT_ALPHA_ATRIBUTION — aggregate from LONG_ONLY mainboard
-            # TOTAL_ATRIBUTION_{DAY,MONTH,YEAR} are decimal fractions; convert to bps.
-            a_dia = float(df_frontier["TOTAL_ATRIBUTION_DAY"].sum())   * 10000
-            a_mtd = float(df_frontier["TOTAL_ATRIBUTION_MONTH"].sum()) * 10000
-            a_ytd = float(df_frontier["TOTAL_ATRIBUTION_YEAR"].sum())  * 10000
+            # Frontier has no PA in REPORT_ALPHA_ATRIBUTION. Use excess return vs IBOV
+            # (TOTAL_IBVSP_*) to stay apples-to-apples with the other funds' alpha vs CDI.
+            # Aggregate from the TOTAL row only (per-stock rows sum ER differently vs benchmark weights).
+            tot_row = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+            if not tot_row.empty:
+                a_dia = float(tot_row["TOTAL_IBVSP_DAY"].iloc[0])   * 10000
+                a_mtd = float(tot_row["TOTAL_IBVSP_MONTH"].iloc[0]) * 10000
+                a_ytd = float(tot_row["TOTAL_IBVSP_YEAR"].iloc[0])  * 10000
+            else:
+                a_dia = a_mtd = a_ytd = 0.0
             a_m12 = 0.0  # no 12M column in mainboard
         else:
             a_dia = a_mtd = a_ytd = a_m12 = 0.0
@@ -4201,6 +4715,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 prev = s_avail.iloc[:-1]
                 if not prev.empty:
                     dvar = var_today - abs(prev.iloc[-1]["var_pct"])
+
+        # Frontier: replace absolute VaR with 3y HS BVaR vs IBOV (current weights)
+        if short == "FRONTIER" and frontier_bvar:
+            var_today = float(frontier_bvar["bvar_pct"])
+            dvar = None  # no D-1 series for HS BVaR yet
 
         stop_util = None
         if short == "MACRO" and pm_margem and stop_hist:
@@ -4234,11 +4753,35 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             + "</tr>"
         )
 
+    # ── Benchmark reference rows (IBOV, CDI) ───────────────────────────────────
+    def _bench_row(label: str, returns: dict | None) -> str:
+        if not returns:
+            empty = '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+            return (
+                '<tr class="bench-row" data-no-sort="1">'
+                '<td class="sum-status"></td>'
+                f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
+                + empty * 4
+                + empty * 4
+                + '</tr>'
+            )
+        return (
+            '<tr class="bench-row" data-no-sort="1">'
+            '<td class="sum-status"></td>'
+            f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
+            + _sum_bp_cell(returns["dia"]) + _sum_bp_cell(returns["mtd"])
+            + _sum_bp_cell(returns["ytd"]) + _sum_bp_cell(returns["m12"])
+            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 4
+            + '</tr>'
+        )
+
+    bench_rows_html = _bench_row("IBOV", ibov) + _bench_row("CDI", cdi)
+
     fund_grid_html = f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Status consolidado</span>
-        <span class="card-sub">— {DATA_STR} · alpha vs. CDI · utilização de VaR e stop mensal</span>
+        <span class="card-sub">— {DATA_STR} · alpha vs. CDI (Frontier: ER vs. IBOV) · utilização de VaR e stop mensal</span>
       </div>
       <table class="summary-table">
         <thead><tr>
@@ -4253,7 +4796,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           <th style="text-align:right">Util Stop</th>
           <th style="text-align:right">Δ VaR D-1</th>
         </tr></thead>
-        <tbody>{summary_rows_html}</tbody>
+        <tbody>{summary_rows_html}{bench_rows_html}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:12px">
         <span style="color:var(--up)">🟢</span> util &lt; 70% &nbsp;·&nbsp;
@@ -4989,6 +5532,36 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
   .sum-movers-card .card-head {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; }}
   .sum-tgl {{ margin-left:auto; }}
+  .rf-view-toggle {{ margin-left:auto; }}
+
+  /* RF Exposure Map chart */
+  .rf-expo-svg {{ display:block; margin:0 auto; }}
+  .rf-expo-svg .rf-bar {{ stroke:none; opacity:.92; }}
+  .rf-expo-svg .rf-real {{ fill:#f59e0b; }}          /* amber — real/IPCA */
+  .rf-expo-svg .rf-nom  {{ fill:#14b8a6; }}          /* teal — nominal/pré */
+  .rf-expo-svg .rf-cum  {{ fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }}
+  .rf-expo-svg .rf-cum-real {{ stroke:#b45309; stroke-dasharray:0; }}
+  .rf-expo-svg .rf-cum-nom  {{ stroke:#0f766e; stroke-dasharray:0; }}
+  .rf-expo-svg .rf-bench {{ fill:none; stroke:#64748b; stroke-width:1.4; stroke-dasharray:4 3; }}
+  .rf-expo-svg .rf-gap {{ fill:none; stroke:#1a8fd1; stroke-width:2.2; }}
+  .rf-expo-svg .rf-grid {{ stroke:var(--line); stroke-width:.7; opacity:.4; }}
+  .rf-expo-svg .rf-zero {{ stroke:var(--muted); stroke-width:1; opacity:.6; }}
+  .rf-expo-svg .rf-axis-lbl {{ fill:var(--muted); font-size:10.5px; font-family:'JetBrains Mono', monospace; }}
+
+  .rf-legend {{ display:flex; flex-wrap:wrap; justify-content:center; gap:16px; align-items:center; }}
+  .rf-legend-item {{ display:inline-flex; align-items:center; gap:5px; }}
+  .rf-swatch {{ display:inline-block; width:12px; height:10px; border-radius:2px; vertical-align:middle; }}
+  .rf-swatch.rf-real {{ background:#f59e0b; }}
+  .rf-swatch.rf-nom  {{ background:#14b8a6; }}
+  .rf-swatch.rf-cum  {{ background:#b45309; height:2px; border-radius:0; }}
+  .rf-swatch.rf-bench {{ background:transparent; border-top:2px dashed #64748b; height:0; width:14px; border-radius:0; }}
+  .rf-swatch.rf-gap  {{ background:#1a8fd1; height:2px; border-radius:0; }}
+  .rf-tbl-toggle {{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer;
+    font-family:'Inter', sans-serif; letter-spacing:.04em;
+  }}
+  .rf-tbl-toggle:hover {{ background:var(--panel-2); color:var(--text); }}
 
   /* Top Movers split (per-fund) */
   .mov-split {{ display:grid; grid-template-columns:1fr 1fr; gap:24px; }}
@@ -5025,6 +5598,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .summary-table tr:hover {{ background:rgba(26,143,209,.04); }}
   .summary-table td.sum-status {{ text-align:center; font-size:17px; width:60px; }}
   .summary-table td.sum-fund   {{ font-weight:700; color:var(--text); font-size:13.5px; }}
+  .summary-table tr.bench-row:first-of-type td {{ border-top:2px solid var(--border); }}
+  .summary-table tr.bench-row td {{ background:rgba(26,143,209,.03); }}
+  .summary-table tr.bench-row td.sum-fund {{ font-weight:600; font-size:12.5px; }}
 
   .summary-movers {{
     width:100%; border-collapse:collapse; font-size:12px;
@@ -5606,6 +6182,45 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       t.style.display = (t.dataset.movView === view) ? '' : 'none';
     }});
   }};
+  // Exposure Map — Real/Nominal/Both factor toggle (respects the active mode group)
+  window.selectRfView = function(btn, view) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.rf-view-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.rfView === view);
+    }});
+    card.dataset.rfFactor = view;
+    _rfApplyVisibility(card);
+  }};
+  // Exposure Map — Fund/Bench/Relative mode toggle (picks which SVG group is visible)
+  window.selectRfMode = function(btn, mode) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.rf-mode-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.rfMode === mode);
+    }});
+    card.dataset.rfMode = mode;
+    _rfApplyVisibility(card);
+  }};
+  function _rfApplyVisibility(card) {{
+    var factor = card.dataset.rfFactor || 'both';
+    var mode   = card.dataset.rfMode   || 'fund';
+    card.querySelectorAll('.rf-expo-svg .rf-mode-group').forEach(function(g) {{
+      g.style.display = (g.getAttribute('data-rf-mode') === mode) ? '' : 'none';
+    }});
+    card.querySelectorAll('.rf-expo-svg .rf-mode-group [data-factor]').forEach(function(el) {{
+      el.style.display = (factor === 'both' || el.getAttribute('data-factor') === factor) ? '' : 'none';
+    }});
+  }}
+  // Expand/collapse the detail table under an Exposure Map card
+  window.toggleRfTable = function(btn) {{
+    var wrap = btn.nextElementSibling;
+    if (!wrap) return;
+    var open = wrap.style.display !== 'none';
+    wrap.style.display = open ? 'none' : '';
+    btn.textContent = (open ? '▸ Mostrar tabela' : '▾ Esconder tabela');
+    btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+  }};
   // PA view toggle (Por Classe / Por Livro) inside a PA card
   window.selectPaView = function(btn, viewId) {{
     var card = btn.closest('.pa-card');
@@ -5951,8 +6566,14 @@ if __name__ == "__main__":
         fut_pa         = ex.submit(fetch_pa_leaves, DATA_STR)
         fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
         fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
+        fut_ibov       = ex.submit(fetch_ibov_returns, DATA_STR)
         fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
+        fut_rf_expo = {
+            "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
+            "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
+            "ALBATROZ":  ex.submit(fetch_rf_exposure_map, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR),
+        }
         fut_frontier   = ex.submit(fetch_frontier_mainboard, DATA_STR)
         fut_frontier_expo = ex.submit(fetch_frontier_exposure_data)
         fut_chg        = {
@@ -6073,6 +6694,20 @@ if __name__ == "__main__":
         cdi = None
 
     try:
+        ibov = fut_ibov.result()
+    except Exception as e:
+        print(f"  IBOV fetch failed ({e})")
+        ibov = None
+
+    rf_expo_maps = {}
+    for short_k, fut_k in fut_rf_expo.items():
+        try:
+            rf_expo_maps[short_k] = fut_k.result()
+        except Exception as e:
+            print(f"  RF exposure map ({short_k}) failed ({e})")
+            rf_expo_maps[short_k] = None
+
+    try:
         df_alb_expo, alb_nav = fut_alb.result()
         if df_alb_expo is None or df_alb_expo.empty:
             df_alb_expo, alb_nav = fut_alb_d1.result()
@@ -6087,6 +6722,12 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"  Frontier LO fetch failed ({e})")
         df_frontier = None
+
+    try:
+        frontier_bvar = compute_frontier_bvar_hs(df_frontier, DATA_STR) if df_frontier is not None else None
+    except Exception as e:
+        print(f"  Frontier BVaR (HS) failed ({e})")
+        frontier_bvar = None
 
     try:
         df_frontier_ibov, df_frontier_smll, df_frontier_sectors = fut_frontier_expo.result()
@@ -6154,9 +6795,11 @@ if __name__ == "__main__":
                       df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
                       df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
                       df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
-                      df_pa=df_pa, cdi=cdi, df_pa_daily=df_pa_daily,
+                      df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+                      rf_expo_maps=rf_expo_maps,
                       df_frontier=df_frontier,
+                      frontier_bvar=frontier_bvar,
                       df_frontier_ibov=df_frontier_ibov,
                       df_frontier_smll=df_frontier_smll,
                       df_frontier_sectors=df_frontier_sectors,

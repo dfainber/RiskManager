@@ -201,10 +201,29 @@ dashboards originais.
   - Fund names destacados nos card-subs — classe CSS `.fund-name` (accent azul, chip-style com border + background sutil), JS `highlightFundNames()` wrap automático
   - Fund nav chips — barra `.fund-nav-chips` ("Ir para: Macro | Quantitativo | …") injetada via JS no topo de cada `section-wrap[data-fund]`. Chip ativo destacado, click chama `selectFund()`
 
+**Fase 4 — entregues (sessão 2026-04-19, tarde):**
+- **Frontier Summary — alpha vs IBOV**: DIA/MTD/YTD puxados de `TOTAL_IBVSP_{DAY,MONTH,YEAR}` (excess return vs IBOV na TOTAL row do mainboard) em vez de `TOTAL_ATRIBUTION_*` (retorno bruto). Fica apples-to-apples com alpha vs CDI dos outros fundos. Subtítulo do card reflete a exceção
+- **IBOV + CDI benchmark rows** no rodapé do Status consolidado:
+  - `fetch_ibov_returns()` — 3y de `public.EQUITIES_PRICES.CLOSE` (INSTRUMENT='IBOV'), retornos compostos para DIA/MTD/YTD/12M em bps
+  - `fetch_cdi_returns()` já existia (soma simples de `public.ECO_INDEX`, CDI YIELD)
+  - 2 linhas `bench-row` após o loop de fundos, itálicas + fundo azulado sutil, CSS border-top de separação
+- **Frontier HS BVaR vs IBOV** (primeira VaR benchmark-relativa de Frontier):
+  - `compute_frontier_bvar_hs(df_frontier, date)` — pega pesos atuais (% Cash) do mainboard, puxa 3y de CLOSE por ticker de `public.EQUITIES_PRICES`, alinha ao calendário IBOV (dropna IBOV + ffill), calcula R_fund synthetic = Σ w_i × R_i, subtrai R_IBOV, pega 5° percentil negativo
+  - **Clip de corporate actions**: zera retornos diários |r|>30% por ativo (B3 tem circuit breaker, qualquer coisa acima é split/bonificação — AMOB3 tinha 5492% num dia, BBAS3 +50%)
+  - Substitui o 2.05% do `LOTE_FUND_STRESS` (VaR absoluto, não benchmark-relativo) pelo BVaR na coluna VaR do Summary para FRONTIER. Δ VaR D-1 suprimido (ainda não tem série histórica do BVaR HS)
+  - Validação: std(ER) 0.51%/dia → parametric 1.645×std = 0.84% ≈ BVaR 0.85% (distribuição normal após clip); TE anualizada 8.1%/ano — plausível pra LO 17-name
+
 **Fase 4 — pendente:**
 - **Página de ETFs** (user 2026-04-19) — adicionar família ETF como view. Escopo a definir (quais ETFs, métricas, fonte)
 - **Navigation checklist / "como ler os relatórios"** (user 2026-04-19) — guia sistemático para monitorar tudo na ordem certa
-- **Frontier no Summary** — returns agregados de `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD` (`TOTAL_ATRIBUTION_DAY/MONTH/YEAR`) + linha VaR informativa (no limit). Investigação parcial: nome da coluna de data não é `DATE` — a descobrir
+- **IDKA 3y HS BVaR** (user 2026-04-19, tarde) — replicar abordagem do Frontier pros IDKAs. Complica: IDKA é RF, não equity — precisa de DV01 × daily curve moves (DI1/NTN-B) vs daily IDKA benchmark return. Alternativa: time series de ER do fundo via NAV_SHARE (net de aportes/resgates via LOTE_APORTES) menos IDKA index return. Parametric BVaR do engine já existe — o HS 3y é complementar
+- **RF exposure mapping — IDKAs + Albatroz** (user 2026-04-19, tarde, ask grande):
+  - Mapear exposição em 3 fatores: Índice IPCA, juros reais, juros nominais
+  - Gap analysis por bucket: 6 meses, depois ano-a-ano
+  - Agregado (exposição total) E broken down: direta (IDKA posições próprias) vs indireta via Albatroz (o book RF_LF pode alocar Albatroz; IDKA tem share de Albatroz)
+  - Comparação Albatroz vs CDI (benchmark do Albatroz)
+  - Gap chart: barras ANO_EQ (1yr equivalent) por bucket + toggle real/nominal + linha cumulativa de gap vs benchmark
+  - Fonte: `LOTE_PRODUCT_EXPO` / `LOTE_PRODUCT_BOOK_POSITION_PL` + ANO_EQ canônico + look-through Albatroz
 - **IDKA limites definitivos** — atuais são provisórios (util ~80%). Substituir quando mandato confirmar
 - **Main Risks cross-fund** (via `df_pa` com CLASSE como fator) — discutido, não implementado
 - **Setor/Macro na tabela de posições LO** — join já feito no código, colunas não exibidas (~15 min)

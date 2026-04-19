@@ -41,7 +41,13 @@
       "Bash(.venv/Scripts/python.exe generate_risk_report.py)",
       "Bash(\"C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe\" -c \"import pandas; print\\(pandas.__version__\\)\")",
       "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe -c ' *)",
-      "Bash(awk '/function attachVrCaretToggle/,/^  \\\\}$/' \"data/morning-calls/2026-04-17_risk_monitor.html\")"
+      "Bash(awk '/function attachVrCaretToggle/,/^  \\\\}$/' \"data/morning-calls/2026-04-17_risk_monitor.html\")",
+      "Bash(python -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(\"C:/Users/diego.fainberg/AppData/Local/Programs/Python/Python312/python.exe\" -c \"import pandas; print\\(pandas.__version__\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
