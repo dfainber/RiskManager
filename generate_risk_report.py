@@ -5609,8 +5609,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       {fund_grid_html}
       {house_html}
       {by_factor_html}
-      {top_positions_html}
       {vol_regime_html}
+      {top_positions_html}
       {alerts_html}
       {comments_html}
       {movers_html}
