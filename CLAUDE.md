@@ -216,6 +216,9 @@ dashboards originais.
 **Fase 4 — pendente:**
 - **Página de ETFs** (user 2026-04-19) — adicionar família ETF como view. Escopo a definir (quais ETFs, métricas, fonte)
 - **Navigation checklist / "como ler os relatórios"** (user 2026-04-19) — guia sistemático para monitorar tudo na ordem certa
+- **Exposure Map — calibração de ANO_EQ vs calculadora existente** (user 2026-04-19) — fundo mostra +3.97yr (IDKA 3Y) e +11.32yr (IDKA 10Y) enquanto a calculadora em `F:\Bloomberg\Quant\Rotinas\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\SHEETS\IDKA_TABLES_GRAPHS.py` indica "a bit less than 3 / 10". Metodologia usada: `-DELTA` em `PRIMITIVE_CLASS IN ('IPCA Coupon','BRL Rate Curve')`, equivalente a `POSITION × MOD_DURATION / NAV`. A fórmula da calculadora existente é `AMOUNT × DV01 × 10000 / AUM` — matematicamente igual. Diferença pode ser escopo (positions excluded). Diff lado-a-lado necessário
+- **IDKA HS BVaR — current-positions (Option B)** — aplicar posições atuais (exploded) a 3y de moves de NTN-B yields + DI1 yields + IPCA fixing, subtrair retorno do IDKA index. Fontes: `public.PRICES_ANBIMA_BR_PUBLIC_BONDS` (NTN-B yields históricos), `LOTE_PRODUCT_EXPO` (posições atuais), `ECO_INDEX` (IDKA_IPCA_3A / 10A). Função `compute_idka_bvar_hs` realized-NAV stub já commitada em `76b1080`; wire depois
+- **IDKA BVaR no Summary** — depois de calibrar a metodologia, exibir como VaR column do Summary (como Frontier faz)
 - **IDKA 3y HS BVaR** (user 2026-04-19, tarde) — replicar abordagem do Frontier pros IDKAs. Complica: IDKA é RF, não equity — precisa de DV01 × daily curve moves (DI1/NTN-B) vs daily IDKA benchmark return. Alternativa: time series de ER do fundo via NAV_SHARE (net de aportes/resgates via LOTE_APORTES) menos IDKA index return. Parametric BVaR do engine já existe — o HS 3y é complementar
 - **RF exposure mapping — IDKAs + Albatroz** (user 2026-04-19, tarde, ask grande):
   - Mapear exposição em 3 fatores: Índice IPCA, juros reais, juros nominais

@@ -4881,6 +4881,117 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
     bench_rows_html = _bench_row("IBOV", ibov) + _bench_row("CDI", cdi)
 
+    # ── House-wide risk consolidated ───────────────────────────────────────────
+    # Absolute VaR (% NAV) comes from series_map. BVaR (benchmark-relative) from:
+    #   IDKAs   → series_map[td]["var_pct"] (engine BVaR; stress_pct holds abs VaR)
+    #   Frontier→ frontier_bvar["bvar_pct"] (3y HS vs IBOV)
+    #   Others  → BVaR vs CDI ≈ abs VaR (CDI has effectively zero daily vol)
+    _BENCH_BY_FUND = {
+        "MACRO": "CDI", "QUANT": "CDI", "EVOLUTION": "CDI", "MACRO_Q": "CDI", "ALBATROZ": "CDI",
+        "FRONTIER": "IBOV", "IDKA_3Y": "IDKA 3A", "IDKA_10Y": "IDKA 10A",
+    }
+    house_rows = []
+    for short in FUND_ORDER:
+        td = td_by_short.get(short)
+        if td is None:
+            continue
+        s = series_map.get(td)
+        if s is None or s.empty:
+            continue
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if s_avail.empty:
+            continue
+        cfg_ = ALL_FUNDS[td]
+        nav_k = _latest_nav(td, DATA_STR)
+        if not nav_k:
+            continue
+        last = s_avail.iloc[-1]
+        if cfg_.get("primary") == "bvar":          # IDKAs
+            abs_var_pct = abs(float(last.get("stress_pct", 0.0)))
+            rel_var_pct = abs(float(last.get("var_pct",    0.0)))
+        else:
+            abs_var_pct = abs(float(last.get("var_pct", 0.0)))
+            # Frontier: use HS BVaR vs. IBOV when we have it
+            if short == "FRONTIER" and frontier_bvar:
+                rel_var_pct = float(frontier_bvar["bvar_pct"])
+            else:
+                # CDI-benchmarked: BVaR ≈ absolute VaR since CDI vol ≈ 0
+                rel_var_pct = abs_var_pct
+        var_brl = abs_var_pct / 100.0 * nav_k
+        bvar_brl = rel_var_pct / 100.0 * nav_k
+        house_rows.append({
+            "short":     short, "label": FUND_LABELS.get(short, short),
+            "bench":     _BENCH_BY_FUND.get(short, "—"),
+            "nav":       nav_k,
+            "var_pct":   abs_var_pct, "var_brl":  var_brl,
+            "bvar_pct":  rel_var_pct, "bvar_brl": bvar_brl,
+        })
+
+    # Rank: top 5 by absolute R$ VaR and by relative R$ VaR
+    top5_abs = set(r["short"] for r in sorted(house_rows, key=lambda r: r["var_brl"],  reverse=True)[:5])
+    top5_rel = set(r["short"] for r in sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)[:5])
+
+    def _mm(v):
+        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        except Exception: return "—"
+
+    house_rows_html = ""
+    for r in house_rows:
+        rank_abs = "🔺" if r["short"] in top5_abs else ""
+        rank_rel = "🔷" if r["short"] in top5_rel else ""
+        house_rows_html += (
+            "<tr>"
+            f'<td class="sum-fund">{r["label"]}</td>'
+            f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
+            f'<td class="mono" style="text-align:right">{r["var_pct"]:.2f}%</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{_mm(r["var_brl"])} {rank_abs}</td>'
+            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
+            f'<td class="mono" style="text-align:right">{r["bvar_pct"]:.2f}%</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{_mm(r["bvar_brl"])} {rank_rel}</td>'
+            "</tr>"
+        )
+    tot_nav      = sum(r["nav"]      for r in house_rows)
+    tot_var_brl  = sum(r["var_brl"]  for r in house_rows)
+    tot_bvar_brl = sum(r["bvar_brl"] for r in house_rows)
+    tot_var_pct  = (tot_var_brl  / tot_nav * 100) if tot_nav else 0.0
+    tot_bvar_pct = (tot_bvar_brl / tot_nav * 100) if tot_nav else 0.0
+    house_total_row = (
+        '<tr class="house-total-row">'
+        '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
+        f'<td class="mono" style="text-align:right">{tot_var_pct:.2f}%</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_var_brl)}</td>'
+        '<td></td>'
+        f'<td class="mono" style="text-align:right">{tot_bvar_pct:.2f}%</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_bvar_brl)}</td>'
+        '</tr>'
+    )
+    house_html = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Main Aggregated Risk</span>
+        <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
+      </div>
+      <table class="summary-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">NAV</th>
+          <th style="text-align:right">VaR abs (%)</th>
+          <th style="text-align:right">VaR abs (R$)</th>
+          <th style="text-align:center">Bench</th>
+          <th style="text-align:right">BVaR rel (%)</th>
+          <th style="text-align:right">BVaR rel (R$)</th>
+        </tr></thead>
+        <tbody>{house_rows_html}</tbody>
+        <tfoot>{house_total_row}</tfoot>
+      </table>
+      <div class="bar-legend" style="margin-top:10px">
+        🔺 top-5 por risco absoluto (R$) &nbsp;·&nbsp;
+        🔷 top-5 por risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
+        <span style="color:var(--muted)">BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples (sem benefício de diversificação).</span>
+      </div>
+    </section>"""
+
     fund_grid_html = f"""
     <section class="card">
       <div class="card-head">
@@ -5233,6 +5344,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     summary_html = f"""
     <div class="section-wrap" data-view="summary">
       {fund_grid_html}
+      {house_html}
       {vol_regime_html}
       {alerts_html}
       {comments_html}
