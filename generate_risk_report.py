@@ -5749,11 +5749,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       {house_html}
       {by_factor_html}
       {vol_regime_html}
-      {top_positions_html}
       {alerts_html}
       {comments_html}
       {movers_html}
       {changes_html}
+      {top_positions_html}
       {dq_compact_html}
     </div>"""
     quality_html = f'<div class="section-wrap" data-view="quality">{dq_full_html}</div>'
