@@ -4971,10 +4971,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     #   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
     #   Equity BR (IBOV)                        → Frontier NAV (100% long); others pending
     factor_matrix = {  # factor_key -> {short: brl, ...}
-        "Real":     {},
-        "Nominal":  {},
-        "IPCA Idx": {},
-        "Equity BR":{},
+        "Real":       {},
+        "Nominal":    {},
+        "IPCA Idx":   {},
+        "Equity BR":  {},
+        "Equity DM":  {},
+        "Equity EM":  {},
+        "FX":         {},
+        "Commodities":{},
     }
     if rf_expo_maps:
         for short_k, df_k in rf_expo_maps.items():
@@ -4982,7 +4986,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 continue
             for factor_key, factor_col in [("Real", "real"), ("Nominal", "nominal"), ("IPCA Idx", "ipca_idx")]:
                 v = float(df_k[df_k["factor"] == factor_col]["ano_eq_brl"].sum())
-                if abs(v) >= 1_000:  # at least R$1k of exposure
+                if abs(v) >= 1_000:
                     factor_matrix[factor_key][short_k] = v
     # Frontier = 100% equity BR long (NAV in R$)
     if df_frontier is not None and not df_frontier.empty:
@@ -4992,9 +4996,33 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
             if gross_pct and fr_nav:
                 factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
+    # MACRO from df_expo (rf column = RV-BZ / RV-DM / RV-EM / FX-* / RF-BZ / COMMODITIES / P-Metals)
+    if df_expo is not None and not df_expo.empty and macro_aum:
+        rf_to_factor = {
+            "RV-BZ":       "Equity BR",
+            "RV-DM":       "Equity DM",
+            "RV-EM":       "Equity EM",
+            "COMMODITIES": "Commodities",
+            "P-Metals":    "Commodities",
+        }
+        for rf_val, factor_key in rf_to_factor.items():
+            v = float(df_expo[df_expo["rf"] == rf_val]["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix[factor_key]["MACRO"] = factor_matrix[factor_key].get("MACRO", 0.0) + v
+        fx_delta = float(df_expo[df_expo["rf"].str.startswith("FX-", na=False)]["delta"].sum())
+        if abs(fx_delta) >= 1_000:
+            factor_matrix["FX"]["MACRO"] = fx_delta
+        # MACRO nominal-rate duration: sum delta × MOD_DURATION on RF-BZ books (sign = fund view).
+        rf_bz = df_expo[df_expo["rf"] == "RF-BZ"]
+        if not rf_bz.empty:
+            nominal_brl_yr = float((rf_bz["delta"] * rf_bz.get("delta_dur", 0) / rf_bz["delta"].replace(0, 1)).fillna(0).sum())
+            # simpler: delta_dur column is already delta × mod_duration
+            nominal_brl_yr = float(rf_bz["delta_dur"].sum()) if "delta_dur" in rf_bz.columns else 0.0
+            if abs(nominal_brl_yr) >= 1_000:
+                factor_matrix["Nominal"]["MACRO"] = nominal_brl_yr
 
     factor_rows_html = ""
-    for factor_key in ["Real", "Nominal", "IPCA Idx", "Equity BR"]:
+    for factor_key in ["Real", "Nominal", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]:
         allocations = factor_matrix.get(factor_key, {})
         if not allocations:
             continue
@@ -5037,7 +5065,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
         Unidades misturadas por fator: <b>Real / Nominal</b> são ANO_EQ em BRL·ano (posição × duration); <b>IPCA Idx</b> é face-value BRL de exposição inflacionária; <b>Equity BR</b> é nocional BRL. Compare dentro de cada linha, não entre linhas.
-        MVP: só IDKAs + Albatroz + Frontier. MACRO/QUANT/EVOLUTION equity e FX pendentes.
+        Cobre IDKAs + Albatroz + Frontier + MACRO (equity e FX). QUANT e EVOLUTION equity pendentes; crédito omitido.
       </div>
     </section>"""
 
