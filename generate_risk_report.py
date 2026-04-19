@@ -1483,6 +1483,48 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         '</div>'
     )
 
+    # ── Position-level table (by asset) ───────────────────────────────────────
+    pos = df[df["factor"].isin(["real", "nominal", "ipca_idx"])].copy()
+    pos["ano_eq_yr"] = pos["ano_eq_brl"] / nav if nav else 0.0
+    pos["pct_nav"]   = pos["position_brl"] / nav * 100 if nav else 0.0
+    pos = pos.sort_values("ano_eq_yr", key=lambda s: s.abs(), ascending=False)
+
+    def _p_cell(v, fmt, color_bias=False):
+        if v is None or v != v or (isinstance(v, (int, float)) and abs(v) < 1e-9):
+            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        col = "var(--text)"
+        if color_bias:
+            col = "var(--up)" if v >= 0 else "var(--down)"
+        return f'<td class="mono" style="text-align:right; color:{col}">{fmt.format(v)}</td>'
+
+    pos_rows = ""
+    for _, r in pos.iterrows():
+        via_tag = '<span style="color:var(--muted); font-size:10px">via Albatroz</span>' if r["via"] == "via_albatroz" else ""
+        pos_rows += (
+            "<tr>"
+            f'<td class="pa-name">{r["PRODUCT"]} {via_tag}</td>'
+            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["BOOK"]}</td>'
+            f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
+            + _p_cell(r.get("yrs_to_mat"), "{:.2f}y")
+            + _p_cell(r.get("mod_dur"),    "{:.2f}")
+            + _p_cell(r.get("position_brl")/1e6 if r.get("position_brl") is not None else None, "{:+.1f}M")
+            + _p_cell(r.get("ano_eq_yr"),  "{:+.3f}", color_bias=True)
+            + "</tr>"
+        )
+    positions_table_html = f"""
+      <table class="pa-table" style="margin-top:8px; font-size:11px">
+        <thead><tr>
+          <th style="text-align:left">Produto</th>
+          <th style="text-align:left">Book</th>
+          <th style="text-align:left">Fator</th>
+          <th style="text-align:right">Maturidade</th>
+          <th style="text-align:right">Duration</th>
+          <th style="text-align:right">Position (R$)</th>
+          <th style="text-align:right">ANO_EQ (yr)</th>
+        </tr></thead>
+        <tbody>{pos_rows}</tbody>
+      </table>"""
+
     # Absoluto / Relativo mode + Ambos/Real/Nominal factor filter
     toggle_html = (
         '<div class="rf-toggles" style="display:flex; gap:10px; margin-left:auto; flex-wrap:wrap">'
@@ -1515,7 +1557,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
       </div>
       <div style="margin-top:14px">
         <button class="rf-tbl-toggle" onclick="toggleRfTable(this)"
-                aria-expanded="false">▸ Mostrar tabela</button>
+                aria-expanded="false">▸ Mostrar tabela (por bucket)</button>
         <div class="rf-tbl-wrap" style="display:none">
           <table class="pa-table" style="margin-top:8px" data-no-sort="1">
             <thead><tr>
@@ -1529,6 +1571,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
             <tbody>{tbl_rows}</tbody>
             <tfoot>{tbl_footer}</tfoot>
           </table>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="rf-tbl-toggle" onclick="toggleRfTable(this)"
+                aria-expanded="false">▸ Mostrar posições (por ativo)</button>
+        <div class="rf-tbl-wrap" style="display:none">
+          {positions_table_html}
         </div>
       </div>
     </section>"""
