@@ -4512,7 +4512,15 @@ def _build_executive_briefing(
                 net_by_factor[fk] = total_net
         if net_by_factor:
             dom = max(net_by_factor.items(), key=lambda x: abs(x[1]))
-            direction = "longo" if dom[1] > 0 else "curto"
+            # Para fatores de juros use terminologia "tomado"/"dado" (convenção BR):
+            #   tomado = longo (positivo, ganha com alta de juros)
+            #   dado   = curto (negativo, ganha com queda de juros)
+            # Para outros fatores (equity, FX, commodities), use longo/curto.
+            is_rate = dom[0] in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
+            if is_rate:
+                direction = "tomado" if dom[1] > 0 else "dado"
+            else:
+                direction = "longo" if dom[1] > 0 else "curto"
             parts_insight.append(
                 f'<li><b>Fator dominante:</b> casa está <i>{direction}</i> em '
                 f'<b>{dom[0]}</b> · <span class="mono">{_mm(dom[1])}</span> líquido do bench.</li>'
