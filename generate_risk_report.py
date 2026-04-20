@@ -1126,6 +1126,190 @@ def fetch_quant_single_names(date_str: str = DATA_STR) -> tuple:
     )
 
 
+# QUANT exposure classification: BOOK → risk factor
+_QUANT_BOOK_FACTOR = {
+    "Bracco":            "Equity BR",
+    "Quant_PA":          "Equity BR",
+    "SIST_COMMO":        "Commodities",
+    "SIST_FX":           "FX",
+    "SIST_RF":           "Juros Nominais",
+    "SIST_GLOBAL":       "FX",         # fallback (tipically FX/global factor)
+    "HEDGE_SISTEMATICO": "Equity BR",  # default; override via primitive below
+    "Caixa":             "CDI",
+}
+
+
+def _quant_classify_factor(book: str, primitive_class: str) -> str:
+    """Factor classification for QUANT positions, by BOOK + primitive."""
+    # Books' BRL Rate Curve leg (futures margin component) is small — bucket into
+    # Juros Nominais regardless of book.
+    if primitive_class == "BRL Rate Curve":
+        return "Juros Nominais"
+    if primitive_class in ("Brazil Sovereign Yield", "LFT Premium"):
+        return "CDI"
+    return _QUANT_BOOK_FACTOR.get(book, "Outros")
+
+
+def fetch_quant_exposure(date_str: str = DATA_STR) -> tuple:
+    """Exposure snapshot for QUANT — rows × BOOK × PRIMITIVE_CLASS.
+       Returns (df, nav). df cols: BOOK, PRODUCT_CLASS, PRIMITIVE_CLASS, PRODUCT,
+       delta, delta_dur, factor.
+    """
+    nav = _latest_nav("Galapagos Quantitativo FIM", date_str)
+    if nav is None:
+        return None, None
+    df = read_sql(f"""
+        SELECT "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT",
+               SUM("DELTA")                                          AS delta,
+               SUM("DELTA" * COALESCE("MOD_DURATION", 0))            AS delta_dur,
+               SUM("POSITION")                                       AS position
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK"              = 'Galapagos Quantitativo FIM'
+          AND "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Quantitativo FIM'
+          AND "VAL_DATE"                  = DATE '{date_str}'
+          AND "DELTA" <> 0
+        GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT"
+    """)
+    if df.empty:
+        return df, nav
+    for c in ("delta", "delta_dur", "position"):
+        df[c] = df[c].astype(float).fillna(0.0)
+    df["factor"] = df.apply(
+        lambda r: _quant_classify_factor(r["BOOK"], r["PRIMITIVE_CLASS"]),
+        axis=1,
+    )
+    return df, nav
+
+
+def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
+    """QUANT exposure card — two views:
+       1. Por Fator: aggregated % NAV per factor (flat)
+       2. Por Livro: factor × livro matrix (shows which livro drives each factor)
+    """
+    if df is None or df.empty or not nav:
+        return ""
+
+    def _pct(v, color_bias=True):
+        pct = v * 100 / nav if nav else 0
+        if abs(pct) < 0.01:
+            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        col = "var(--up)" if v >= 0 else "var(--down)" if color_bias else "var(--text)"
+        return f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
+
+    # ── View 1: By Factor (aggregated) ────────────────────────────────────────
+    _FACTOR_ORDER = [
+        "Equity BR", "FX", "Commodities",
+        "Juros Nominais", "Juros Reais (IPCA)", "CDI", "Outros",
+    ]
+    by_factor = df.groupby("factor").agg(
+        delta=("delta", "sum"),
+        delta_dur=("delta_dur", "sum"),
+        n=("PRODUCT", "count"),
+    ).reset_index()
+    by_factor["_ord"] = by_factor["factor"].apply(
+        lambda f: _FACTOR_ORDER.index(f) if f in _FACTOR_ORDER else 99
+    )
+    by_factor = by_factor.sort_values("_ord").drop(columns="_ord")
+
+    factor_rows = ""
+    total_delta = 0.0
+    for r in by_factor.itertuples(index=False):
+        total_delta += r.delta
+        dur_cell = (
+            f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta_dur/1e6:+,.1f}M·yr</td>'
+            if r.factor in ("Juros Nominais", "Juros Reais (IPCA)") and abs(r.delta_dur) >= 1e4
+            else '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        )
+        factor_rows += (
+            "<tr>"
+            f'<td class="sum-fund">{r.factor}</td>'
+            + _pct(r.delta)
+            + f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta/1e6:+,.1f}M</td>'
+            + dur_cell
+            + f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11px">{r.n} pos</td>'
+            "</tr>"
+        )
+    factor_rows += (
+        '<tr class="pa-total-row">'
+        '<td class="sum-fund" style="font-weight:700">Total Net</td>'
+        + _pct(total_delta)
+        + f'<td class="mono" style="text-align:right; font-weight:700">{total_delta/1e6:+,.1f}M</td>'
+        '<td></td><td></td></tr>'
+    )
+
+    # ── View 2: By Livro (matrix livro × factor) ──────────────────────────────
+    pivot = df.pivot_table(
+        index="BOOK", columns="factor", values="delta",
+        aggfunc="sum", fill_value=0.0,
+    )
+    livro_factors = [f for f in _FACTOR_ORDER if f in pivot.columns]
+    pivot = pivot[livro_factors]
+    pivot["_total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("_total", key=lambda s: s.abs(), ascending=False)
+
+    livro_header = '<th style="text-align:left">Livro</th>' + "".join(
+        f'<th style="text-align:right">{f}</th>' for f in livro_factors
+    ) + '<th style="text-align:right">Total</th>'
+    livro_rows = ""
+    for livro, row in pivot.iterrows():
+        cells = ""
+        for f in livro_factors:
+            cells += _pct(row[f])
+        cells += f'<td class="mono" style="text-align:right; font-weight:600">{row["_total"]/1e6:+,.1f}M</td>'
+        livro_rows += f'<tr><td class="sum-fund">{livro}</td>{cells}</tr>'
+    # Totals row
+    totals_cells = ""
+    for f in livro_factors:
+        totals_cells += _pct(pivot[f].sum())
+    totals_cells += f'<td class="mono" style="text-align:right; font-weight:700">{pivot["_total"].sum()/1e6:+,.1f}M</td>'
+    livro_rows += (
+        '<tr class="pa-total-row">'
+        '<td class="sum-fund" style="font-weight:700">Total</td>'
+        + totals_cells + "</tr>"
+    )
+
+    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposição — QUANT</span>
+        <span class="card-sub">— NAV R$ {nav_fmt}M · por fator de risco e por livro</span>
+        <div class="pa-view-toggle" style="margin-left:auto">
+          <button class="pa-tgl active" data-qexpo-view="factor"
+                  onclick="selectQuantExpoView(this,'factor')">Por Fator</button>
+          <button class="pa-tgl" data-qexpo-view="livro"
+                  onclick="selectQuantExpoView(this,'livro')">Por Livro</button>
+        </div>
+      </div>
+
+      <div class="qexpo-view" data-qexpo-view="factor">
+        <table class="summary-table" data-no-sort="1">
+          <thead><tr>
+            <th style="text-align:left">Fator</th>
+            <th style="text-align:right">Net %NAV</th>
+            <th style="text-align:right">Net BRL</th>
+            <th style="text-align:right">Duration (BRL·yr)</th>
+            <th style="text-align:right">#</th>
+          </tr></thead>
+          <tbody>{factor_rows}</tbody>
+        </table>
+      </div>
+
+      <div class="qexpo-view" data-qexpo-view="livro" style="display:none">
+        <table class="summary-table" data-no-sort="1">
+          <thead><tr>{livro_header}</tr></thead>
+          <tbody>{livro_rows}</tbody>
+        </table>
+      </div>
+
+      <div class="bar-legend" style="margin-top:10px">
+        <b>Por Fator</b>: exposição líquida agregada por fator de risco. <b>Por Livro</b>: matriz livro × fator mostrando de onde vem cada exposição.
+        Valores em %NAV e BRL nocional (exceto coluna Duration que é BRL·ano para juros). Derivado de LOTE_PRODUCT_EXPO com source = QUANT direto.
+      </div>
+    </section>"""
+
+
 def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
     """
     RF exposure snapshot for ALBATROZ — position-level from LOTE_PRODUCT_EXPO.
@@ -4858,7 +5042,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_evo_direct=None,
                df_pa=None, cdi=None, ibov=None, df_pa_daily=None,
                idka_idx_ret=None, walb=None,
-               df_alb_expo=None, alb_nav=None, rf_expo_maps=None,
+               df_alb_expo=None, alb_nav=None,
+               df_quant_expo=None, quant_expo_nav=None,
+               rf_expo_maps=None,
                df_frontier=None, frontier_bvar=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
                position_changes=None,
@@ -5164,6 +5350,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         alb_html = build_albatroz_exposure(df_alb_expo, alb_nav)
         if alb_html:
             sections.append(("ALBATROZ", "exposure", alb_html))
+
+    # QUANT — exposure card (by factor + by livro × factor)
+    if df_quant_expo is not None and not df_quant_expo.empty and quant_expo_nav:
+        q_expo_html = build_quant_exposure_section(df_quant_expo, quant_expo_nav)
+        if q_expo_html:
+            sections.append(("QUANT", "exposure", q_expo_html))
 
     # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz) — factor buckets + gap vs benchmark
     _RF_MAP_CFG = {
@@ -7486,6 +7678,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       v.style.display = (v.dataset.rfBrl === mode) ? '' : 'none';
     }});
   }};
+  // QUANT exposure — Por Fator / Por Livro toggle
+  window.selectQuantExpoView = function(btn, view) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.pa-view-toggle .pa-tgl').forEach(function(b) {{
+      if (b.dataset.qexpoView)
+        b.classList.toggle('active', b.dataset.qexpoView === view);
+    }});
+    card.querySelectorAll('.qexpo-view').forEach(function(v) {{
+      v.style.display = (v.dataset.qexpoView === view) ? '' : 'none';
+    }});
+  }};
   // PA alerts — Por Tamanho / Por Fundo toggle (preserves grid layout)
   window.selectPaAlertSort = function(btn, mode) {{
     var container = btn.closest('.alerts-section') || document;
@@ -7893,6 +8097,7 @@ if __name__ == "__main__":
             "IDKA_10Y": ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 10Y FIRF", DATA_STR),
         }
         fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
+        fut_quant_expo = ex.submit(fetch_quant_exposure, DATA_STR)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
         fut_rf_expo = {
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
@@ -8062,6 +8267,12 @@ if __name__ == "__main__":
         df_alb_expo, alb_nav = None, None
 
     try:
+        df_quant_expo, quant_expo_nav = fut_quant_expo.result()
+    except Exception as e:
+        print(f"  QUANT exposure fetch failed ({e})")
+        df_quant_expo, quant_expo_nav = None, None
+
+    try:
         df_evo_direct, _evo_direct_nav, _ = fut_evo_direct.result()
     except Exception as e:
         print(f"  EVOLUTION direct fetch failed ({e})")
@@ -8156,6 +8367,7 @@ if __name__ == "__main__":
                       df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
                       idka_idx_ret=idka_idx_ret, walb=walb,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+                      df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
                       rf_expo_maps=rf_expo_maps,
                       df_frontier=df_frontier,
                       frontier_bvar=frontier_bvar,

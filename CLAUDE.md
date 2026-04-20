@@ -235,6 +235,13 @@ dashboards originais.
 - **IDKA HS BVaR stub** (`compute_idka_bvar_hs`) — realized ER via NAV_SHARE.SHARE × IDKA index; não wired ainda (pendente diff vs calculadora Option B)
 
 **Fase 4 — pendente (consolidado e priorizado):**
+- **EVOLUTION — direcionalidade das estratégias / diversification benefit** (user 2026-04-19, tarde):
+  - Medir se as sub-estratégias do Evolution (MACRO, SIST, FRONTIER, CREDITO, etc.) estão tomando risco na mesma direção
+  - Uma forma: matriz de correlação realizada dos PnLs por estratégia
+  - Outra: para cada fator de risco, quem está de que lado (ex.: MACRO tomado em Juros Nominais + SIST também tomado = alinhamento perigoso)
+  - Diversification benefit: VaR aggregate vs soma linear dos VaRs por sub-estratégia
+  - Skill `evolution-risk-concentration` já tem alguma infra (diversification benefit + correlação entre MACRO/SIST/FRONTIER)
+  - Abordagem ainda não está clara — pendente desenho antes de codar
 - **Página de ETFs** — adicionar família ETF como view. Escopo a definir
 - **Navigation checklist** — guia de leitura dos relatórios na ordem certa
 - **IDKA HS BVaR — current-positions** — aplicar posições atuais (exploded) a 3y de yield moves (`PRICES_ANBIMA_BR_PUBLIC_BONDS` + DI1 yields + IPCA) − retorno do IDKA index. Stub realized-NAV em `76b1080`; wire depois de calibrar
