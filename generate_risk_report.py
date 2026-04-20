@@ -1652,15 +1652,26 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         return (f'<rect class="rf-bar {cls}" data-factor="{factor}" '
                 f'x="{x0:.1f}" y="{y_top:.1f}" width="{bw:.1f}" height="{max(y_bot - y_top, 0.5):.1f}"/>')
 
-    # Absoluto: Fund Real | Fund Nominal | Bench (flush within bucket)
+    # Absoluto: Fund Real | Fund Nominal | Bench (flush within bucket).
+    # Bench bar's data-factor reflects its composition so the factor filter
+    # (Real/Nominal) hides it appropriately — e.g., IDKA bench is 100% Real,
+    # so clicking Nominal filter should hide it.
     abs_bars = []
     for i in range(n_buckets):
         x0 = x_band(i) + inter_bucket / 2
         x1 = x0 + bar_w_abs
         x2 = x1 + bar_w_abs
+        bench_total = bench_real_b[i] + bench_nom_b[i]
+        # Determine bench factor tag from its composition
+        if bench_real_b[i] != 0 and bench_nom_b[i] == 0:
+            bench_tag = "real"
+        elif bench_nom_b[i] != 0 and bench_real_b[i] == 0:
+            bench_tag = "nominal"
+        else:
+            bench_tag = "bench"  # mixed or zero — always visible
         abs_bars.append(bar_rect(x0, fund_real_b[i], "rf-real", "real", bar_w_abs))
         abs_bars.append(bar_rect(x1, fund_nom_b[i],  "rf-nom",  "nominal", bar_w_abs))
-        abs_bars.append(bar_rect(x2, bench_real_b[i] + bench_nom_b[i], "rf-benchbar", "bench", bar_w_abs))
+        abs_bars.append(bar_rect(x2, bench_total, "rf-benchbar", bench_tag, bar_w_abs))
     abs_bars_svg = "".join(abs_bars)
 
     # Relativo: Relative Real | Relative Nominal (fund − bench per bucket, flush)
@@ -5018,14 +5029,20 @@ def _build_fund_mini_briefing(
         else:
             direction = "longo" if v > 0 else "curto"
             dir_color = "var(--up)" if v > 0 else "var(--down)"
-        # Format per factor unit. Rate factors (Real/Nominal/IPCA Idx) carry
-        # BRL·yr (ANO_EQ) — convert to years-equivalent (÷ NAV) for readability.
-        # Non-rate (Equity/FX/Commodities) are BRL notional — show in R$.
+        # Per-fund bullets use RELATIVE measures (%NAV or yr-equivalent);
+        # aggregate (cross-fund) cards use financeiro absoluto. Here we're
+        # per-fund, so both rate and non-rate get relative units first, with
+        # raw BRL/BRL·yr as a muted secondary for reference.
         is_rate_unit = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         fund_nav = house_row["nav"] if house_row else 0
         if is_rate_unit and fund_nav:
             yr_eq = v / fund_nav
-            val_str = f'<span class="mono">{yr_eq:+.2f} yr</span> · <span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}·yr</span>'
+            val_str = (f'<span class="mono">{yr_eq:+.2f} yr</span> · '
+                       f'<span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}·yr</span>')
+        elif fund_nav:
+            pct_nav = v / fund_nav * 100
+            val_str = (f'<span class="mono">{pct_nav:+.1f}% NAV</span> · '
+                       f'<span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}</span>')
         else:
             val_str = f'<span class="mono">{_mm(v)}</span>'
         bullets.append(
@@ -5052,44 +5069,41 @@ def _build_fund_mini_briefing(
     # Sentence 1 — day summary
     if dia_bps is None:
         commentary_parts.append(
-            f"Sem PA disponível no dia; olhar apenas o VaR e as exposições abaixo."
+            "Sem PA disponível no dia; olhar apenas VaR e exposições abaixo."
         )
     elif abs(dia_bps) < 5 and (dvar_bps is None or abs(dvar_bps) < 5):
         commentary_parts.append(
-            f"Dia tranquilo — alpha e risco estáveis, sem eventos materiais para reportar."
+            "Dia neutro — alpha e risco estáveis, nada material para reportar."
         )
     else:
         parts1 = []
         if abs(dia_bps) >= 5:
             sign = "+" if dia_bps > 0 else ""
-            tone = "positivo" if dia_bps > 0 else "negativo"
-            parts1.append(f"DIA {tone} em {sign}{dia_bps/100:.2f}%")
+            parts1.append(f"alpha do dia em <b>{sign}{dia_bps/100:.2f}%</b>")
         if dvar_bps is not None and abs(dvar_bps) >= 5:
             parts1.append(
-                f"risco {'subindo' if dvar_bps > 0 else 'caindo'} {abs(dvar_bps):.0f} bps vs D-1"
+                f"VaR {'↑' if dvar_bps > 0 else '↓'} <b>{abs(dvar_bps):.0f} bps</b> vs D-1"
             )
-        commentary_parts.append(
-            ("Dia com " + " e ".join(parts1) + ".") if parts1 else "Dia neutro em resultado."
-        )
+        commentary_parts.append("Dia com " + " e ".join(parts1) + ".")
 
-    # Sentence 2 — driver / concentration. Only call it out if the fund's
-    # daily alpha is itself material (|dia| ≥ 5 bps) — otherwise the "share"
-    # ratio is meaningless (small denominator).
-    if (len(top_contrib) > 0 or len(top_detract) > 0) and dia_bps is not None and abs(dia_bps) >= 5:
-        all_drv = []
-        for r in top_contrib.itertuples(index=False):
-            all_drv.append((r.PRODUCT, float(r.dia_bps)))
-        for r in top_detract.itertuples(index=False):
-            all_drv.append((r.PRODUCT, float(r.dia_bps)))
-        if all_drv:
-            main = max(all_drv, key=lambda x: abs(x[1]))
-            share = abs(main[1]) / abs(dia_bps) * 100
-            if share >= 50 and abs(main[1]) >= 3:
-                verb = "puxando" if (main[1] * dia_bps) > 0 else "contra"
-                commentary_parts.append(
-                    f"Driver principal: <b>{main[0]}</b> ({main[1]/100:+.2f}%, "
-                    f"{verb} ~{min(share, 100):.0f}% do resultado)."
-                )
+    # Sentence 2 — list top contributor/detractor by absolute size (no ratios).
+    # Only mention when the contribution itself is material (|bps| ≥ 3), and
+    # avoid mixing sides — just report what pulled up and what pulled down.
+    flow_parts = []
+    if len(top_contrib) > 0:
+        top_c = top_contrib.iloc[0]
+        if abs(float(top_c["dia_bps"])) >= 3:
+            flow_parts.append(
+                f"topo <b>{top_c['PRODUCT']}</b> <span style=\"color:var(--up)\">+{float(top_c['dia_bps'])/100:.2f}%</span>"
+            )
+    if len(top_detract) > 0:
+        top_d = top_detract.iloc[-1]  # most negative
+        if abs(float(top_d["dia_bps"])) >= 3:
+            flow_parts.append(
+                f"fundo <b>{top_d['PRODUCT']}</b> <span style=\"color:var(--down)\">{float(top_d['dia_bps'])/100:.2f}%</span>"
+            )
+    if flow_parts:
+        commentary_parts.append("Fluxo: " + " · ".join(flow_parts) + ".")
 
     # Sentence 3 — positioning / warnings
     pos_notes = []
@@ -5106,6 +5120,8 @@ def _build_fund_mini_briefing(
         fund_nav_tmp = house_row["nav"] if house_row else 0
         if is_rate and fund_nav_tmp:
             pos_notes.append(f"{dir_word} em {fk} ({v/fund_nav_tmp:+.2f} yr eq)")
+        elif fund_nav_tmp:
+            pos_notes.append(f"{dir_word} em {fk} ({v/fund_nav_tmp*100:+.1f}% NAV)")
         else:
             pos_notes.append(f"{dir_word} em {fk}")
     if stop_min and stop_min[1] < 30:
