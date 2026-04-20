@@ -47,7 +47,17 @@
       "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(\"C:/Users/diego.fainberg/AppData/Local/Programs/Python/Python312/python.exe\" -c \"import pandas; print\\(pandas.__version__\\)\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(read f *)",
+      "Bash(awk '/^def build_html/,/^def [a-z_]+/ {print NR\": \"$0}' generate_risk_report.py)",
+      "Bash(awk 'NR>=4279 && NR<=7200' generate_risk_report.py)",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/pip install *)",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe -m pip install openpyxl)",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe -m ensurepip --upgrade)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\); import pandas\")",
+      "Bash(C:/Users/diego.fainberg/AppData/Local/Programs/Python/Python312/python.exe -c ' *)",
+      "Read(//f//**)",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-16)"
     ]
   }
 }

@@ -673,10 +673,12 @@ _DIST_PORTFOLIOS = [
     # (portfolio_name, label, kind, key, fund_short)
     ("MACRO",       "MACRO total",        "fund",  "MACRO",    "MACRO"),
     ("EVOLUTION",   "EVOLUTION total",    "fund",  "EVOLUTION","EVOLUTION"),
+    ("SIST",        "QUANT total",        "fund",  "QUANT",    "QUANT"),
     ("CI",          "CI (Comitê)",        "livro", "CI",       "MACRO"),
     ("LF",          "LF — Luiz Felipe",   "livro", "Macro_LF", "MACRO"),
     ("JD",          "JD — Joca Dib",      "livro", "Macro_JD", "MACRO"),
     ("RJ",          "RJ — Rodrigo Jafet", "livro", "Macro_RJ", "MACRO"),
+    ("QM",          "QM",                 "livro", "Macro_QM", "MACRO"),
     ("RF-BZ",       "Fator · RF-BZ",      "rf",    "RF-BZ",    "MACRO"),
     ("RF-DM",       "Fator · RF-DM",      "rf",    "RF-DM",    "MACRO"),
     ("RF-EM",       "Fator · RF-EM",      "rf",    "RF-EM",    "MACRO"),
@@ -688,6 +690,13 @@ _DIST_PORTFOLIOS = [
     ("RV-EM",       "Fator · RV-EM",      "rf",    "RV-EM",    "MACRO"),
     ("COMMODITIES", "Fator · COMMO",      "rf",    "COMMODITIES","MACRO"),
     ("P-Metals",    "Fator · P-Metals",   "rf",    "P-Metals", "MACRO"),
+    # QUANT sub-books (livros = sub-books, not PMs — reused the "livro" kind for drill-down layout)
+    ("SIST_RF",     "Sub · RF",           "livro", "SIST_RF",     "QUANT"),
+    ("SIST_FX",     "Sub · FX",           "livro", "SIST_FX",     "QUANT"),
+    ("SIST_COMMO",  "Sub · Commo",        "livro", "SIST_COMMO",  "QUANT"),
+    ("SIST_GLOBAL", "Sub · Global",       "livro", "SIST_GLOBAL", "QUANT"),
+    ("Bracco",      "Bracco",             "livro", "Bracco",      "QUANT"),
+    ("Quant_PA",    "Quant PA",           "livro", "Quant_PA",    "QUANT"),
 ]
 
 def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:
@@ -716,11 +725,11 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
     """)
     actuals = {f'fund:{r["FUNDO"]}': float(r["dia_bps"]) for _, r in fund_df.iterrows()}
 
-    # LIVRO-level (PMs within MACRO)
+    # LIVRO-level (PMs within MACRO, sub-books within QUANT)
     livro_df = read_sql(f"""
         SELECT "LIVRO", SUM("DIA") * 10000 AS dia_bps
         FROM q_models."REPORT_ALPHA_ATRIBUTION"
-        WHERE "DATE" = DATE '{date_str}' AND "FUNDO" = 'MACRO'
+        WHERE "DATE" = DATE '{date_str}' AND "FUNDO" IN ('MACRO','QUANT')
         GROUP BY "LIVRO"
     """)
     for _, r in livro_df.iterrows():
@@ -3842,8 +3851,6 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
     rows += _row("&nbsp;&nbsp;Retorno Absoluto fund", retorno_abs, sub="= Total α + IDKA_index")
     rows += _row(f"&nbsp;&nbsp;{idx_label}", idka_index_ret or {}, sub="bench")
     rows += _row("&nbsp;&nbsp;CDI", cdi or {}, sub="ref. juros")
-    if ibov:
-        rows += _row("&nbsp;&nbsp;IBOV", ibov, sub="ref. equity")
 
     return f"""
     <div class="pa-view" data-pa-view="bench" style="display:none">
@@ -4925,6 +4932,28 @@ def _build_fund_mini_briefing(
         except ValueError:
             stop_min = None
 
+    # ── Risk budget alert: VaR/BVaR > 1.5× orçamento MTD disponível ─────────
+    # Remaining MTD budget (in bps of NAV). Only funds with explicit monthly
+    # loss budget: MACRO (sum of PM margens) and ALBATROZ (150 bps − consumed).
+    budget_remaining_bps = None
+    if short == "MACRO" and pm_margem:
+        mlist = [max(0.0, m) for m in pm_margem.values() if m is not None]
+        if mlist:
+            budget_remaining_bps = float(sum(mlist))
+    elif short == "ALBATROZ" and df_pa is not None and not df_pa.empty:
+        alb = df_pa[df_pa["FUNDO"] == "ALBATROZ"]
+        if not alb.empty:
+            mtd = float(alb["mtd_bps"].sum())
+            budget_remaining_bps = max(0.0, ALBATROZ_STOP_BPS + min(0.0, mtd))
+
+    budget_alert = None  # (remaining_bps, max_var_bps, var_bps, bvar_bps)
+    if budget_remaining_bps is not None and budget_remaining_bps > 0:
+        var_bps_abs  = abs(house_row.get("var_pct")  or 0.0) * 100
+        bvar_bps_abs = abs(house_row.get("bvar_pct") or 0.0) * 100
+        max_var_bps  = max(var_bps_abs, bvar_bps_abs)
+        if max_var_bps > 1.5 * budget_remaining_bps:
+            budget_alert = (budget_remaining_bps, max_var_bps, var_bps_abs, bvar_bps_abs)
+
     # ── Stat chips ────────────────────────────────────────────────────────────
     is_bvar = cfg.get("primary") == "bvar"
     is_frontier = (short == "FRONTIER")
@@ -4985,6 +5014,11 @@ def _build_fund_mini_briefing(
 
     # ── Headline ──────────────────────────────────────────────────────────────
     headline_parts = []
+    if budget_alert is not None:
+        _rem, _mx, _v, _b = budget_alert
+        headline_parts.append(
+            f'🚨 <b>VaR {_mx:.0f} bps</b> > 1,5× budget MTD ({_rem:.0f} bps)'
+        )
     if util is not None and util >= 85:
         headline_parts.append(f'🔴 <b>{util:.0f}% do soft limit</b>')
     elif dvar_bps is not None and abs(dvar_bps) >= 10:
@@ -5000,6 +5034,23 @@ def _build_fund_mini_briefing(
 
     # ── Insights bullets ──────────────────────────────────────────────────────
     bullets = []
+    if budget_alert is not None:
+        _rem, _mx, _v, _b = budget_alert
+        _var_label_bps = "VaR"
+        if _b > 0 and _v > 0:
+            _val_str = f'VaR {_v:.0f} bps · BVaR {_b:.0f} bps'
+        elif _b > 0:
+            _val_str = f'BVaR {_b:.0f} bps'
+            _var_label_bps = "BVaR"
+        else:
+            _val_str = f'VaR {_v:.0f} bps'
+        _ratio = _mx / _rem if _rem > 0 else float("inf")
+        bullets.append(
+            f'<li>🚨 <b style="color:var(--down)">Alerta:</b> {_val_str} · '
+            f'orçamento MTD disponível <span class="mono">{_rem:.0f} bps</span> · '
+            f'razão <b class="mono" style="color:var(--down)">{_ratio:.1f}×</b> '
+            f'(> 1,5× — uma perda típica esgota o budget e sobra stress)</li>'
+        )
     if len(top_contrib) > 0:
         items = " · ".join(
             f'<b>{r.PRODUCT}</b> {r.dia_bps/100:+.2f}%'
@@ -5680,9 +5731,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             _expo_html = _stale_banner + _expo_html
         sections.append(("MACRO", "exposure", _expo_html))
 
-    # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle
+    # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle.
+    # Engine HS source (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION): MACRO, QUANT, EVOLUTION only.
+    # ALBATROZ/MACRO_Q/FRONTIER/IDKA_3Y/IDKA_10Y sem série HS — parkeado em CLAUDE.md.
     if (dist_map or dist_map_prev) and dist_actuals is not None:
-        for fs in ["MACRO", "EVOLUTION"]:
+        for fs in ["MACRO", "EVOLUTION", "QUANT"]:
             html_sect = build_distribution_card(
                 fs, dist_map or {}, dist_map_prev or {}, dist_actuals,
             )

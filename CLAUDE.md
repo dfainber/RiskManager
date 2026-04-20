@@ -234,6 +234,12 @@ dashboards originais.
 - **Distribuição 252d default Forward** — toggle Backward continua acessível
 - **IDKA HS BVaR stub** (`compute_idka_bvar_hs`) — realized ER via NAV_SHARE.SHARE × IDKA index; não wired ainda (pendente diff vs calculadora Option B)
 
+**Fase 4 — entregues (sessão 2026-04-19 noite → 2026-04-20):**
+- **Distribuição 252d — QUANT onboarded** (4º fundo com o card). Entries em `_DIST_PORTFOLIOS`: `SIST` (fund) + 6 sub-books (SIST_RF/FX/COMMO/GLOBAL/Bracco/Quant_PA) com `kind='livro'`. `fetch_pnl_actual_by_cut` expandido pra incluir FUNDO='QUANT' no WHERE de LIVRO — sub-books batem 1:1 como LIVRO em `REPORT_ALPHA_ATRIBUTION`, habilitando Backward completo. Também adicionei `QM` como PM do MACRO (faltava).
+- **Risk budget alert no briefing** — VaR (ou BVaR) > 1.5× orçamento MTD remanescente dispara 🚨 headline + bullet vermelho no `_build_fund_mini_briefing`. MACRO usa `sum(max(0, m) for m in pm_margem)`; ALBATROZ usa `max(0, 150 + min(0, mtd_bps))`. Outros fundos sem risk budget explícito ficam silenciosos. Alerta mostra VaR · BVaR separados se os dois existem (IDKAs).
+- **IBOV removido da tabela PA dos IDKAs** (bloco Referência) — user pediu; mantidos Retorno Absoluto, IDKA index, CDI.
+- **Top Posições — consolidado** (já em prod) **cobre cross-fund overlap instrument-level** — falta só agregação por emissor (VALE3+VALE5+ADR+opções → "Vale"), parkeado.
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
@@ -250,6 +256,27 @@ dashboards originais.
   - Diversification benefit: VaR aggregate vs soma linear dos VaRs por sub-estratégia
   - Skill `evolution-risk-concentration` já tem alguma infra (diversification benefit + correlação entre MACRO/SIST/FRONTIER)
   - Abordagem ainda não está clara — pendente desenho antes de codar
+- **Distribuição 252d para os demais fundos** (user 2026-04-19, noite — prioridade ALBATROZ pra conversa com Pedro Igor):
+  - Hoje o card só cobre MACRO/QUANT/EVOLUTION (engine roda pros 3 em `q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
+  - ALBATROZ, MACRO_Q, FRONTIER, IDKA_3Y, IDKA_10Y não têm série HS no DB
+  - Proposta: computar **realized alpha daily (252d)** a partir de `LOTE_TRADING_DESKS_NAV_SHARE.SHARE` − benchmark
+  - Benchmarks: CDI (ALBATROZ, MACRO_Q) via `ECO_INDEX` FIELD='YIELD' (VALUE já é taxa diária); IBOV (FRONTIER) via `EQUITIES_PRICES.CLOSE` pct_change; IDKA index (IDKAs) via `ECO_INDEX` FIELD='INDEX' pct_change
+  - Exploração feita: CDI em `ECO_INDEX` é YIELD (daily rate), IBOV sem FIELD='INDEX' (só em EQUITIES_PRICES), IDKAs em ECO_INDEX com FIELD='INDEX'
+  - **ALBATROZ minimum viable** — Pedro Igor é o caso de uso
+  - Labelar como "alpha realizado (últimos 252d)" — metodologia diferente do HS forward (carteira × fatores) dos 3 MM, ser explícito
+- **Briefings por fundo via LLM (Claude API)** (user 2026-04-19, noite):
+  - Substituir os briefings rule-based atuais por prose gerada por LLM para os 8 fundos
+  - Modelo sugerido: **Haiku 4.5** (`claude-haiku-4-5-20251001`) — briefings são descritivos, não precisam raciocínio pesado. ~$0.01–0.02 por rodada total (8 fundos)
+  - Paralelizar no `ThreadPoolExecutor` já existente — latência ~2–3s no total
+  - **Guardrails contra alucinação:** LLM recebe só JSON com números já computados (DIA/MTD/YTD, VaR util, stop util, top movers, exposições agregadas, outliers). Prompt: *"use exclusivamente os números abaixo; não invente; omita campos ausentes"*. Prose vai no campo `commentary`; números continuam vindo das tabelas da página
+  - **Fallback:** se API falhar/timeout → cai no briefing rule-based atual (já existe). Usuário nunca vê erro
+  - Independente do MACRO↔QUANT harmonization — dá pra tocar em paralelo
+- **Drill-down no Por Bench (PA dos IDKAs)** (user 2026-04-19, noite):
+  - Hoje o view "Por Bench" é uma tabela flat (Direct α / Swap / Via Albatroz / Total); user quer poder expandir
+  - **Direct α** → árvore de posições diretas do IDKA (df_pa[FUNDO=IDKA_*]) excluindo fatia Albatroz
+  - **Via Albatroz α** → árvore PA completa do ALBATROZ (df_pa[FUNDO='ALBATROZ'])
+  - Swap leg fica flat (é só CDI − IDKA_index × w_alb, sem detalhe pra expandir)
+  - Reusar a infra lazy-render de `_build_pa_view` (`togglePaRow` + `paRenderChildren` + `data-pa-id`)
 - **Página de ETFs** — adicionar família ETF como view. Escopo a definir
 - **Navigation checklist** — guia de leitura dos relatórios na ordem certa
 - **IDKA HS BVaR — current-positions** — aplicar posições atuais (exploded) a 3y de yield moves (`PRICES_ANBIMA_BR_PUBLIC_BONDS` + DI1 yields + IPCA) − retorno do IDKA index. Stub realized-NAV em `76b1080`; wire depois de calibrar
@@ -261,7 +288,7 @@ dashboards originais.
 - **ALBATROZ: calibrar limites definitivos + clarificar sign convention LFT**
 - Main Risks cross-fund por CLASSE (via `df_pa`)
 - Backtest de VaR (diagnóstico de calibração)
-- Cross-fund / firm-level overlap por instrumento/emissor — alta ROI
+- Cross-fund overlap **por emissor** (instrument-level já entregue no card "Top Posições — consolidado" do Summary) — agregar VALE3+VALE5+ADR+opções num "issuer"; precisa mapa ticker→emissor
 - Scenario library (named shocks)
 - Drawdown trajectory (tempo underwater, velocidade)
 - Correlation breakdown (diversification benefit ao longo do tempo)
