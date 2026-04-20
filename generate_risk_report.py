@@ -4468,6 +4468,7 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
 
 
 REPORTS = [
+    ("briefing",     "Briefing"),
     ("performance",  "PA"),
     ("exposure",     "Exposure"),
     ("exposure-map", "Exposure Map"),
@@ -4823,6 +4824,203 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
     </section>"""
 
     return full_html, compact_html
+
+
+def _build_fund_mini_briefing(
+    short: str, house_row: dict, series_map: dict, td_by_short: dict,
+    df_pa, factor_matrix: dict, bench_matrix: dict,
+    pm_margem=None, frontier_bvar=None,
+) -> str:
+    """Compact 1–2 min per-fund briefing card. Shows at top of each fund's
+       reports as the "Briefing" tab.
+    """
+    if not house_row:
+        return ""
+
+    def _mm(v):
+        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        except Exception: return "—"
+
+    td = td_by_short.get(short)
+    cfg = ALL_FUNDS.get(td, {}) if td else {}
+
+    # Δ VaR D-1 (bps)
+    dvar_bps = None
+    s = series_map.get(td) if td else None
+    if s is not None and not s.empty:
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if len(s_avail) >= 2:
+            v_today = abs(float(s_avail.iloc[-1]["var_pct"]))
+            v_prev  = abs(float(s_avail.iloc[-2]["var_pct"]))
+            dvar_bps = (v_today - v_prev) * 100
+
+    # Util (primary metric)
+    util = None
+    if not cfg.get("informative"):
+        soft = cfg.get("var_soft", 0)
+        v_pct = house_row["bvar_pct"] if cfg.get("primary") == "bvar" else house_row["var_pct"]
+        util = v_pct / soft * 100 if soft else None
+
+    # Top contributors / detractors today (for funds with PA)
+    pa_key = _FUND_PA_KEY.get(short)
+    top_contrib = []
+    top_detract = []
+    if pa_key and df_pa is not None and not df_pa.empty:
+        sub = df_pa[
+            (df_pa["FUNDO"] == pa_key) &
+            (~df_pa["LIVRO"].isin({"Caixa", "Caixa USD", "Taxas e Custos"})) &
+            (~df_pa["CLASSE"].isin({"Caixa", "Custos"}))
+        ].copy()
+        if not sub.empty:
+            sub_sorted = sub.sort_values("dia_bps", ascending=False)
+            top_contrib = sub_sorted[sub_sorted["dia_bps"] > 0.5].head(2)
+            top_detract = sub_sorted[sub_sorted["dia_bps"] < -0.5].tail(2)
+
+    # Fund-level factor dominance (net of bench) — only for funds in factor_matrix
+    dominant_factor = None
+    if factor_matrix and bench_matrix:
+        nets = {}
+        for fk, allocs in factor_matrix.items():
+            v = allocs.get(short, 0.0) - bench_matrix.get(fk, {}).get(short, 0.0)
+            if abs(v) >= 1_000:
+                nets[fk] = v
+        if nets:
+            dominant_factor = max(nets.items(), key=lambda x: abs(x[1]))
+
+    # Stop margem (MACRO only)
+    stop_min = None
+    if short == "MACRO" and pm_margem:
+        try:
+            stop_min = min((pm, m) for pm, m in pm_margem.items() if m is not None)
+        except ValueError:
+            stop_min = None
+
+    # ── Stat chips ────────────────────────────────────────────────────────────
+    is_bvar = cfg.get("primary") == "bvar"
+    is_frontier = (short == "FRONTIER")
+    var_label = "BVaR 95%" if is_bvar else ("HS BVaR" if is_frontier else "VaR 95%")
+    var_val = house_row["bvar_pct"] if (is_bvar or is_frontier) else house_row["var_pct"]
+
+    def _chip(lbl, val, color=None):
+        col = f' style="color:{color}"' if color else ''
+        return (f'<span class="sn-stat"><span class="sn-lbl">{lbl}</span>'
+                f'<span class="sn-val mono"{col}>{val}</span></span>')
+
+    chips = (
+        _chip("NAV", f"R$ {_mm(house_row['nav'])}") +
+        _chip(var_label, f"{var_val:.2f}%") +
+        (_chip("Util", f"{util:.0f}%",
+               "var(--down)" if util and util >= 100
+               else "var(--warn)" if util and util >= 70 else "var(--up)")
+         if util is not None else "") +
+        (_chip("Δ VaR D-1", f"{dvar_bps:+.0f} bps",
+               "var(--down)" if dvar_bps and dvar_bps > 0 else "var(--up)")
+         if dvar_bps is not None else "") +
+        _chip("DIA",  f"{house_row['var_pct']*0 + house_row.get('var_pct',0) if False else 0}", None)  # placeholder
+    )
+
+    # Return chips from PA sums per window
+    dia_bps = mtd_bps = ytd_bps = m12_bps = None
+    if pa_key and df_pa is not None and not df_pa.empty:
+        sub_all = df_pa[df_pa["FUNDO"] == pa_key]
+        if not sub_all.empty:
+            dia_bps = float(sub_all["dia_bps"].sum())
+            mtd_bps = float(sub_all["mtd_bps"].sum())
+            ytd_bps = float(sub_all["ytd_bps"].sum())
+            m12_bps = float(sub_all["m12_bps"].sum())
+    def _ret_chip(lbl, bps):
+        if bps is None:
+            return ""
+        pct = bps / 100
+        col = "var(--up)" if pct >= 0 else "var(--down)"
+        return _chip(lbl, f"{'+' if pct>=0 else ''}{pct:.2f}%", col)
+
+    chips = (
+        _chip("NAV", f"R$ {_mm(house_row['nav'])}") +
+        _chip(var_label, f"{var_val:.2f}%") +
+        (_chip("Util", f"{util:.0f}%",
+               "var(--down)" if util >= 100
+               else "var(--warn)" if util >= 70 else "var(--up)")
+         if util is not None else "") +
+        (_chip("Δ D-1",
+               f"{dvar_bps:+.0f} bps",
+               "var(--down)" if dvar_bps > 0 else "var(--up)" if dvar_bps < 0 else None)
+         if dvar_bps is not None else "") +
+        '<span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>' +
+        _ret_chip("DIA",  dia_bps) +
+        _ret_chip("MTD",  mtd_bps) +
+        _ret_chip("YTD",  ytd_bps) +
+        _ret_chip("12M",  m12_bps)
+    )
+
+    # ── Headline ──────────────────────────────────────────────────────────────
+    headline_parts = []
+    if util is not None and util >= 85:
+        headline_parts.append(f'🔴 <b>{util:.0f}% do soft limit</b>')
+    elif dvar_bps is not None and abs(dvar_bps) >= 10:
+        direction = "subiu" if dvar_bps > 0 else "caiu"
+        headline_parts.append(f'VaR {direction} <b>{abs(dvar_bps):.0f} bps</b> vs D-1')
+    if dia_bps is not None and abs(dia_bps) >= 5:
+        sign = "+" if dia_bps > 0 else ""
+        col = "var(--up)" if dia_bps > 0 else "var(--down)"
+        headline_parts.append(f'alpha do dia <b style="color:{col}">{sign}{dia_bps/100:.2f}%</b>')
+    if not headline_parts:
+        headline_parts.append("dia tranquilo — sem eventos materiais")
+    headline = " · ".join(headline_parts)
+
+    # ── Insights bullets ──────────────────────────────────────────────────────
+    bullets = []
+    if len(top_contrib) > 0:
+        items = " · ".join(
+            f'<b>{r.PRODUCT}</b> {r.dia_bps/100:+.2f}%'
+            for r in top_contrib.itertuples(index=False)
+        )
+        bullets.append(f'<li><span style="color:var(--up)">▲</span> <b>Contribuintes:</b> {items}</li>')
+    if len(top_detract) > 0:
+        items = " · ".join(
+            f'<b>{r.PRODUCT}</b> {r.dia_bps/100:+.2f}%'
+            for r in top_detract.itertuples(index=False)
+        )
+        bullets.append(f'<li><span style="color:var(--down)">▼</span> <b>Detratores:</b> {items}</li>')
+    if dominant_factor:
+        fk, v = dominant_factor
+        is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
+        if is_rate:
+            direction = "tomado" if v > 0 else "dado"
+            dir_color = "var(--down)" if v > 0 else "var(--up)"
+        else:
+            direction = "longo" if v > 0 else "curto"
+            dir_color = "var(--up)" if v > 0 else "var(--down)"
+        bullets.append(
+            f'<li>🎯 <b>Posição líquida:</b> '
+            f'<b class="mono" style="color:{dir_color} !important">{direction}</b> em '
+            f'<b>{fk}</b> · <span class="mono">{_mm(v)}</span></li>'
+        )
+    if stop_min and stop_min[1] < 30:
+        pm, m = stop_min
+        bullets.append(
+            f'<li>⚠ <b>Stop apertado:</b> {pm} com <span class="mono">{m:.0f} bps</span> de margem</li>'
+        )
+    if short == "FRONTIER" and frontier_bvar:
+        bullets.append(
+            f'<li>📊 <b>BVaR HS vs IBOV:</b> <span class="mono">{frontier_bvar["bvar_pct"]:.2f}%</span> · '
+            f'TE anualizada <span class="mono">{frontier_bvar["std_er_pct"]*(252**0.5):.1f}%</span></li>'
+        )
+    if not bullets:
+        bullets.append('<li><span style="color:var(--muted)">— sem destaques materiais hoje</span></li>')
+
+    return f"""
+    <section class="card brief-card">
+      <div class="card-head">
+        <span class="card-title">Briefing — {FUND_LABELS.get(short, short)}</span>
+        <span class="card-sub">— {DATA_STR} · resumo rápido 1–2 min</span>
+      </div>
+      <div class="brief-headline">{headline}</div>
+      <div class="sn-inline-stats mono" style="margin-bottom:14px; flex-wrap:wrap; gap:6px 14px">
+        {chips}
+      </div>
+      <ul class="brief-list">{"".join(bullets)}</ul>
+    </section>"""
 
 
 def _build_executive_briefing(
@@ -5854,6 +6052,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     top5_abs = set(r["short"] for r in sorted(house_rows, key=lambda r: r["var_brl"],  reverse=True)[:5])
     top5_rel = set(r["short"] for r in sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)[:5])
 
+    # Per-fund mini briefing — registered as "briefing" report (first tab)
+    _house_by_short = {r["short"]: r for r in house_rows}
+
     def _mm(v):
         try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
         except Exception: return "—"
@@ -6011,6 +6212,26 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     factor_rows_liquido = _render_factor_rows(net_of_bench=True)
     factor_rows_bruto   = _render_factor_rows(net_of_bench=False)
     factor_rows_html    = factor_rows_liquido  # keep legacy var name for below
+
+    # Per-fund mini briefings. sections_html was already rendered above, so
+    # accumulate into a separate string and concatenate into sections_html later.
+    _briefing_sections_extra = ""
+    for short in FUND_ORDER:
+        hr = _house_by_short.get(short)
+        if not hr:
+            continue
+        mini_html = _build_fund_mini_briefing(
+            short, hr, series_map, td_by_short, df_pa,
+            factor_matrix, bench_matrix,
+            pm_margem=pm_margem if short == "MACRO" else None,
+            frontier_bvar=frontier_bvar if short == "FRONTIER" else None,
+        )
+        if mini_html:
+            _briefing_sections_extra += (
+                f'<div id="sec-{short}-briefing" class="section-wrap" '
+                f'data-fund="{short}" data-report="briefing">{mini_html}</div>'
+            )
+    sections_html += _briefing_sections_extra
 
     fund_col_headers = "".join(
         f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
