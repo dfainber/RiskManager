@@ -4314,6 +4314,276 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
     return full_html, compact_html
 
 
+def _build_executive_briefing(
+    *,
+    house_rows, factor_matrix, bench_matrix, agg_rows,
+    position_changes, vol_regime_map, pm_margem, df_pa,
+    frontier_bvar, series_map, td_by_short, ibov, cdi,
+) -> str:
+    """Curated 3–5 min briefing. Pulls from already-computed structures.
+       Rotates headline category to avoid daily repetition; hides sections
+       that have nothing material to report.
+    """
+    def _mm(v):
+        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        except Exception: return "—"
+    def _pct(v, sign=True):
+        try:
+            f = float(v)
+            return f"{'+' if f>=0 and sign else ''}{f:.2f}%"
+        except Exception: return "—"
+    def _bps(v, sign=True):
+        try:
+            f = float(v)
+            return f"{'+' if f>=0 and sign else ''}{f:.0f} bps"
+        except Exception: return "—"
+
+    parts_headline = []
+    parts_risk   = []   # what moved
+    parts_alpha  = []   # what pulled
+    parts_insight = []  # non-obvious read
+    parts_watch  = []   # attention bullets
+
+    # ── Data summary numbers ──────────────────────────────────────────────────
+    house_bvar_total = sum(r["bvar_brl"] for r in house_rows) if house_rows else 0
+    house_var_total  = sum(r["var_brl"]  for r in house_rows) if house_rows else 0
+    house_nav_total  = sum(r["nav"]      for r in house_rows) if house_rows else 0
+
+    # Δ VaR D-1 per fund (bps of NAV)
+    dvar_list = []  # (short, dvar_bps)
+    for r in house_rows:
+        td = td_by_short.get(r["short"])
+        s = series_map.get(td) if td else None
+        if s is None or s.empty:
+            continue
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if len(s_avail) < 2:
+            continue
+        v_today = abs(float(s_avail.iloc[-1]["var_pct"]))
+        v_prev  = abs(float(s_avail.iloc[-2]["var_pct"]))
+        dvar_bps = (v_today - v_prev) * 100
+        dvar_list.append((r["short"], dvar_bps, r["label"], v_today))
+    dvar_list.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    # Top util VaR — use primary metric: BVaR for IDKAs (bvar-benchmarked),
+    # absolute VaR for CDI-benchmarked funds. Matches the mandate soft limit.
+    utils = []
+    for r in house_rows:
+        td = td_by_short.get(r["short"])
+        cfg = ALL_FUNDS.get(td, {}) if td else {}
+        if cfg.get("informative"):
+            continue
+        soft = cfg.get("var_soft", 99)
+        v_pct = r["bvar_pct"] if cfg.get("primary") == "bvar" else r["var_pct"]
+        util = v_pct / soft * 100 if soft else 0
+        utils.append((r["short"], r["label"], util, v_pct, soft))
+    utils.sort(key=lambda x: x[2], reverse=True)
+
+    # ── HEADLINE ──────────────────────────────────────────────────────────────
+    headline = None
+    # Rule 1: any fund ≥85% util VaR → flag
+    if utils and utils[0][2] >= 85:
+        s, lbl, u, v, soft = utils[0]
+        headline = f'🔴 <b>{lbl}</b> em <span class="mono">{u:.0f}%</span> do soft limit VaR (<span class="mono">{v:.2f}%</span> vs soft {soft:.2f}%).'
+    # Rule 2: Δ VaR material
+    elif dvar_list and abs(dvar_list[0][1]) >= 10:
+        s, dv, lbl, v_today = dvar_list[0]
+        direction = "subiu" if dv > 0 else "caiu"
+        headline = f'<b>{lbl}</b> VaR {direction} <span class="mono">{abs(dv):.0f} bps</span> vs D-1 (agora <span class="mono">{v_today:.2f}%</span>).'
+    # Rule 3: concentration — top fund absorbs >40% of house BVaR
+    elif house_rows and house_bvar_total > 0:
+        house_rows_sorted = sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)
+        top = house_rows_sorted[0]
+        pct = top["bvar_brl"] / house_bvar_total * 100
+        if pct >= 40:
+            headline = f'<b>{top["label"]}</b> absorve <span class="mono">{pct:.0f}%</span> do risco ativo da casa (<span class="mono">{_mm(top["bvar_brl"])}</span> de <span class="mono">{_mm(house_bvar_total)}</span> BVaR).'
+    if not headline:
+        headline = "Dia sem mudanças materiais — carteira em regime normal. Monitorar rotação gradual."
+
+    # ── RISCO · O QUE MUDOU ───────────────────────────────────────────────────
+    for s, dv, lbl, v_today in dvar_list[:3]:
+        if abs(dv) < 5:  # threshold for materiality
+            continue
+        direction = "↑" if dv > 0 else "↓"
+        parts_risk.append(
+            f'<li><span class="mono">{direction} {abs(dv):.0f} bps</span> · '
+            f'<b>{lbl}</b> VaR agora {v_today:.2f}%</li>'
+        )
+    # Top 2 position_changes (fund-agnostic)
+    if position_changes:
+        all_changes = []
+        for short, df_ch in (position_changes or {}).items():
+            if df_ch is None or df_ch.empty:
+                continue
+            for _, r in df_ch.head(5).iterrows():
+                all_changes.append((short, r))
+        # Just flag if there's anything with |Δ| ≥ 5 pp
+        big_changes = [
+            (short, r) for short, r in all_changes
+            if abs(float(r.get("delta_pp", 0))) >= 5
+        ]
+        big_changes.sort(key=lambda x: abs(float(x[1].get("delta_pp", 0))), reverse=True)
+        for short, r in big_changes[:2]:
+            lbl = FUND_LABELS.get(short, short)
+            factor = r.get("rf", r.get("CLASSE", ""))
+            dpp = float(r.get("delta_pp", 0))
+            direction = "↑" if dpp > 0 else "↓"
+            parts_risk.append(
+                f'<li><span class="mono">{direction} {abs(dpp):.1f} pp</span> · '
+                f'<b>{lbl}</b> mudou exposição em <i>{factor}</i></li>'
+            )
+
+    # ── ALPHA · O QUE PUXOU ────────────────────────────────────────────────────
+    # Cross-fund top contributors / detractors in BRL (dia_bps × NAV / 10000)
+    if df_pa is not None and not df_pa.empty:
+        _pa = df_pa.copy()
+        _pa = _pa[~_pa["LIVRO"].isin({"Caixa", "Caixa USD", "Taxas e Custos", "Prev"})]
+        _pa = _pa[~_pa["CLASSE"].isin({"Caixa", "Custos"})]
+        # Convert to BRL via fund NAV
+        nav_by_pa = {}
+        _PA_TO_SHORT = {v: k for k, v in _FUND_PA_KEY.items()}
+        for r in house_rows:
+            short = r["short"]
+            pa_key = _FUND_PA_KEY.get(short)
+            if pa_key:
+                nav_by_pa[pa_key] = r["nav"]
+        _pa["nav"] = _pa["FUNDO"].map(nav_by_pa).fillna(0)
+        _pa["brl_dia"] = _pa["dia_bps"] * _pa["nav"] / 10000
+        _pa = _pa[_pa["brl_dia"].abs() > 50_000]
+        contribs = _pa.sort_values("brl_dia", ascending=False).head(2)
+        detract  = _pa.sort_values("brl_dia").head(2)
+        for _, r in contribs.iterrows():
+            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
+            parts_alpha.append(
+                f'<li><span class="mono up">+{r["brl_dia"]/1e6:.2f}M</span> · '
+                f'<b>{r["PRODUCT"]}</b> ({fund_lbl}, {r["dia_bps"]:+.1f} bps)</li>'
+            )
+        for _, r in detract.iterrows():
+            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
+            parts_alpha.append(
+                f'<li><span class="mono down">{r["brl_dia"]/1e6:.2f}M</span> · '
+                f'<b>{r["PRODUCT"]}</b> ({fund_lbl}, {r["dia_bps"]:+.1f} bps)</li>'
+            )
+
+    # ── LEITURA DO DIA (non-obvious insights) ─────────────────────────────────
+    # (a) Top-3 concentration of house risk
+    if agg_rows:
+        from collections import defaultdict
+        inst_totals = defaultdict(float)
+        for r in agg_rows:
+            key = (r["factor"], r["product"])
+            inst_totals[key] += r["brl"]
+        sorted_inst = sorted(inst_totals.items(), key=lambda x: abs(x[1]), reverse=True)
+        top3 = sorted_inst[:3]
+        if top3:
+            labels = " + ".join(f'<b>{k[1]}</b>' for k, _ in top3)
+            top3_sum = sum(abs(v) for _, v in top3)
+            # Rough share of house — compare against sum of |all| for that unit category
+            same_unit = [abs(v) for (f, _), v in inst_totals.items()
+                         if agg_rows[0]["unit"] == next((r["unit"] for r in agg_rows if r["factor"] == f), None)]
+            parts_insight.append(
+                f'<li><b>Concentração:</b> {labels} somam '
+                f'<span class="mono">{_mm(top3_sum)}</span> de exposição — '
+                f'as 3 maiores posições da casa.</li>'
+            )
+
+    # (b) Dominant factor (largest |net| across house)
+    if factor_matrix and bench_matrix:
+        net_by_factor = {}
+        for fk, allocs in factor_matrix.items():
+            benches = bench_matrix.get(fk, {})
+            total_net = sum(
+                allocs.get(s, 0.0) - benches.get(s, 0.0)
+                for s in set(allocs) | set(benches)
+            )
+            if abs(total_net) > 1_000:
+                net_by_factor[fk] = total_net
+        if net_by_factor:
+            dom = max(net_by_factor.items(), key=lambda x: abs(x[1]))
+            direction = "longo" if dom[1] > 0 else "curto"
+            parts_insight.append(
+                f'<li><b>Fator dominante:</b> casa está <i>{direction}</i> em '
+                f'<b>{dom[0]}</b> · <span class="mono">{_mm(dom[1])}</span> líquido do bench.</li>'
+            )
+
+    # (c) Vol regime shift
+    if vol_regime_map:
+        stressed = [(k, v) for k, v in vol_regime_map.items() if v and v.get("regime") == "stressed"]
+        elevated = [(k, v) for k, v in vol_regime_map.items() if v and v.get("regime") == "elevated"]
+        if stressed:
+            names = ", ".join(k for k, _ in stressed)
+            parts_insight.append(
+                f'<li><b>Vol regime stressed:</b> {names} — pct rank ≥ 90. Histórico sugere cautela em tamanho.</li>'
+            )
+        elif elevated and len(elevated) >= 2:
+            names = ", ".join(k for k, _ in elevated)
+            parts_insight.append(
+                f'<li><b>Vol regime elevated:</b> {names} acima do p70 — vigilância gradual.</li>'
+            )
+
+    # ── ATENÇÃO (max 3 bullets) ────────────────────────────────────────────────
+    for s, lbl, u, v, soft in utils[:2]:
+        if u >= 70:
+            parts_watch.append(
+                f'<li><b>{lbl}</b> util VaR em <span class="mono">{u:.0f}%</span> do soft — revisar tamanho se subir mais.</li>'
+            )
+    # MACRO stop flag
+    if pm_margem:
+        for pm, margem in pm_margem.items():
+            if margem <= 20:  # low margin = red zone
+                parts_watch.append(
+                    f'<li><b>MACRO · {pm}</b> margem de stop em <span class="mono">{margem:.0f} bps</span> — espaço curto.</li>'
+                )
+                break
+    parts_watch = parts_watch[:3]
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    def _section(title, items, empty_msg=None):
+        if not items:
+            return f'<p style="color:var(--muted); font-style:italic; margin-top:8px">{empty_msg or "— nada material hoje"}</p>' if empty_msg else ""
+        return (
+            f'<div class="brief-section-title">{title}</div>'
+            f'<ul class="brief-list">{"".join(items)}</ul>'
+        )
+
+    # Benchmarks para context
+    bench_line = ""
+    if ibov and cdi:
+        def _fmt(v):
+            pct = v / 100 if v else 0
+            col = "up" if pct >= 0 else "down"
+            return f'<span class="mono {col}">{pct:+.2f}%</span>'
+        bench_line = (
+            f'<div class="brief-benchmarks">Benchmarks hoje: '
+            f'IBOV {_fmt(ibov.get("dia"))} · CDI {_fmt(cdi.get("dia"))}</div>'
+        )
+
+    return f"""
+    <section class="card brief-card">
+      <div class="card-head">
+        <span class="card-title">Briefing Executivo</span>
+        <span class="card-sub">— {DATA_STR} · 3–5 min · visão curada sobre risco e delta</span>
+      </div>
+      <div class="brief-headline">{headline}</div>
+      {bench_line}
+      <div class="brief-grid">
+        <div class="brief-col">
+          {_section("Risco · o que mudou", parts_risk, "— VaR estável em todos os fundos vs D-1")}
+          {_section("Alpha · o que puxou", parts_alpha, "— PnL do dia concentrado em ruído (nenhum contribuinte ≥ R$50k)")}
+        </div>
+        <div class="brief-col">
+          {_section("Leitura do dia", parts_insight)}
+          {_section("Atenção", parts_watch, "— sem red flags; nenhuma util ≥ 70%")}
+        </div>
+      </div>
+      <div class="brief-annex">
+        → Detalhe em: <a href="#" onclick="document.querySelector('.summary-table')?.scrollIntoView({{behavior:'smooth'}});return false">Status consolidado</a> ·
+        <a href="#" onclick="document.querySelector('[class*=rf-brl-body]')?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Breakdown por Fator</a> ·
+        <a href="#" onclick="Array.from(document.querySelectorAll('.card-title')).find(function(x){{return x.textContent.indexOf('Top Posi')===0}})?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Top Posições</a>
+      </div>
+    </section>"""
+
+
 def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_expo=None, df_var=None, macro_aum=None,
                df_expo_d1=None, df_var_d1=None,
@@ -5782,8 +6052,22 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         data_manifest, series_map, df_pa, df_pa_daily
     )
 
+    # ── Executive briefing (curated top-of-summary card) ──────────────────────
+    # Pulls from already-computed structures: house_rows, factor_matrix,
+    # bench_matrix, agg_rows, position_changes, vol_regime_map, pm_margem,
+    # df_pa, frontier_bvar, ibov, cdi.
+    briefing_html = _build_executive_briefing(
+        house_rows=house_rows, factor_matrix=factor_matrix,
+        bench_matrix=bench_matrix, agg_rows=agg_rows,
+        position_changes=position_changes, vol_regime_map=vol_regime_map,
+        pm_margem=pm_margem, df_pa=df_pa, frontier_bvar=frontier_bvar,
+        series_map=series_map, td_by_short=td_by_short,
+        ibov=ibov, cdi=cdi,
+    )
+
     summary_html = f"""
     <div class="section-wrap" data-view="summary">
+      {briefing_html}
       {fund_grid_html}
       {house_html}
       {by_factor_html}
@@ -6227,6 +6511,40 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     font-family:'Inter', sans-serif; letter-spacing:.04em;
   }}
   .rf-tbl-toggle:hover {{ background:var(--panel-2); color:var(--text); }}
+
+  /* Executive briefing (top of Summary) */
+  .brief-card {{ border-left:3px solid var(--accent); }}
+  .brief-headline {{
+    font-size:16px; font-weight:600; color:var(--text);
+    padding:10px 14px; margin:6px 0 12px; line-height:1.45;
+    background:rgba(0,113,187,.06); border-radius:6px;
+    border-left:2px solid var(--accent-2);
+  }}
+  .brief-benchmarks {{
+    font-size:11px; color:var(--muted); margin-bottom:14px;
+    letter-spacing:.04em; padding-left:4px;
+  }}
+  .brief-grid {{
+    display:grid; grid-template-columns:1fr 1fr; gap:24px;
+  }}
+  @media (max-width:900px) {{ .brief-grid {{ grid-template-columns:1fr; gap:16px; }} }}
+  .brief-col {{ min-width:0; }}
+  .brief-section-title {{
+    font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent-2); font-weight:700; margin:12px 0 6px;
+    padding-bottom:4px; border-bottom:1px solid var(--line);
+  }}
+  .brief-list {{ list-style:none; margin:0; padding:0; font-size:12.5px; line-height:1.55; }}
+  .brief-list li {{ padding:5px 0; border-bottom:1px dashed var(--line); }}
+  .brief-list li:last-child {{ border-bottom:none; }}
+  .brief-list li b {{ color:var(--text); font-weight:600; }}
+  .brief-list li i {{ color:var(--muted); font-style:normal; }}
+  .brief-annex {{
+    margin-top:14px; padding-top:10px; border-top:1px solid var(--line);
+    font-size:11px; color:var(--muted);
+  }}
+  .brief-annex a {{ color:var(--accent-2); text-decoration:none; border-bottom:1px dotted var(--accent-2); }}
+  .brief-annex a:hover {{ color:var(--text); border-bottom-color:var(--text); }}
 
   /* PA Contribuições — Por Tamanho / Por Fundo grid (flows side-by-side) */
   .pa-alert-view {{
