@@ -7111,6 +7111,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .pa-tgl:hover {{ color:var(--text); border-color:var(--line-2); }}
   .pa-tgl.active {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
 
+  /* Frontier Exposure toggles (IBOV/IBOD, Por Nome/Por Setor, ▼/▶ All).
+     Same visual as .pa-tgl — dark bg, accent-blue active state. */
+  .toggle-btn {{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    padding:5px 12px; border-radius:7px; font-size:11px; font-weight:600;
+    letter-spacing:.06em; cursor:pointer;
+    font-family:'Inter', sans-serif;
+  }}
+  .toggle-btn:hover {{ color:var(--text); border-color:var(--line-2); background:rgba(0,113,187,.06); }}
+  .toggle-btn.active {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
+
   .pa-table {{
     width:100%; background:var(--bg-2); border-radius:8px; overflow:hidden;
     font-size:12px; border-collapse:collapse;
