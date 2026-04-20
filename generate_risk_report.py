@@ -6297,7 +6297,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 f'<div id="sec-{short}-briefing" class="section-wrap" '
                 f'data-fund="{short}" data-report="briefing">{mini_html}</div>'
             )
+            # Also update the derived structures built earlier so the nav tabs pick up
+            # the briefing tab per fund.
+            available_pairs.add((short, "briefing"))
     sections_html += _briefing_sections_extra
+    if "briefing" not in reports_with_data:
+        reports_with_data = ["briefing"] + list(reports_with_data)
 
     fund_col_headers = "".join(
         f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
