@@ -241,6 +241,47 @@ dashboards originais.
 - **Top Posições — consolidado** (já em prod) **cobre cross-fund overlap instrument-level** — falta só agregação por emissor (VALE3+VALE5+ADR+opções → "Vale"), parkeado.
 - **EVOLUTION Risk Concentration — standalone MVP** ([evolution_diversification_card.py](evolution_diversification_card.py)): 3 camadas (utilização por estratégia · diversification benefit · correlação 21d/63d entre PnLs direcionais MACRO/SIST/FRONTIER/CREDITO). Template sozinho em `data/morning-calls/evolution_diversification_<DATA>.html` — ainda não wired no relatório principal. **Tratamento do CREDITO:** o VaR é **winsorizado causalmente** (rolling 63d, mediana ± 3 × 1.4826·MAD, tail superior apenas) para absorver o spike de cotas júnior de dez/2025 sem dropar observações. Ratio principal usa Σ winsorizada; raw continua visível como referência. Share do CREDITO no Σ exibido como semáforo (>40% vermelho, 25-40% amarelo). Substitui o `Ratio_ex_credito` do spec da skill, que era inviável (subtrair `VaR_CREDITO` linearmente de `VaR_real` é matematicamente errado — VaR não é aditivo). Detalhes completos em [docs/CREDITO_TREATMENT.md](docs/CREDITO_TREATMENT.md).
 
+**Fase 4 — entregues (sessão 2026-04-20):**
+- **Frontier PA via GFA key** — descoberta a chave `'GFA'` em `REPORT_ALPHA_ATRIBUTION` para Frontier. Wired em `_FUND_PA_KEY`, `fetch_pa_leaves` e `fetch_pa_daily_per_product`. Report PA full para FRONTIER.
+- **Frontier Long Only report refatorado** — bench toggle (IBOV/IBOD/CDI), vista toggle (Por Nome / Por Setor com collapse), linha Alienadas (ações vendidas), sub-tab PA hierárquica nested (`.fpa-pa-nested`).
+- **Frontier Distribuição 252d (α vs IBOV realized)** — `fetch_frontier_alpha_series` (SUM(TOTAL_IBVSP_DAY) por VAL_DATE). Backward + Forward views.
+- **RF Exposure Map para MACRO e EVOLUTION** — `fetch_rf_exposure_map` ganhou param `lookthrough_only` (EVOLUTION=True p/ ver só via-children). Entries em `_RF_MAP_CFG`. 3 fundos não-RF agora no report.
+- **ALBATROZ Exposure com drill-down por indexador** — parent row (Pré/IPCA/IGP-M/CDI/Outros) clicável, expande filhos ordenados por |DV01|. Botões ▼ All / ▶ All. `window.albToggleIdx`.
+- **Status consolidado (Summary) — limpeza:**
+  - Coluna "Util Stop" removida (stop budget vive no Risk Budget card de cada fundo)
+  - Bench rows (IBOV, CDI) migradas de `data-no-sort="1"` para `data-pinned="1"` — sort preserva no rodapé
+  - Adicionadas bench rows **IDKA 3A** e **IDKA 10A** (vindas de `idka_idx_ret`)
+- **Risco VaR e BVaR por fundo (Summary)** — colunas R$ removidas; rank icons (🔺/🔷) movidos pra células %. Legenda ajustada.
+- **Breakdown por Fator — conversão pra %NAV:**
+  - Cada célula = `v_brl / nav_fundo × 100` (não mais BRL nominal)
+  - Total = `Σ v_brl / house_nav_tot × 100`
+  - QUANT non-equity factors populados: Juros Nominais (filtrado `BRL Rate Curve`), FX, Commodities a partir de `df_quant_expo`
+  - Card-sub + legenda atualizadas
+- **MACRO Juros Nominais — fix de double-count (duration²):**
+  - Era: `delta_dur = DELTA × MOD_DURATION` no SQL — mas DELTA já = POSITION × MOD_DURATION
+  - Virou: filtro `PRIMITIVE_CLASS='BRL Rate Curve'` + `sum(delta)` direto
+  - MACRO nominal foi de -2.14 yr (errado) → -1.21 yr (correto) — ver `project_rule_delta_is_duration_weighted.md`
+- **Convenção DV01 padronizada — tomado/dado** (briefings + factor_matrix):
+  - `tomado = DV01 > 0` (short bond, ganha com alta) · vermelho
+  - `dado = DV01 < 0` (long bond, NTN-B comprado) · verde
+  - `_DV01_SIGN_FLIP = {"real": True, "nominal": True, "ipca_idx": False}` ao popular factor_matrix de `rf_expo_maps.ano_eq_brl` (negação cancela o flip de gráfico)
+  - Footnote visível no card de briefing (per-fund + executive) com a convenção
+  - Ver `project_rule_dv01_sign_convention.md`
+- **Δ Expo — posição nova tratada como D-1=0:**
+  - Bug: `p_d1 = d1_prod.get(key)` retornava None p/ produto novo → `p_dexp = None` → "—" na célula → filhos não somavam ao factor total
+  - Fix: se `df_d1` existe globalmente, `p_dexp = p_net - (p_d1 or 0.0)`. Mesma lógica pra Δ VaR.
+  - Ver `project_rule_delta_expo_new_position.md`
+- **UX polish:**
+  - `.kc { text-transform:none !important; }` — wrapping VaR/BVaR em `<span class="kc">` para não virar "VAR" em headers com `text-transform:uppercase`
+  - `fund-nav-chips` escondido em "Por Fundo" mode (`body:not([data-mode="report"]) .fund-nav-chips { display:none; }`) — era redundante/confuso fora do report mode
+  - `fund_shorts_js` agora inclui `FUND_LABELS.values()` (Macro/Quantitativo/Frontier) + `_EXTRA_FUND_TERMS = ["Evo Strategy", "Evolution FIC", "Evo"]` → highlight cobre labels mixed-case também
+  - Briefing de Frontier: equity allocation (gross %) + weighted beta no bullet principal, em vez do "10% short" enganoso
+- **Infra setup:**
+  - venv em `C:\Users\diego.fainberg\.venvs\risk_monitor\` (Anaconda3 Python 3.11.7)
+  - `run_report.bat` aponta pra esse venv
+  - `requirements.txt` criado via `pip freeze`
+  - `.gitignore` inclui `.venv/` e `venv/`
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)

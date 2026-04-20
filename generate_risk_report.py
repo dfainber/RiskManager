@@ -1604,8 +1604,18 @@ def _build_expo_unified_table(
             p_sig = float(p["sigma"]) if pd.notna(p["sigma"]) else None
             p_var = v_prod.get(key)
             p_d1 = d1_prod.get(key)
-            p_dexp = (p_net - p_d1) if p_d1 is not None else None
-            p_dvar = (p_var - v1_prod.get(key)) if (p_var is not None and key in v1_prod) else None
+            # Δ Expo: if D-1 data exists globally, a missing product key means a
+            # NEW position today → delta = today − 0 = today. Without this, new
+            # positions rendered "—" and children stopped summing to factor total.
+            if df_d1 is not None and not df_d1.empty:
+                p_dexp = p_net - (p_d1 if p_d1 is not None else 0.0)
+            else:
+                p_dexp = None
+            # Same logic for Δ VaR: treat missing D-1 as 0 when D-1 data exists.
+            if p_var is not None and df_var_d1 is not None and not df_var_d1.empty:
+                p_dvar = p_var - v1_prod.get(key, 0.0)
+            else:
+                p_dvar = None
 
             net_col = "var(--up)" if p_net >= 0 else "var(--down)"
             if p_var is None:
@@ -2375,16 +2385,40 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
             return '<td class="t-num mono" style="color:var(--muted)">—</td>'
         return f'<td class="t-num mono" style="color:var(--muted)">{v:.2f}</td>'
 
-    idx_rows = "".join(
-        f'<tr>'
-        f'<td class="pa-name" style="font-weight:600">{r.indexador}</td>'
-        + bp_pct(r.delta_brl)
-        + mm_cell(r.gross_brl)
-        + dur_cell(r.dur_w)
-        + dv01_cell(r.dv01_brl)
-        + "</tr>"
-        for r in by_idx.itertuples(index=False)
-    )
+    # Indexador rows with drill-down: each parent row expands to show its instruments.
+    idx_rows = ""
+    for _i, r in enumerate(by_idx.itertuples(index=False)):
+        idx_id = f"alb-idx-{_i}"
+        # Parent (clickable) row
+        idx_rows += (
+            f'<tr class="alb-idx-row" data-idx-id="{idx_id}" '
+            f'style="cursor:pointer" onclick="albToggleIdx(this)">'
+            f'<td class="pa-name" style="font-weight:600">'
+            f'<span class="alb-idx-arrow" style="font-size:9px;margin-right:6px;color:var(--accent-2)">▶</span>'
+            f'{r.indexador}</td>'
+            + bp_pct(r.delta_brl)
+            + mm_cell(r.gross_brl)
+            + dur_cell(r.dur_w)
+            + dv01_cell(r.dv01_brl)
+            + "</tr>"
+        )
+        # Child rows: all instruments in this indexador, sorted by |DV01| desc
+        _kids = df[df["indexador"] == r.indexador].copy()
+        _kids["_abs_dv01"] = _kids["dv01_brl"].abs()
+        _kids = _kids.sort_values("_abs_dv01", ascending=False)
+        for c in _kids.itertuples(index=False):
+            _gross_c = abs(c.delta_brl)
+            idx_rows += (
+                f'<tr class="alb-idx-child" data-idx-parent="{idx_id}" style="display:none">'
+                f'<td class="pa-name" style="padding-left:28px">'
+                f'{c.PRODUCT} '
+                f'<span style="color:var(--muted); font-size:10px">({c.BOOK})</span></td>'
+                + bp_pct(c.delta_brl)
+                + mm_cell(_gross_c)
+                + dur_cell(c.mod_dur)
+                + dv01_cell(c.dv01_brl)
+                + "</tr>"
+            )
     idx_total_row = (
         '<tr class="pa-total-row">'
         '<td class="pa-name" style="font-weight:700">Total</td>'
@@ -2421,8 +2455,15 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         <span class="card-sub">— ALBATROZ · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {total_dv01/1e3:+,.1f}k R$/bp</span>
       </div>
 
-      <div class="sn-inline-stats mono" style="margin-bottom:8px">
+      <div class="sn-inline-stats mono" style="margin-bottom:8px; display:flex; align-items:center; gap:10px">
         <span style="color:var(--muted); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase">Por Indexador</span>
+        <span style="color:var(--muted); font-size:9.5px">· click pra expandir</span>
+        <span style="margin-left:auto; display:flex; gap:4px">
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="albExpandAllIdx()">▼ All</button>
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="albCollapseAllIdx()">▶ All</button>
+        </span>
       </div>
       <table class="pa-table" data-no-sort="1">
         <thead><tr>
@@ -2435,6 +2476,33 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         <tbody>{idx_rows}</tbody>
         <tfoot>{idx_total_row}</tfoot>
       </table>
+      <script>
+      (function() {{
+        if (window.albToggleIdx) return;
+        window.albToggleIdx = function(tr) {{
+          var arrow = tr.querySelector('.alb-idx-arrow');
+          var open = arrow && arrow.textContent.trim() === '▼';
+          if (arrow) arrow.textContent = open ? '▶' : '▼';
+          var id = tr.getAttribute('data-idx-id');
+          if (!id) return;
+          document.querySelectorAll('.alb-idx-child[data-idx-parent="'+id+'"]').forEach(function(r) {{
+            r.style.display = open ? 'none' : '';
+          }});
+        }};
+        window.albExpandAllIdx = function() {{
+          document.querySelectorAll('.alb-idx-row').forEach(function(tr) {{
+            var a = tr.querySelector('.alb-idx-arrow');
+            if (a && a.textContent.trim() === '▶') window.albToggleIdx(tr);
+          }});
+        }};
+        window.albCollapseAllIdx = function() {{
+          document.querySelectorAll('.alb-idx-row').forEach(function(tr) {{
+            var a = tr.querySelector('.alb-idx-arrow');
+            if (a && a.textContent.trim() === '▼') window.albToggleIdx(tr);
+          }});
+        }};
+      }})();
+      </script>
 
       <div class="sn-inline-stats mono" style="margin:16px 0 8px">
         <span style="color:var(--muted); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase">Top 15 Posições — por |DV01|</span>
@@ -6189,6 +6257,8 @@ def _build_fund_mini_briefing(
         fk, v = dominant_factor
         is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         if is_rate:
+            # Convenção DV01 (ground truth): tomado = DV01 > 0 (short bond / short DI1F),
+            # dado = DV01 < 0 (long bond / long DI1F). factor_matrix já vem nessa convenção.
             direction = "tomado" if v > 0 else "dado"
             dir_color = "var(--down)" if v > 0 else "var(--up)"
         else:
@@ -6289,6 +6359,7 @@ def _build_fund_mini_briefing(
     elif dominant_factor:
         fk, v = dominant_factor
         is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
+        # Convenção DV01: tomado = DV01 > 0 (short); dado = DV01 < 0 (long, ex: NTN-B comprado).
         dir_word = (("tomado" if v > 0 else "dado") if is_rate
                     else ("longo" if v > 0 else "curto"))
         fund_nav_tmp = house_row["nav"] if house_row else 0
@@ -6317,6 +6388,11 @@ def _build_fund_mini_briefing(
         {chips}
       </div>
       <ul class="brief-list">{"".join(bullets)}</ul>
+      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted); line-height:1.5">
+        <b>Convenção de juros:</b>
+        <span style="color:var(--up);font-weight:700">dado</span> = DV01 &lt; 0 (long bond · ex: NTN-B comprado, long DI1F) ·
+        <span style="color:var(--down);font-weight:700">tomado</span> = DV01 &gt; 0 (short bond · ex: DI1F vendido).
+      </div>
     </section>"""
 
 
@@ -6529,16 +6605,15 @@ def _build_executive_briefing(
                 net_by_factor[fk] = total_net
         if net_by_factor:
             dom = max(net_by_factor.items(), key=lambda x: abs(x[1]))
-            # Para fatores de juros use terminologia "tomado"/"dado" (convenção BR):
-            #   tomado = pagar fixo  = risk-off (defensivo; ganha com alta de juros)
-            #   dado   = receber fixo = risk-on  (bullish; ganha com queda de juros)
-            # Semântica de cor: dado → verde (risk-on), tomado → vermelho (risk-off).
-            # Para outros fatores (equity/FX/commodities): longo→verde, curto→vermelho.
+            # Para fatores de juros use terminologia "tomado"/"dado" (convenção DV01):
+            #   tomado = DV01 > 0 (short bond / short DI1F; ganha com alta de juros) → vermelho
+            #   dado   = DV01 < 0 (long bond / long DI1F; ex: NTN-B comprado)        → verde
+            # factor_matrix já está na convenção DV01 (raw DELTA para MACRO df_expo;
+            # rf_expo_maps é negado ao popular factor_matrix para cancelar o flip).
             is_rate = dom[0] in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
             if is_rate:
-                # Fund net sign convention: negative delta in rate factor = dado (receber fixo).
                 direction = "tomado" if dom[1] > 0 else "dado"
-                dir_color = "var(--down)" if dom[1] > 0 else "var(--up)"  # tomado=red, dado=green
+                dir_color = "var(--down)" if dom[1] > 0 else "var(--up)"
             else:
                 direction = "longo" if dom[1] > 0 else "curto"
                 dir_color = "var(--up)"   if dom[1] > 0 else "var(--down)"
@@ -6622,6 +6697,11 @@ def _build_executive_briefing(
         → Detalhe em: <a href="#" onclick="document.querySelector('.summary-table')?.scrollIntoView({{behavior:'smooth'}});return false">Status consolidado</a> ·
         <a href="#" onclick="document.querySelector('[class*=rf-brl-body]')?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Breakdown por Fator</a> ·
         <a href="#" onclick="Array.from(document.querySelectorAll('.card-title')).find(function(x){{return x.textContent.indexOf('Top Posi')===0}})?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Top Posições</a>
+      </div>
+      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted); line-height:1.5">
+        <b>Convenção de juros:</b>
+        <span style="color:var(--up);font-weight:700">dado</span> = DV01 &lt; 0 (long bond · ex: NTN-B comprado, long DI1F) ·
+        <span style="color:var(--down);font-weight:700">tomado</span> = DV01 &gt; 0 (short bond · ex: DI1F vendido).
       </div>
     </section>"""
 
@@ -7346,34 +7426,42 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             f'<td class="sum-status">{status}</td>'
             f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
             + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
-            + _sum_var_cell(var_today) + _sum_util_cell(var_util) + _sum_util_cell(stop_util)
+            + _sum_var_cell(var_today) + _sum_util_cell(var_util)
             + _sum_dvar_cell(dvar)
             + "</tr>"
         )
 
     # ── Benchmark reference rows (IBOV, CDI) ───────────────────────────────────
     def _bench_row(label: str, returns: dict | None) -> str:
+        # data-pinned="1" → sortTableByCol keeps this row at the bottom of tbody.
         if not returns:
             empty = '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
             return (
-                '<tr class="bench-row" data-no-sort="1">'
+                '<tr class="bench-row" data-pinned="1">'
                 '<td class="sum-status"></td>'
                 f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
                 + empty * 4
-                + empty * 4
+                + empty * 3
                 + '</tr>'
             )
         return (
-            '<tr class="bench-row" data-no-sort="1">'
+            '<tr class="bench-row" data-pinned="1">'
             '<td class="sum-status"></td>'
             f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
             + _sum_bp_cell(returns["dia"]) + _sum_bp_cell(returns["mtd"])
             + _sum_bp_cell(returns["ytd"]) + _sum_bp_cell(returns["m12"])
-            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 4
+            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 3
             + '</tr>'
         )
 
-    bench_rows_html = _bench_row("IBOV", ibov) + _bench_row("CDI", cdi)
+    idka3  = (idka_idx_ret or {}).get("IDKA_3Y")
+    idka10 = (idka_idx_ret or {}).get("IDKA_10Y")
+    bench_rows_html = (
+        _bench_row("IBOV",     ibov)
+      + _bench_row("CDI",      cdi)
+      + _bench_row("IDKA 3A",  idka3)
+      + _bench_row("IDKA 10A", idka10)
+    )
 
     # ── House-wide risk consolidated ───────────────────────────────────────────
     # Absolute VaR (% NAV) comes from series_map. BVaR (benchmark-relative) from:
@@ -7440,11 +7528,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             "<tr>"
             f'<td class="sum-fund">{r["label"]}</td>'
             f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
-            f'<td class="mono" style="text-align:right">{r["var_pct"]:.2f}%</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{_mm(r["var_brl"])} {rank_abs}</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}% {rank_abs}</td>'
             f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
-            f'<td class="mono" style="text-align:right">{r["bvar_pct"]:.2f}%</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{_mm(r["bvar_brl"])} {rank_rel}</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}% {rank_rel}</td>'
             "</tr>"
         )
     tot_nav      = sum(r["nav"]      for r in house_rows)
@@ -7456,11 +7542,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         '<tr class="house-total-row">'
         '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
-        f'<td class="mono" style="text-align:right">{tot_var_pct:.2f}%</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_var_brl)}</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
         '<td></td>'
-        f'<td class="mono" style="text-align:right">{tot_bvar_pct:.2f}%</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_bvar_brl)}</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
         '</tr>'
     )
     # ── Breakdown by risk factor — rows = factors, columns = funds (R$ exposure) ──
@@ -7478,11 +7562,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         "Commodities":        {},
     }
     if rf_expo_maps:
+        # rf_expo_maps.ano_eq_brl tem sign flip p/ chart (long duration = positivo).
+        # factor_matrix usa convenção DV01 (tomado=positivo, dado=negativo).
+        # → negar apenas "real" e "nominal" (fatores de taxa); "ipca_idx" é carry,
+        # sem flip no rf_expo_maps, não precisa negar.
+        _DV01_SIGN_FLIP = {"real": True, "nominal": True, "ipca_idx": False}
         for short_k, df_k in rf_expo_maps.items():
             if df_k is None or df_k.empty:
                 continue
             for factor_key, factor_col in [("Juros Reais (IPCA)", "real"), ("Juros Nominais", "nominal"), ("IPCA Idx", "ipca_idx")]:
                 v = float(df_k[df_k["factor"] == factor_col]["ano_eq_brl"].sum())
+                if _DV01_SIGN_FLIP.get(factor_col, False):
+                    v = -v
                 if abs(v) >= 1_000:
                     factor_matrix[factor_key][short_k] = v
     # Frontier = 100% equity BR long (NAV in R$)
@@ -7521,14 +7612,42 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         fx_delta = float(df_expo[df_expo["rf"].str.startswith("FX-", na=False)]["delta"].sum())
         if abs(fx_delta) >= 1_000:
             factor_matrix["FX"]["MACRO"] = fx_delta
-        # MACRO nominal-rate duration: sum delta × MOD_DURATION on RF-BZ books (sign = fund view).
-        rf_bz = df_expo[df_expo["rf"] == "RF-BZ"]
-        if not rf_bz.empty:
-            nominal_brl_yr = float((rf_bz["delta"] * rf_bz.get("delta_dur", 0) / rf_bz["delta"].replace(0, 1)).fillna(0).sum())
-            # simpler: delta_dur column is already delta × mod_duration
-            nominal_brl_yr = float(rf_bz["delta_dur"].sum()) if "delta_dur" in rf_bz.columns else 0.0
+        # MACRO nominal-rate duration: sum DELTA on RF-BZ / BRL Rate Curve primitive.
+        # IMPORTANT: DELTA in LOTE_PRODUCT_EXPO is already duration-weighted
+        # (= POSITION × MOD_DURATION). Do NOT multiply by MOD_DURATION again —
+        # the prior `delta_dur` column squared it. Filtering to BRL Rate Curve
+        # avoids double-counting primitives (IPCA Coupon, etc.) on hybrid rows.
+        rf_bz_nom = df_expo[(df_expo["rf"] == "RF-BZ")
+                            & (df_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")]
+        if not rf_bz_nom.empty:
+            nominal_brl_yr = float(rf_bz_nom["delta"].sum())
             if abs(nominal_brl_yr) >= 1_000:
                 factor_matrix["Juros Nominais"]["MACRO"] = nominal_brl_yr
+
+    # QUANT non-equity factors from df_quant_expo (has `factor` col already classified
+    # by `_quant_classify_factor`). Equity BR was populated earlier via single-name.
+    # Here: Juros Nominais (SIST_RF), FX (SIST_FX + SIST_GLOBAL), Commodities (SIST_COMMO).
+    if df_quant_expo is not None and not df_quant_expo.empty:
+        # For nominal rates, filter to BRL Rate Curve primitive to avoid double-count.
+        quant_nominal = df_quant_expo[
+            (df_quant_expo["factor"] == "Juros Nominais")
+            & (df_quant_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")
+        ]
+        if not quant_nominal.empty:
+            v = float(quant_nominal["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix["Juros Nominais"]["QUANT"] = (
+                    factor_matrix["Juros Nominais"].get("QUANT", 0.0) + v
+                )
+        for q_fac in ("FX", "Commodities"):
+            sub = df_quant_expo[df_quant_expo["factor"] == q_fac]
+            if sub.empty:
+                continue
+            v = float(sub["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix[q_fac]["QUANT"] = (
+                    factor_matrix[q_fac].get("QUANT", 0.0) + v
+                )
 
     # Benchmark allocations per fund, per factor (for net-of-bench view).
     # Real rates: IDKAs have duration-concentrated real-rate bench (3y × NAV, 10y × NAV).
@@ -7552,6 +7671,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
     factor_list = ["Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
 
+    house_nav_tot = sum(v for v in nav_by_short.values() if v)
     def _render_factor_rows(net_of_bench: bool) -> str:
         rows = ""
         for factor_key in factor_list:
@@ -7561,23 +7681,26 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if not shorts_with_data:
                 continue
             cells = ""
-            total = 0.0
+            total_brl = 0.0
             for short in FUND_ORDER:
                 gross = allocations.get(short, 0.0)
                 bench = benches.get(short, 0.0) if net_of_bench else 0.0
-                v = gross - bench
-                if abs(v) < 1_000:
+                v_brl = gross - bench
+                nav_k = nav_by_short.get(short, 0.0)
+                if abs(v_brl) < 1_000 or not nav_k:
                     cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
                 else:
-                    total += v
-                    col = "var(--up)" if v >= 0 else "var(--down)"
-                    cells += f'<td class="mono" style="text-align:right; color:{col}">{_mm(v)}</td>'
-            tot_col = "var(--up)" if total >= 0 else "var(--down)"
+                    total_brl += v_brl
+                    pct = v_brl / nav_k * 100
+                    col = "var(--up)" if v_brl >= 0 else "var(--down)"
+                    cells += f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
+            tot_col = "var(--up)" if total_brl >= 0 else "var(--down)"
+            tot_pct = (total_brl / house_nav_tot * 100) if house_nav_tot else 0.0
             rows += (
                 "<tr>"
                 f'<td class="sum-fund">{factor_key}</td>'
                 + cells
-                + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{_mm(total)}</td>'
+                + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_pct:+.2f}%</td>'
                 + "</tr>"
             )
         return rows
@@ -7815,7 +7938,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     <section class="card" id="breakdown-por-fator">
       <div class="card-head">
         <span class="card-title">Breakdown por Fator</span>
-        <span class="card-sub">— R$ exposure por fator × fundo · Real/Nominal/IPCA em BRL·ano; Equity em BRL nocional</span>
+        <span class="card-sub">— exposure (% NAV) por fator × fundo · Real/Nominal/IPCA em % NAV·ano (yr-eq); Equity/FX/Commodities em % NAV nocional</span>
         <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
           <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
           <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
@@ -7832,7 +7955,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       </table>
       <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
         <b>Líquido</b>: fundo − benchmark (IDKAs menos bench real-rate 3y/10y; Frontier menos IBOV 100% NAV). <b>Bruto</b>: exposição total sem abater bench.
-        Unidades misturadas por fator — Real/Nominal/IPCA em BRL·ano; Equity/FX/Commodities em BRL nocional. Cobre IDKAs + Albatroz + Frontier + MACRO + QUANT + EVOLUTION. Crédito omitido por escopo.
+        Cada célula = valor BRL / NAV do fundo × 100. Total = soma BRL / house NAV × 100. Real/Nominal/IPCA em %NAV·ano (yr-eq); Equity/FX/Commodities em %NAV nocional. Cobre IDKAs + Albatroz + Frontier + MACRO + QUANT + EVOLUTION. Crédito omitido por escopo.
       </div>
     </section>"""
 
@@ -7847,10 +7970,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           <th style="text-align:left">Fundo</th>
           <th style="text-align:right">NAV</th>
           <th style="text-align:right"><span class="kc">VaR</span> abs (%)</th>
-          <th style="text-align:right"><span class="kc">VaR</span> abs (R$)</th>
           <th style="text-align:center">Bench</th>
           <th style="text-align:right"><span class="kc">BVaR</span> rel (%)</th>
-          <th style="text-align:right"><span class="kc">BVaR</span> rel (R$)</th>
         </tr></thead>
         <tbody>{house_rows_html}</tbody>
         <tfoot>{house_total_row}</tfoot>
@@ -7858,7 +7979,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       <div class="bar-legend" style="margin-top:10px">
         🔺 top-5 por risco absoluto (R$) &nbsp;·&nbsp;
         🔷 top-5 por risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
-        <span style="color:var(--muted)">BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples (sem benefício de diversificação).</span>
+        <span style="color:var(--muted)">ranking por R$ (não exibido); BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples ponderada por NAV (sem benefício de diversificação).</span>
       </div>
     </section>"""
 
@@ -7866,7 +7987,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     <section class="card">
       <div class="card-head">
         <span class="card-title">Status consolidado</span>
-        <span class="card-sub">— {DATA_STR} · alpha vs. CDI (Frontier: ER vs. IBOV) · utilização de VaR e stop mensal</span>
+        <span class="card-sub">— {DATA_STR} · alpha vs. CDI (Frontier: ER vs. IBOV) · utilização de VaR</span>
       </div>
       <table class="summary-table">
         <thead><tr>
@@ -7878,7 +7999,6 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           <th style="text-align:right">12M</th>
           <th style="text-align:right"><span class="kc">VaR</span></th>
           <th style="text-align:right">Util <span class="kc">VaR</span></th>
-          <th style="text-align:right">Util Stop</th>
           <th style="text-align:right">Δ <span class="kc">VaR</span> D-1</th>
         </tr></thead>
         <tbody>{summary_rows_html}{bench_rows_html}</tbody>
@@ -7887,7 +8007,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <span style="color:var(--up)">🟢</span> util &lt; 70% &nbsp;·&nbsp;
         <span style="color:var(--warn)">🟡</span> 70–100% &nbsp;·&nbsp;
         <span style="color:var(--down)">🔴</span> ≥ 100% &nbsp;·&nbsp;
-        <span style="color:var(--muted)">Status = pior entre utilização de VaR e stop mensal</span>
+        <span style="color:var(--muted)">Status = utilização de VaR (stop mensal vive no Risk Budget)</span>
       </div>
     </section>"""
 
@@ -8265,7 +8385,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         for f in FUND_ORDER
     })
     report_labels_js = json.dumps({rid: label for rid, label in REPORTS})
-    fund_shorts_js   = json.dumps(list(FUND_ORDER))
+    # Include both uppercase shorts (MACRO, QUANT, ...) AND mixed-case labels
+    # (Macro, Quantitativo, Frontier, ...) + known sub-strategy tags so they all
+    # get highlighted in card-subs.
+    _EXTRA_FUND_TERMS = ["Evo Strategy", "Evolution FIC", "Evo"]
+    _highlight_terms = (
+        list(FUND_ORDER)
+      + list(set(FUND_LABELS.values()))
+      + _EXTRA_FUND_TERMS
+    )
+    fund_shorts_js   = json.dumps(_highlight_terms)
     fund_labels_js   = json.dumps(FUND_LABELS)
     fund_order_js    = json.dumps(list(FUND_ORDER))
 
@@ -8603,7 +8732,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   .fpa-pa-nested > section.card > .card-head {{ padding:0 0 8px !important; }}
 
-  /* Per-fund nav chips — appear at the top of each fund's section-wrap.
+  /* Per-fund nav chips — only visible in "Por Report" mode.
+     Click scrolls within the currently selected report to the chosen fund's
+     section-wrap. In "Por Fundo" mode the user is already viewing one fund, so
+     the chip bar would be redundant / confusing (and used to switch funds).
      Sticky below the header: as you scroll past one fund section the next
      section's chip bar naturally takes over (each bar highlights its own fund). */
   .fund-nav-chips {{
@@ -8615,6 +8747,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     font-size:11px; letter-spacing:.03em;
     box-shadow:0 4px 14px -8px rgba(0,0,0,.55);
   }}
+  body:not([data-mode="report"]) .fund-nav-chips {{ display:none; }}
   .fund-nav-chips .chip-label {{
     color:var(--muted); text-transform:uppercase; letter-spacing:.12em;
     font-size:10px; padding:4px 6px; align-self:center;
