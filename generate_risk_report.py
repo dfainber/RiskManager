@@ -5012,18 +5012,21 @@ def _build_executive_briefing(
         if net_by_factor:
             dom = max(net_by_factor.items(), key=lambda x: abs(x[1]))
             # Para fatores de juros use terminologia "tomado"/"dado" (convenção BR):
-            #   tomado = longo (positivo, ganha com alta de juros)
-            #   dado   = curto (negativo, ganha com queda de juros)
-            # Para outros fatores (equity, FX, commodities), use longo/curto.
+            #   tomado = pagar fixo  = risk-off (defensivo; ganha com alta de juros)
+            #   dado   = receber fixo = risk-on  (bullish; ganha com queda de juros)
+            # Semântica de cor: dado → verde (risk-on), tomado → vermelho (risk-off).
+            # Para outros fatores (equity/FX/commodities): longo→verde, curto→vermelho.
             is_rate = dom[0] in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
             if is_rate:
+                # Fund net sign convention: negative delta in rate factor = dado (receber fixo).
                 direction = "tomado" if dom[1] > 0 else "dado"
+                dir_color = "var(--down)" if dom[1] > 0 else "var(--up)"  # tomado=red, dado=green
             else:
                 direction = "longo" if dom[1] > 0 else "curto"
-            dir_color = "var(--down)" if dom[1] < 0 else "var(--up)"
+                dir_color = "var(--up)"   if dom[1] > 0 else "var(--down)"
             parts_insight.append(
                 f'<li><b>Fator dominante:</b> casa está '
-                f'<b style="color:{dir_color}">{direction}</b> em '
+                f'<b class="mono" style="color:{dir_color} !important; font-weight:700">{direction}</b> em '
                 f'<b>{dom[0]}</b> · <span class="mono">{_mm(dom[1])}</span> líquido do bench.</li>'
             )
 
