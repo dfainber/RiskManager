@@ -3991,7 +3991,19 @@ FUND_LABELS = {
     "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
 }
 
-# PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short
+# PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short.
+#
+# IDKA calibration vs. xlsx (F:/Macros/DADOS/Projetos/PA_Fundos/PA_REPORTS/YYYY_MM_DD_DAILY_PA.xlsx):
+# ---------------------------------------------------------------------------------------------------
+# Snapshot 2026-04-17 · IDKA 3Y "DISCRICIONÁRIO" TOTAL row (RF BZ + RF BZ IPCA only, exclui Caixa/Custos):
+#   Xlsx:  DIA +7.58 bps · MÊS +85.98 bps · ANO -65.94 bps
+#   DB:    DIA +7.58 bps · MÊS +86.17 bps · ANO -61.93 bps
+# DIA bate exato. MÊS/ANO com residual de ~2–4 bps — provável rounding de display no xlsx vs floats
+# no banco, não problema estrutural. Revisitar se algum dia o gap crescer para > 10 bps.
+#
+# IDKAs não têm coluna LEVEL em REPORT_ALPHA_ATRIBUTION — apenas leaf rows (87 p/ 3Y, 85 p/ 10Y).
+# A hierarquia de níveis vem das colunas dimensionais: CLASSE → GRUPO → SUBCLASSE → LIVRO →
+# BOOK → PRODUCT_CLASS → PRODUCT.
 _FUND_PA_KEY = {
     "MACRO":     "MACRO",
     "QUANT":     "QUANT",
