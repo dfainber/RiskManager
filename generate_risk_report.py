@@ -2818,7 +2818,11 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
 
 def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -> str:
     """Backward-looking: yesterday's carteira × last 252d, with today's realized DIA overlayed.
-       Answers: 'where did today's move land in the historical distribution of D-1 carteira?'"""
+       Answers: 'where did today's move land in the historical distribution of D-1 carteira?'
+
+       Drill-down: fund row always visible; livro/rf rows hidden until fund row
+       is clicked (caret toggle). Parent key = fund_short.
+    """
     if not dist_map_prev:
         return ""
     rows = ""
@@ -2840,10 +2844,21 @@ def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -
         nv_s    = f"{nv:+.2f}" if nv is not None else "—"
         tag, tag_c = _kind_tag(kind)
 
+        if kind == "fund":
+            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▶</span> '
+            row_attrs = (f'class="metric-row dist-row-fund" data-dist-kind="fund" '
+                         f'data-dist-key="{fund_short}" '
+                         f'onclick="toggleDistChildren(this)" style="cursor:pointer"')
+        else:
+            caret = ''
+            row_attrs = (f'class="metric-row dist-row-child" '
+                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}" '
+                         f'style="display:none"')
+
         rows += f"""
-        <tr class="metric-row">
+        <tr {row_attrs}>
           <td class="dist-tag" style="color:{tag_c}">{tag}</td>
-          <td class="dist-name">{label}</td>
+          <td class="dist-name">{caret}{label}</td>
           <td class="dist-num mono" style="color:{col}; font-weight:700">{a:+.0f}</td>
           <td class="dist-num mono" style="color:{pct_col}; font-weight:600">{pct:.0f}°</td>
           <td class="dist-num mono">{nv_s}</td>
@@ -2869,7 +2884,9 @@ def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -
       </div>"""
 
 def _build_forward_table(fund_short: str, dist_map: dict) -> str:
-    """Forward-looking: today's carteira × last 252d. Describes expected P&L profile."""
+    """Forward-looking: today's carteira × last 252d. Describes expected P&L profile.
+       Drill-down: fund row clickable, child rows (livro/rf) hidden by default.
+    """
     if not dist_map:
         return ""
     rows = ""
@@ -2881,10 +2898,20 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
         if stats is None or abs(stats["max"] - stats["min"]) < 1e-6:
             continue
         tag, tag_c = _kind_tag(kind)
+        if kind == "fund":
+            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▶</span> '
+            row_attrs = (f'class="metric-row dist-row-fund" data-dist-kind="fund" '
+                         f'data-dist-key="{fund_short}" '
+                         f'onclick="toggleDistChildren(this)" style="cursor:pointer"')
+        else:
+            caret = ''
+            row_attrs = (f'class="metric-row dist-row-child" '
+                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}" '
+                         f'style="display:none"')
         rows += f"""
-        <tr class="metric-row">
+        <tr {row_attrs}>
           <td class="dist-tag" style="color:{tag_c}">{tag}</td>
-          <td class="dist-name">{label}</td>
+          <td class="dist-name">{caret}{label}</td>
           <td class="dist-num mono" style="color:var(--down)">{stats['min']:.0f}</td>
           <td class="dist-num mono" style="color:var(--warn)">{stats['var95']:.0f}</td>
           <td class="dist-num mono" style="color:var(--muted)">{stats['mean']:+.1f}</td>
@@ -8101,6 +8128,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     card.querySelectorAll('.rf-brl-body').forEach(function(v) {{
       v.style.display = (v.dataset.rfBrl === mode) ? '' : 'none';
     }});
+  }};
+  // Distribuição 252d — drill-down (fund row expands livro/rf children)
+  window.toggleDistChildren = function(tr) {{
+    var key = tr.getAttribute('data-dist-key');
+    if (!key) return;
+    var table = tr.closest('table'); if (!table) return;
+    var children = table.querySelectorAll('tr.dist-row-child[data-dist-parent="' + key + '"]');
+    var anyVisible = false;
+    children.forEach(function(r) {{ if (r.style.display !== 'none') anyVisible = true; }});
+    var willOpen = !anyVisible;
+    children.forEach(function(r) {{ r.style.display = willOpen ? '' : 'none'; }});
+    var caret = tr.querySelector('.dist-caret');
+    if (caret) caret.textContent = willOpen ? '▼' : '▶';
   }};
   // QUANT exposure — sort positions within each factor (respects hierarchy)
   window.sortQuantExpoPositions = function(btn, mode) {{
