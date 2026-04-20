@@ -6279,9 +6279,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     factor_rows_bruto   = _render_factor_rows(net_of_bench=False)
     factor_rows_html    = factor_rows_liquido  # keep legacy var name for below
 
-    # Per-fund mini briefings. sections_html was already rendered above, so
-    # accumulate into a separate string and concatenate into sections_html later.
-    _briefing_sections_extra = ""
+    # Per-fund mini briefings. Rebuild sections_html so briefings come FIRST
+    # within each fund's block (DOM order = tab order: briefing → ... → others).
+    _briefing_by_short = {}
     for short in FUND_ORDER:
         hr = _house_by_short.get(short)
         if not hr:
@@ -6293,16 +6293,28 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             frontier_bvar=frontier_bvar if short == "FRONTIER" else None,
         )
         if mini_html:
-            _briefing_sections_extra += (
-                f'<div id="sec-{short}-briefing" class="section-wrap" '
-                f'data-fund="{short}" data-report="briefing">{mini_html}</div>'
-            )
-            # Also update the derived structures built earlier so the nav tabs pick up
-            # the briefing tab per fund.
+            _briefing_by_short[short] = mini_html
             available_pairs.add((short, "briefing"))
-    sections_html += _briefing_sections_extra
     if "briefing" not in reports_with_data:
         reports_with_data = ["briefing"] + list(reports_with_data)
+
+    # Rebuild sections_html: briefing first per fund, then the rest in their
+    # original REPORTS-order sequence.
+    _sections_by_fund = {}
+    for f, r, h in sections:
+        _sections_by_fund.setdefault(f, []).append((r, h))
+    _reordered_html = ""
+    for f in FUND_ORDER:
+        if f in _briefing_by_short:
+            _reordered_html += (
+                f'<div id="sec-{f}-briefing" class="section-wrap" '
+                f'data-fund="{f}" data-report="briefing">{_briefing_by_short[f]}</div>'
+            )
+        for r, h in _sections_by_fund.get(f, []):
+            _reordered_html += (
+                f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
+            )
+    sections_html = _reordered_html
 
     fund_col_headers = "".join(
         f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
