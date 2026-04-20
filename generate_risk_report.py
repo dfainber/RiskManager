@@ -1238,26 +1238,36 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
             + f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11px">{r.n} pos</td>'
             "</tr>"
         )
-        # Per-position drill-down rows (hidden by default)
-        sub = df[df["factor"] == r.factor].sort_values(
-            "delta", key=lambda s: s.abs(), ascending=False
-        )
-        for _, p in sub.iterrows():
+        # Per-product drill-down (aggregated across BOOK / PRIMITIVE — user
+        # cares about the instrument, not which livro holds it).
+        sub = df[df["factor"] == r.factor]
+        by_product = sub.groupby("PRODUCT").agg(
+            delta=("delta", "sum"),
+            delta_dur=("delta_dur", "sum"),
+            gross=("_abs_delta", "sum"),
+            livros=("BOOK", lambda s: ", ".join(sorted(set(s)))),
+        ).reset_index()
+        # Default sort: |delta| desc (user: "maior absoluto a menor")
+        by_product["_abs"] = by_product["delta"].abs()
+        by_product = by_product.sort_values("_abs", ascending=False)
+        for _, p in by_product.iterrows():
             p_delta = float(p["delta"])
             p_ddur  = float(p["delta_dur"])
+            p_abs   = float(p["gross"])
             p_col   = "var(--up)" if p_delta >= 0 else "var(--down)"
             p_pct_nav = (p_delta / nav * 100) if nav else 0
+            p_gross_pct = (p_abs / nav * 100) if nav else 0
             dur_inline = (
                 f' · {p_ddur/1e6:+,.2f}M·yr'
                 if is_rate and abs(p_ddur) >= 1e4 else ''
             )
-            p_abs = abs(p_delta)
-            p_gross_pct = (p_abs / nav * 100) if nav else 0
             factor_rows += (
-                f'<tr class="qexpo-row qexpo-lvl-1" data-qexpo-parent="{path}" style="display:none">'
+                f'<tr class="qexpo-row qexpo-lvl-1" data-qexpo-parent="{path}" '
+                f'data-sort-abs="{p_abs:.2f}" data-sort-delta="{p_delta:.2f}" '
+                f'style="display:none">'
                 f'<td style="padding-left:28px; font-size:11.5px">'
                 f'<span class="mono" style="color:var(--text); font-weight:600">{p["PRODUCT"]}</span> '
-                f'<span class="mono" style="color:var(--muted); font-size:10.5px">({p["BOOK"]} · {p["PRIMITIVE_CLASS"]})</span>'
+                f'<span class="mono" style="color:var(--muted); font-size:10px">({p["livros"]})</span>'
                 f'</td>'
                 f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_pct_nav:+.2f}%</td>'
                 f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_delta/1e6:+,.2f}M{dur_inline}</td>'
@@ -1325,6 +1335,19 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
       </div>
 
       <div class="qexpo-view" data-qexpo-view="factor">
+        <div class="qexpo-sort-bar" style="display:flex; gap:6px; margin:4px 0 8px; font-size:10.5px; align-items:center">
+          <span style="color:var(--muted); letter-spacing:.1em; text-transform:uppercase">Drill sort:</span>
+          <button class="pa-tgl active" data-qexpo-sort="abs_delta"
+                  onclick="sortQuantExpoPositions(this,'abs_delta')">↓ |Net|</button>
+          <button class="pa-tgl" data-qexpo-sort="gross"
+                  onclick="sortQuantExpoPositions(this,'gross')">↓ Gross</button>
+          <button class="pa-tgl" data-qexpo-sort="net_desc"
+                  onclick="sortQuantExpoPositions(this,'net_desc')">↓ Net</button>
+          <button class="pa-tgl" data-qexpo-sort="net_asc"
+                  onclick="sortQuantExpoPositions(this,'net_asc')">↑ Net</button>
+          <button class="pa-tgl" data-qexpo-sort="name"
+                  onclick="sortQuantExpoPositions(this,'name')">A-Z</button>
+        </div>
         <table class="summary-table" data-no-sort="1">
           <thead><tr>
             <th style="text-align:left">Fator</th>
@@ -4555,7 +4578,11 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
                 return dict(status="missing", date="—", detail="Exposição ALBATROZ não disponível")
             return dict(status="ok", date=DATA_STR_, detail=f"{rows} posições")
         if short == "QUANT":
-            return dict(status="na", date="—", detail="Exposição QUANT não implementada")
+            ok = manifest.get("quant_expo_ok", False)
+            rows = manifest.get("quant_expo_rows", 0)
+            if not ok:
+                return dict(status="missing", date="—", detail="Exposição QUANT não disponível")
+            return dict(status="ok", date=DATA_STR_, detail=f"{rows} posições")
         ok = manifest.get("expo_ok", False)
         rows = manifest.get("expo_rows", 0)
         stale = expo_date != DATA_STR_
@@ -7732,6 +7759,36 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       v.style.display = (v.dataset.rfBrl === mode) ? '' : 'none';
     }});
   }};
+  // QUANT exposure — sort positions within each factor (respects hierarchy)
+  window.sortQuantExpoPositions = function(btn, mode) {{
+    var card = btn.closest('.card');
+    if (!card) return;
+    card.querySelectorAll('.qexpo-sort-bar .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.qexpoSort === mode);
+    }});
+    var tbody = card.querySelector('.qexpo-view[data-qexpo-view="factor"] table tbody');
+    if (!tbody) return;
+    var parents = tbody.querySelectorAll('tr[data-qexpo-path]');
+    parents.forEach(function(p) {{
+      var path = p.getAttribute('data-qexpo-path');
+      var children = Array.from(tbody.querySelectorAll('tr[data-qexpo-parent="' + path + '"]'));
+      children.sort(function(a, b) {{
+        var da = parseFloat(a.dataset.sortDelta || '0');
+        var db = parseFloat(b.dataset.sortDelta || '0');
+        var ga = parseFloat(a.dataset.sortAbs   || '0');
+        var gb = parseFloat(b.dataset.sortAbs   || '0');
+        if (mode === 'gross')    return gb - ga;
+        if (mode === 'net_desc') return db - da;
+        if (mode === 'net_asc')  return da - db;
+        if (mode === 'name')     return (a.textContent || '').localeCompare(b.textContent || '');
+        // default abs_delta
+        return Math.abs(db) - Math.abs(da);
+      }});
+      // Re-insert children in order right after the parent.
+      var anchor = p;
+      children.forEach(function(c) {{ anchor.after(c); anchor = c; }});
+    }});
+  }};
   // QUANT exposure — Por Fator drill-down (click factor to expand positions)
   window.toggleQuantExpoFactor = function(tr) {{
     var path = tr.getAttribute('data-qexpo-path');
@@ -8414,6 +8471,7 @@ if __name__ == "__main__":
         "dist_prev_ok":   bool(dist_map_prev),
         # ALBATROZ
         "alb_expo_ok":    df_alb_expo is not None and not df_alb_expo.empty,
+        "quant_expo_ok":  df_quant_expo is not None and not df_quant_expo.empty,
         # Stop monitor
         "stop_ok":        bool(pm_margem),
         "stop_has_pnl":   any(abs(pm_margem.get(pm, STOP_BASE) - STOP_BASE) > 1 for pm in pm_margem),
@@ -8422,6 +8480,7 @@ if __name__ == "__main__":
         "quant_sn_rows":  len(df_quant_sn) if df_quant_sn is not None else 0,
         "evo_sn_rows":    len(df_evo_sn)   if df_evo_sn   is not None else 0,
         "alb_expo_rows":  len(df_alb_expo) if df_alb_expo is not None and not df_alb_expo.empty else 0,
+        "quant_expo_rows": len(df_quant_expo) if df_quant_expo is not None and not df_quant_expo.empty else 0,
         "stop_pms":       sorted(pm_margem.keys()) if pm_margem else [],
         "stop_pms_pnl":   [pm for pm, v in (pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
     }
