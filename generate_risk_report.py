@@ -3445,39 +3445,45 @@ def _build_pa_view(fund_short: str, df: pd.DataFrame, view_id: str,
 
 def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
                                   idka_index_ret: dict, w_alb: float,
-                                  albatroz_pa_sum: dict) -> str:
+                                  albatroz_pa_sum: dict, ibov: dict = None) -> str:
     """3-line bench decomposition table for IDKA PA (as a 3rd view).
 
-    For IDKA funds benchmarked to IDKA_index, decomposes α vs. bench into:
-      Total     = fund_return − IDKA_index   (per window)
-      Via Alb   = w_alb × Albatroz_α_vs_CDI
-      Swap leg  = w_alb × (CDI − IDKA_index)
-      Direct α  = Total − Via Alb − Swap  (residual, closes the identity)
+    Engine stores each fund's PA vs. its own benchmark:
+      - IDKA PA rows are already α vs. IDKA_index
+      - Albatroz PA rows are already α vs. CDI
 
-    All inputs in bps (from fetch_cdi_returns / fetch_idka_index_returns /
-    sum of PA rows in bps).
+    Decomposition (per window):
+      Total     = sum(IDKA_PA_bps)                       (α vs. IDKA_index directly)
+      Via Alb   = w_alb × Albatroz_α_vs_CDI              (Albatroz's own α, scaled)
+      Swap leg  = w_alb × (CDI − IDKA_index)             (bench-cross adjustment)
+      Direct α  = Total − Via Alb − Swap                 (residual)
+
+    Rationale: the Albatroz slice earns Albatroz_return = CDI + Albatroz_α.
+    IDKA evaluates everything vs. IDKA_index, so the Albatroz slice's
+    contribution to IDKA α is w_alb × (Albatroz_return − IDKA_index)
+    = Via Alb + Swap leg. Direct α is what the fund's own direct holdings
+    added beyond that.
     """
     windows = ["dia", "mtd", "ytd", "m12"]
 
-    # Fund alpha vs CDI (from IDKA PA rows, already net of CDI in the engine)
+    # IDKA PA rows are already α vs. IDKA_index (confirmed per Diego 2026-04-19)
     sum_idka_pa = {w: 0.0 for w in windows}
     for w in windows:
         col = f"{w}_bps"
         sum_idka_pa[w] = float(df[col].sum()) if col in df.columns else 0.0
 
-    # Derived per-window values
     def _val(d, key):
         return float(d.get(key, 0.0)) if d else 0.0
 
-    total = {}   # total α vs IDKA_index = sum_pa + CDI - idka_idx
-    via_alb = {}  # w_alb × Albatroz α vs CDI
-    swap = {}    # w_alb × (CDI - idka_idx)
-    direct = {}  # residual
+    total = {}    # α vs. IDKA_index = sum_pa directly
+    via_alb = {}  # w_alb × Albatroz α vs. CDI
+    swap = {}     # w_alb × (CDI − idka_idx)
+    direct = {}   # residual
     for w in windows:
         cdi_w = _val(cdi, w)
         idx_w = _val(idka_index_ret, w)
         alb_w = _val(albatroz_pa_sum, w)
-        total[w]   = sum_idka_pa[w] + cdi_w - idx_w
+        total[w]   = sum_idka_pa[w]
         via_alb[w] = w_alb * alb_w
         swap[w]    = w_alb * (cdi_w - idx_w)
         direct[w]  = total[w] - via_alb[w] - swap[w]
@@ -3542,6 +3548,23 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
     # Grand total
     rows += _row("<b>Total vs. IDKA benchmark</b>", total, bold=True)
 
+    # ── Referência — retorno absoluto do fundo e dos benchmarks principais
+    # (contexto: igual ao bloco "RETORNO ABSOLUTO / CDI / IBOV / IDKA_IPCA_3A"
+    # do xlsx oficial da Controle)
+    idx_label = "IDKA_IPCA_3A" if fund_short == "IDKA_3Y" else "IDKA_IPCA_10A"
+    retorno_abs = {w: total[w] + float((idka_index_ret or {}).get(w, 0.0)) for w in windows}
+    rows += (
+        '<tr class="pa-row pa-group-header">'
+        '<td class="pa-name" style="font-weight:700; color:var(--muted); '
+        'text-transform:uppercase; letter-spacing:.05em; font-size:10.5px; padding-top:14px">Referência</td>'
+        '<td></td><td></td><td></td><td></td></tr>'
+    )
+    rows += _row("&nbsp;&nbsp;Retorno Absoluto fund", retorno_abs, sub="= Total α + IDKA_index")
+    rows += _row(f"&nbsp;&nbsp;{idx_label}", idka_index_ret or {}, sub="bench")
+    rows += _row("&nbsp;&nbsp;CDI", cdi or {}, sub="ref. juros")
+    if ibov:
+        rows += _row("&nbsp;&nbsp;IBOV", ibov, sub="ref. equity")
+
     return f"""
     <div class="pa-view" data-pa-view="bench" style="display:none">
       <div style="padding:8px 4px; font-size:11px; color:var(--muted); line-height:1.5">
@@ -3563,7 +3586,7 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
 
 def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
                            idka_index_ret: dict = None, w_alb: float = None,
-                           albatroz_pa_sum: dict = None) -> str:
+                           albatroz_pa_sum: dict = None, ibov: dict = None) -> str:
     """
     PA card with hierarchical views (Por Classe / Por Livro).
     For IDKA funds, adds a 3rd view "Por Bench" with bench decomposition
@@ -3609,7 +3632,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     classe_active_cls = "active" if not bench_enabled else ""
     if bench_enabled:
         view_bench = _build_pa_bench_decomp_view(
-            fund_short, df, cdi, idka_index_ret, w_alb, albatroz_pa_sum
+            fund_short, df, cdi, idka_index_ret, w_alb, albatroz_pa_sum, ibov=ibov
         )
         # Force-display the bench view as active (override the default hidden)
         view_bench = view_bench.replace(
@@ -5131,7 +5154,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             pa_html = build_pa_section_hier(
                 short, df_pa, cdi_row,
                 idka_index_ret=idx_ret, w_alb=w_alb,
-                albatroz_pa_sum=albatroz_pa_sum,
+                albatroz_pa_sum=albatroz_pa_sum, ibov=ibov,
             )
             if pa_html:
                 sections.append((short, "performance", pa_html))
