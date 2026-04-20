@@ -702,11 +702,62 @@ _DIST_PORTFOLIOS = [
     ("SIST_GLOBAL", "Sub · Global",       "livro", "SIST_GLOBAL", "QUANT"),
     ("Bracco",      "Bracco",             "livro", "Bracco",      "QUANT"),
     ("Quant_PA",    "Quant PA",           "livro", "Quant_PA",    "QUANT"),
+    # FRONTIER — realized alpha vs IBOV series (no HS simulation available).
+    # Series is fetched separately from frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD.
+    ("FRONTIER",    "FRONTIER α vs IBOV", "fund",  "FRONTIER",    "FRONTIER"),
+    # ALBATROZ — parked (waiting for engine HS).
 ]
+
+def fetch_albatroz_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
+    """Realized daily alpha vs CDI (bps of NAV) for Albatroz, last `window_days`
+       business days ending at date_str. Source: q_models.REPORT_ALPHA_ATRIBUTION
+       (the table stores alpha by design — DIA column × 10000 = alpha in bps)."""
+    q = f"""
+    SELECT "DATE", SUM("DIA") * 10000 AS alpha_bps
+    FROM q_models."REPORT_ALPHA_ATRIBUTION"
+    WHERE "FUNDO" = 'ALBATROZ'
+      AND "DATE" >  DATE '{date_str}' - INTERVAL '500 days'
+      AND "DATE" <= DATE '{date_str}'
+    GROUP BY "DATE"
+    ORDER BY "DATE" DESC
+    LIMIT {window_days}
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return np.array([])
+    if df.empty or df["alpha_bps"].isna().all():
+        return np.array([])
+    return df.sort_values("DATE")["alpha_bps"].astype(float).to_numpy()
+
+
+def fetch_frontier_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
+    """Realized daily alpha vs IBOV (bps of NAV) for Frontier, last `window_days`
+       business days ending at date_str. Series is summed across positions per VAL_DATE.
+       Returns empty array when data is missing/insufficient."""
+    q = f"""
+    SELECT "VAL_DATE", SUM("TOTAL_IBVSP_DAY") AS alpha_day
+    FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+    WHERE "VAL_DATE" > DATE '{date_str}' - INTERVAL '500 days'
+      AND "VAL_DATE" <= DATE '{date_str}'
+    GROUP BY "VAL_DATE"
+    ORDER BY "VAL_DATE" DESC
+    LIMIT {window_days}
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return np.array([])
+    if df.empty or df["alpha_day"].isna().all():
+        return np.array([])
+    s = df.sort_values("VAL_DATE")["alpha_day"].astype(float) * 10_000.0
+    return s.to_numpy()
+
 
 def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:
     """Fetch 252d W series per PORTIFOLIO for PORTIFOLIO_DATE = date_str.
-       Returns dict {portfolio_name: np.array of W values (bps)}."""
+       Returns dict {portfolio_name: np.array of W values (bps)}.
+       FRONTIER: realized alpha vs IBOV (no HS engine), merged under key 'FRONTIER'."""
     q = f"""
     SELECT "PORTIFOLIO", "DATE_SYNTHETIC_POSITION", "W"
     FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
@@ -714,9 +765,15 @@ def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:
     ORDER BY "PORTIFOLIO", "DATE_SYNTHETIC_POSITION"
     """
     df = read_sql(q)
-    if df.empty:
-        return {}
-    return {p: g["W"].to_numpy() for p, g in df.groupby("PORTIFOLIO")}
+    out = {p: g["W"].to_numpy() for p, g in df.groupby("PORTIFOLIO")} if not df.empty else {}
+    # Frontier: realized alpha series spliced in under key "FRONTIER".
+    fr = fetch_frontier_alpha_series(date_str)
+    if len(fr) >= 30:
+        out["FRONTIER"] = fr
+    # Albatroz: parked — waiting for ALBATROZ in PORTIFOLIO_DAILY_HISTORICAL_SIMULATION
+    # (same-carteira-across-252d semantics as MACRO, requested engine-side).
+    # `fetch_albatroz_alpha_series` kept as a dormant helper for quick re-enable.
+    return out
 
 def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
     """Realized DIA (bps of NAV) today for fund / PM / factor cuts.
@@ -752,6 +809,23 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
         rf_agg = book_df.dropna(subset=["rf"]).groupby("rf")["dia_bps"].sum()
         for rf, v in rf_agg.items():
             actuals[f'rf:{rf}'] = float(v)
+
+    # FRONTIER — realized α vs IBOV on the latest available VAL_DATE ≤ date_str.
+    try:
+        fr_df = read_sql(f"""
+            SELECT SUM("TOTAL_IBVSP_DAY") * 10000 AS alpha_bps
+            FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+            WHERE "VAL_DATE" = (
+                SELECT MAX("VAL_DATE") FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+                WHERE "VAL_DATE" <= DATE '{date_str}'
+            )
+        """)
+        if not fr_df.empty and pd.notna(fr_df["alpha_bps"].iloc[0]):
+            actuals["fund:FRONTIER"] = float(fr_df["alpha_bps"].iloc[0])
+    except Exception:
+        pass
+
+    # ALBATROZ — parked (see fetch_pnl_distribution).
     return actuals
 
 def compute_portfolio_vol_regime(dist_map: dict, vol_window: int = 21) -> dict:
@@ -1684,10 +1758,14 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
     livro_rows = ""
     for livro, row in pivot.iterrows():
         cells = "".join(_pct(row[f]) for f in livro_factors)
-        cells += f'<td class="mono" style="text-align:right; font-weight:600">{row["_total"]/1e6:+,.1f}M</td>'
+        _tot_pct = row["_total"] * 100 / nav if nav else 0
+        _tot_col = "var(--up)" if row["_total"] >= 0 else "var(--down)"
+        cells += f'<td class="mono" style="text-align:right; font-weight:600; color:{_tot_col}">{_tot_pct:+.2f}%</td>'
         livro_rows += f'<tr><td class="sum-fund">{livro}</td>{cells}</tr>'
     totals_cells = "".join(_pct(pivot[f].sum()) for f in livro_factors)
-    totals_cells += f'<td class="mono" style="text-align:right; font-weight:700">{pivot["_total"].sum()/1e6:+,.1f}M</td>'
+    _gt_pct = pivot["_total"].sum() * 100 / nav if nav else 0
+    _gt_col = "var(--up)" if pivot["_total"].sum() >= 0 else "var(--down)"
+    totals_cells += f'<td class="mono" style="text-align:right; font-weight:700; color:{_gt_col}">{_gt_pct:+.2f}%</td>'
     livro_rows += (
         '<tr class="pa-total-row">'
         '<td class="sum-fund" style="font-weight:700">Total</td>'
@@ -1809,7 +1887,8 @@ def _rf_bucket(yrs: float) -> str | None:
     return _RF_BUCKETS[-1][0]
 
 
-def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
+def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
+                           lookthrough_only: bool = False) -> pd.DataFrame:
     """Fetch position-level RF exposure for a desk with look-through to Albatroz.
        LOTE_PRODUCT_EXPO decomposes each bond into multiple PRIMITIVE_CLASS rows
        (IPCA / IPCA Coupon / Brazil Sovereign Yield / BRL Rate Curve). To avoid
@@ -1820,46 +1899,66 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
          - CDI/floating           (LFT, Cash, Compromissada) → 'Brazil Sovereign Yield'
        Additional 'IPCA' primitive rows are kept separately for IPCA-index carry
        (face-value exposure to inflation).
-       Returns columns: source, via (direct/via_albatroz), BOOK, PRODUCT_CLASS,
+       lookthrough_only: when True, pull ALL positions with TRADING_DESK_SHARE_SOURCE = desk
+          regardless of which desk physically holds them. Used for EVOLUTION (FIC fund
+          with no direct RF book — all RF exposure arrives via look-through).
+       Returns columns: source, via (direct/via_albatroz/lookthrough), BOOK, PRODUCT_CLASS,
                         PRIMITIVE_CLASS, PRODUCT, expiry, days_to_exp,
                         delta_brl, mod_dur, ano_eq_brl, factor, bucket
     """
-    # Two sets: (a) direct positions held by the desk itself;
-    # (b) positions held inside Albatroz that are attributable to this desk's
-    # share of Albatroz (reverse attribution — exploded look-through).
     albatroz_td = "GALAPAGOS ALBATROZ FIRF LP"
-    q_direct = f"""
-    SELECT 'direct' AS via,
-           "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
-           MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
-           SUM("DELTA")               AS delta_brl,
-           MAX("MOD_DURATION")        AS mod_dur,
-           SUM("POSITION")            AS position_brl
-    FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-    WHERE "TRADING_DESK" = '{desk}'
-      AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
-      AND "VAL_DATE" = DATE '{date_str}'
-      AND "DELTA" <> 0
-    GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
-    """
-    parts = [read_sql(q_direct)]
-    # Skip the Albatroz look-through for Albatroz itself (prevents self-join).
-    if desk != albatroz_td:
-        q_via = f"""
-        SELECT 'via_albatroz' AS via,
+    if lookthrough_only:
+        # Single query: all desks where `desk` is the share_source (Evolution semantics).
+        q_lt = f"""
+        SELECT 'lookthrough' AS via,
                "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
                MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
                SUM("DELTA")               AS delta_brl,
                MAX("MOD_DURATION")        AS mod_dur,
                SUM("POSITION")            AS position_brl
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-        WHERE "TRADING_DESK" = '{albatroz_td}'
+        WHERE "TRADING_DESK_SHARE_SOURCE" = '{desk}'
+          AND "VAL_DATE" = DATE '{date_str}'
+          AND "DELTA" <> 0
+        GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
+        """
+        parts = [read_sql(q_lt)]
+    else:
+        # Two sets: (a) direct positions held by the desk itself;
+        # (b) positions held inside Albatroz that are attributable to this desk's
+        # share of Albatroz (reverse attribution — exploded look-through).
+        q_direct = f"""
+        SELECT 'direct' AS via,
+               "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
+               MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
+               SUM("DELTA")               AS delta_brl,
+               MAX("MOD_DURATION")        AS mod_dur,
+               SUM("POSITION")            AS position_brl
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK" = '{desk}'
           AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
           AND "VAL_DATE" = DATE '{date_str}'
           AND "DELTA" <> 0
         GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
         """
-        parts.append(read_sql(q_via))
+        parts = [read_sql(q_direct)]
+        # Skip the Albatroz look-through for Albatroz itself (prevents self-join).
+        if desk != albatroz_td:
+            q_via = f"""
+            SELECT 'via_albatroz' AS via,
+                   "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY",
+                   MIN("DAYS_TO_EXPIRATION") AS days_to_exp,
+                   SUM("DELTA")               AS delta_brl,
+                   MAX("MOD_DURATION")        AS mod_dur,
+                   SUM("POSITION")            AS position_brl
+            FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+            WHERE "TRADING_DESK" = '{albatroz_td}'
+              AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
+              AND "VAL_DATE" = DATE '{date_str}'
+              AND "DELTA" <> 0
+            GROUP BY "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT", "EXPIRY"
+            """
+            parts.append(read_sql(q_via))
     df = pd.concat([p for p in parts if p is not None and not p.empty], ignore_index=True)
     if df.empty:
         return df
@@ -2156,7 +2255,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
             f'<td class="mono" style="color:var(--muted); font-size:11px">{r["factor"]}</td>'
             + _p_cell(r.get("yrs_to_mat"), "{:.2f}y")
             + _p_cell(r.get("mod_dur"),    "{:.2f}")
-            + _p_cell(r.get("position_brl")/1e6 if r.get("position_brl") is not None else None, "{:+.1f}M")
+            + _p_cell(r.get("pct_nav"),    "{:+.2f}%")
             + _p_cell(r.get("ano_eq_yr"),  "{:+.3f}", color_bias=True)
             + "</tr>"
         )
@@ -2168,7 +2267,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
           <th style="text-align:left">Fator</th>
           <th style="text-align:right">Maturidade</th>
           <th style="text-align:right">Duration</th>
-          <th style="text-align:right">Position (R$)</th>
+          <th style="text-align:right">Position (%NAV)</th>
           <th style="text-align:right">ANO_EQ (yr)</th>
         </tr></thead>
         <tbody>{pos_rows}</tbody>
@@ -3028,12 +3127,17 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
     if not bw_table and not fw_table:
         return ""
     dck_id = f"dist-{fund_short.lower()}"
+    # Frontier uses realized α vs IBOV (no HS engine); annotate the sub so it's clear.
+    if fund_short == "FRONTIER":
+        sub = f"— {fund_short} · α vs IBOV · bps de NAV · realizado"
+    else:
+        sub = f"— {fund_short} · bps de NAV"
     return f"""
     <section class="card" id="{dck_id}">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
         <div>
           <span class="card-title">Distribuição 252d</span>
-          <span class="card-sub">— {fund_short} · bps de NAV</span>
+          <span class="card-sub">{sub}</span>
         </div>
         <div class="dist-toggle">
           <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
@@ -3157,9 +3261,9 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
             <th style="text-align:left;width:54px">Tipo</th>
             <th style="text-align:left">Nome</th>
             <th style="text-align:right;width:60px">Min</th>
-            <th style="text-align:right;width:70px">VaR 95</th>
+            <th style="text-align:right;width:70px"><span class="kc">VaR</span> 95</th>
             <th style="text-align:right;width:60px">Média</th>
-            <th style="text-align:right;width:70px">VaR +95</th>
+            <th style="text-align:right;width:70px"><span class="kc">VaR</span> +95</th>
             <th style="text-align:right;width:60px">Max</th>
             <th style="text-align:right;width:55px">σ</th>
           </tr>
@@ -3324,7 +3428,7 @@ def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" = DATE '{date_str}'
                THEN COALESCE("POSITION",0) ELSE 0 END) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','IDKAIPCAY3','IDKAIPCAY10')
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','GFA','IDKAIPCAY3','IDKAIPCAY10')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","CLASSE","GRUPO","LIVRO","BOOK","PRODUCT"
@@ -3351,6 +3455,7 @@ _FUND_DESK_FOR_EXPO = {
     "EVOLUTION": "Galapagos Evolution FIC FIM CP",
     "MACRO_Q":   "Galapagos Global Macro Q",
     "ALBATROZ":  "GALAPAGOS ALBATROZ FIRF LP",
+    "FRONTIER":  "Frontier A\u00e7\u00f5es FIC FI",
 }
 
 # PRODUCT_CLASS → higher-level risk factor. None = non-directional (Cash, LFT) — excluded.
@@ -3434,7 +3539,7 @@ def fetch_pa_daily_per_product(date_str: str = DATA_STR, lookback_days: int = 90
            SUM("DIA") * 10000              AS dia_bps,
            ABS(SUM(COALESCE("POSITION",0))) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ')
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','GFA')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '{lookback_days} days')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","LIVRO","PRODUCT","DATE"
@@ -4171,8 +4276,14 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     </section>"""
 
 
-def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
-    """Long Only position/attribution card for Frontier Ações FIC FI."""
+def build_frontier_lo_section(df: pd.DataFrame, date_str: str,
+                               df_sectors: pd.DataFrame = None,
+                               pa_hier_html: str = "") -> str:
+    """Long Only position/attribution card for Frontier Ações FIC FI.
+       df_sectors (optional): ticker → sector mapping for the Por Setor view.
+       pa_hier_html (optional): pre-built hierarchical PA section (GFA rows from df_pa)
+                                 rendered as a sub-tab. If empty, the sub-tab is omitted.
+    """
     if df is None or df.empty:
         return ""
 
@@ -4252,6 +4363,9 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
       </div>"""
 
     # ── Position table ─────────────────────────────────────────────────────────
+    # ER columns (D/MTD/YTD) are bench-toggleable via the IBOV/IBOD buttons.
+    # Each ER <td> carries data-ibov and data-ibod and the header text is rewritten
+    # by fpaBmk() (inline JS below). Default bench = IBOV.
     col_headers = """
       <tr class="col-headers">
         <th style="text-align:left;min-width:80px">Ticker</th>
@@ -4265,10 +4379,16 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
         <th style="text-align:right">Attrib D</th>
         <th style="text-align:right">Attrib MTD</th>
         <th style="text-align:right">Attrib YTD</th>
-        <th style="text-align:right">ER IBOD D</th>
-        <th style="text-align:right">ER IBOD MTD</th>
-        <th style="text-align:right">ER IBOD YTD</th>
+        <th style="text-align:right" class="fpa-th-er-d">ER IBOV D</th>
+        <th style="text-align:right" class="fpa-th-er-m">ER IBOV MTD</th>
+        <th style="text-align:right" class="fpa-th-er-y">ER IBOV YTD</th>
       </tr>"""
+
+    def _num(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
 
     def make_row(row, is_subtotal=False, is_total=False):
         ticker = row["PRODUCT"]
@@ -4286,11 +4406,37 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
             except Exception:
                 return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
 
+        def er_cell(v_ibov, v_ibod, v_cdi):
+            # Default shows IBOV; data-ibod / data-cdi carry alternates.
+            def _attr(v):
+                f = _num(v)
+                return "" if f is None else f"{f:.10f}"
+            v = _num(v_ibov)
+            if v is None:
+                txt, col = "—", "var(--muted)"
+            else:
+                sign = "+" if v > 0 else ""
+                txt  = f"{sign}{v*100:.2f}%"
+                col  = "var(--up)" if v >= 0 else "var(--down)"
+            return (f'<td class="mono fpa-er-cell" style="text-align:right;color:{col}" '
+                    f'data-ibov="{_attr(v_ibov)}" data-ibod="{_attr(v_ibod)}" '
+                    f'data-cdi="{_attr(v_cdi)}">{txt}</td>')
+
         adtv_cell = cell(row.get("#ADTV"), is_pct=False, decimals=2) if not (is_subtotal or is_total) else '<td></td>'
         beta_cell = cell(row.get("BETA"), is_pct=False, decimals=2) if not (is_subtotal or is_total) else '<td></td>'
         ret_d     = cell(row.get("RETURN_DAY"))    if not (is_subtotal or is_total) else '<td></td>'
         ret_m     = cell(row.get("RETURN_MONTH"))  if not (is_subtotal or is_total) else '<td></td>'
         ret_y     = cell(row.get("RETURN_YEAR"))   if not (is_subtotal or is_total) else '<td></td>'
+
+        er_d = er_cell(row.get("TOTAL_IBVSP_DAY"),
+                       row.get("TOTAL_IBOD_Benchmark_DAY"),
+                       row.get("TOTAL_CDI_DAY"))
+        er_m = er_cell(row.get("TOTAL_IBVSP_MONTH"),
+                       row.get("TOTAL_IBOD_Benchmark_MONTH"),
+                       row.get("TOTAL_CDI_MONTH"))
+        er_y = er_cell(row.get("TOTAL_IBVSP_YEAR"),
+                       row.get("TOTAL_IBOD_Benchmark_YEAR"),
+                       row.get("TOTAL_CDI_YEAR"))
 
         return f"""<tr style="{bg};{fw}">
           <td style="padding-left:{'4px' if is_subtotal or is_total else '12px'};white-space:nowrap">{label}</td>
@@ -4302,44 +4448,313 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str) -> str:
           {cell(row.get("TOTAL_ATRIBUTION_DAY"))}
           {cell(row.get("TOTAL_ATRIBUTION_MONTH"))}
           {cell(row.get("TOTAL_ATRIBUTION_YEAR"))}
-          {cell(row.get("TOTAL_IBOD_Benchmark_DAY"))}
-          {cell(row.get("TOTAL_IBOD_Benchmark_MONTH"))}
-          {cell(row.get("TOTAL_IBOD_Benchmark_YEAR"))}
+          {er_d}{er_m}{er_y}
         </tr>"""
 
+    # ── By Name view (grouped by BOOK — default) ──────────────────────────────
     tbody = ""
     books = [b for b in df["BOOK"].unique() if b and b not in ("", None)]
     for book in books:
         book_rows = df[(df["BOOK"] == book) & (~df["PRODUCT"].isin(["TOTAL", "SUBTOTAL", "AÇÕES ALIENADAS"]))]
         book_rows = book_rows.sort_values("% Cash", ascending=False, na_position="last")
-        # Book header
         tbody += f'<tr><td colspan="14" style="padding:6px 4px 2px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-top:1px solid var(--border)">{book}</td></tr>'
         for _, r in book_rows.iterrows():
             tbody += make_row(r)
-        # Subtotal for this book
         sub = df[(df["PRODUCT"] == "SUBTOTAL") & (df["BOOK"] == book)]
         if not sub.empty:
             tbody += make_row(sub.iloc[0], is_subtotal=True)
-
-    # Grand total
+    # Alienadas — aggregated P&L from stocks sold during the period (not in current portfolio)
+    alien_row = df[df["PRODUCT"] == "AÇÕES ALIENADAS"]
+    if not alien_row.empty:
+        tbody += make_row(alien_row.iloc[0], is_subtotal=True)
     tbody += make_row(tot, is_total=True)
 
-    table_html = f"""
-      <div style="overflow-x:auto">
-        <table class="metric-table" style="font-size:11px;min-width:900px">
-          <thead>{col_headers}</thead>
-          <tbody>{tbody}</tbody>
-        </table>
+    by_name_html = f"""
+      <div id="fpa-view-name" class="fpa-view">
+        <div style="overflow-x:auto">
+          <table class="metric-table" style="font-size:11px;min-width:900px">
+            <thead>{col_headers}</thead>
+            <tbody>{tbody}</tbody>
+          </table>
+        </div>
       </div>"""
+
+    # ── By Sector view — sector headers with ▼/▶ toggle + aggregated ER ───────
+    sector_html = ""
+    if df_sectors is not None and not df_sectors.empty:
+        sec_map = df_sectors.drop_duplicates("TICKER").set_index("TICKER")
+        _stocks = df[(df["BOOK"].astype(str).str.strip() != "")
+                     & (~df["PRODUCT"].isin(["TOTAL", "SUBTOTAL", "AÇÕES ALIENADAS"]))
+                     & (df["% Cash"].notna())].copy()
+        _stocks["sector"] = _stocks["PRODUCT"].map(sec_map["GLPG_SECTOR"]).fillna("Outros")
+
+        # Numeric coerce for aggregation
+        _agg_cols = ["% Cash", "DELTA",
+                     "TOTAL_ATRIBUTION_DAY","TOTAL_ATRIBUTION_MONTH","TOTAL_ATRIBUTION_YEAR",
+                     "TOTAL_IBVSP_DAY","TOTAL_IBVSP_MONTH","TOTAL_IBVSP_YEAR",
+                     "TOTAL_IBOD_Benchmark_DAY","TOTAL_IBOD_Benchmark_MONTH","TOTAL_IBOD_Benchmark_YEAR",
+                     "TOTAL_CDI_DAY","TOTAL_CDI_MONTH","TOTAL_CDI_YEAR"]
+        for c in _agg_cols:
+            if c in _stocks.columns:
+                _stocks[c] = pd.to_numeric(_stocks[c], errors="coerce")
+
+        # Order sectors by gross % Cash desc
+        sec_order = (_stocks.groupby("sector")["% Cash"].sum()
+                     .sort_values(ascending=False).index.tolist())
+
+        sec_tbody = ""
+        sec_idx = 0
+        for sec in sec_order:
+            grp = _stocks[_stocks["sector"] == sec].sort_values("% Cash", ascending=False)
+            sec_id = f"fpa-sec-{sec_idx}"; sec_idx += 1
+
+            def _s(col): return float(grp[col].sum()) if col in grp.columns else 0.0
+            def _attr(v): return "" if v is None else f"{v:.10f}"
+
+            # Sector header cells — mirror the column layout: 11 "left" cols + 3 ER cells
+            pos_s   = _s("% Cash")
+            delta_s = _s("DELTA")
+            at_d = _s("TOTAL_ATRIBUTION_DAY");  at_m = _s("TOTAL_ATRIBUTION_MONTH");  at_y = _s("TOTAL_ATRIBUTION_YEAR")
+            iv_d = _s("TOTAL_IBVSP_DAY");        iv_m = _s("TOTAL_IBVSP_MONTH");        iv_y = _s("TOTAL_IBVSP_YEAR")
+            id_d = _s("TOTAL_IBOD_Benchmark_DAY"); id_m = _s("TOTAL_IBOD_Benchmark_MONTH"); id_y = _s("TOTAL_IBOD_Benchmark_YEAR")
+            cd_d = _s("TOTAL_CDI_DAY");          cd_m = _s("TOTAL_CDI_MONTH");          cd_y = _s("TOTAL_CDI_YEAR")
+            _b = grp.dropna(subset=["BETA"])
+            wbeta = ((_b["% Cash"] * _b["BETA"]).sum() / _b["% Cash"].sum()
+                     if not _b.empty and _b["% Cash"].sum() > 0 else None)
+
+            def _pct(v):
+                f = float(v); s = "+" if f > 0 else ""
+                return f"{s}{f*100:.2f}%"
+            def _col(v):
+                return "var(--up)" if float(v) >= 0 else "var(--down)"
+
+            def _sec_er_td(vi, vo, vc):
+                sign = "+" if vi >= 0 else ""
+                return (f'<td class="mono fpa-er-cell" style="text-align:right;color:{_col(vi)}" '
+                        f'data-ibov="{_attr(vi)}" data-ibod="{_attr(vo)}" data-cdi="{_attr(vc)}">'
+                        f'{sign}{vi*100:.2f}%</td>')
+
+            beta_cell_sec = (f'<td class="mono" style="text-align:right">{wbeta:.2f}</td>'
+                             if wbeta is not None else '<td></td>')
+            sec_tbody += (
+                f'<tr class="fpa-sector-row" data-sec-id="{sec_id}" '
+                f'style="background:rgba(59,130,246,0.08);font-weight:700;cursor:pointer" '
+                f'onclick="fpaToggleSector(this)">'
+                f'<td style="padding:5px 8px;white-space:nowrap">'
+                f'<span class="fpa-sector-arrow" style="font-size:9px;margin-right:6px">▼</span>{sec}'
+                f' <span style="color:var(--muted);font-weight:400;font-size:9px">({len(grp)})</span></td>'
+                f'<td class="mono" style="text-align:right">{_pct(pos_s)}</td>'
+                f'<td class="mono" style="text-align:right">{_pct(delta_s)}</td>'
+                f'{beta_cell_sec}'
+                f'<td></td>'  # #ADTV
+                f'<td></td><td></td><td></td>'  # Ret D/M/Y
+                f'<td class="mono" style="text-align:right;color:{_col(at_d)}">{_pct(at_d)}</td>'
+                f'<td class="mono" style="text-align:right;color:{_col(at_m)}">{_pct(at_m)}</td>'
+                f'<td class="mono" style="text-align:right;color:{_col(at_y)}">{_pct(at_y)}</td>'
+                f'{_sec_er_td(iv_d, id_d, cd_d)}'
+                f'{_sec_er_td(iv_m, id_m, cd_m)}'
+                f'{_sec_er_td(iv_y, id_y, cd_y)}'
+                f'</tr>'
+            )
+            # Child rows under this sector
+            for _, r in grp.iterrows():
+                child_tr = make_row(r)  # starts with <tr ...>
+                # Inject marker classes/attrs to identify as sector child
+                child_tr = child_tr.replace(
+                    '<tr style=',
+                    f'<tr class="fpa-sector-child" data-sec-parent="{sec_id}" style=',
+                    1)
+                sec_tbody += child_tr
+
+        # Alienadas — shown as a summary row above the grand total
+        _alien = df[df["PRODUCT"] == "AÇÕES ALIENADAS"]
+        if not _alien.empty:
+            sec_tbody += make_row(_alien.iloc[0], is_subtotal=True)
+        # Grand total row at the bottom
+        sec_tbody += make_row(tot, is_total=True)
+
+        sector_html = f"""
+      <div id="fpa-view-sector" class="fpa-view" style="display:none">
+        <div style="overflow-x:auto">
+          <table class="metric-table" data-no-sort="1" style="font-size:11px;min-width:900px">
+            <thead>{col_headers}</thead>
+            <tbody>{sec_tbody}</tbody>
+          </table>
+        </div>
+      </div>"""
+
+    table_html = by_name_html + sector_html
+
+    # ── Highlights strip: top-3 ↑ / top-3 ↓ — one div per bench, toggled by JS ──
+    def _highlights_div(col_name: str, bench_label: str, visible: bool) -> str:
+        try:
+            _hs = df[(df["BOOK"].astype(str).str.strip() != "")
+                     & (~df["PRODUCT"].isin(["TOTAL","SUBTOTAL","AÇÕES ALIENADAS"]))
+                     & (df[col_name].notna())]
+            _by = _hs.set_index("PRODUCT")[col_name].astype(float)
+            _by = _by[_by.abs() * 10_000.0 > 0.5]
+            _up = _by[_by > 0].sort_values(ascending=False).head(3)
+            _dn = _by[_by < 0].sort_values().head(3)
+            def _chip(t, v, up):
+                col = "var(--up)" if up else "var(--down)"
+                sign = "+" if up else ""
+                return (f'<span class="mono" style="color:{col};font-weight:700;'
+                        f'padding:2px 8px;border:1px solid {col};border-radius:4px;'
+                        f'background:rgba(0,0,0,.15)">{t} {sign}{v*100:.2f}%</span>')
+            if _up.empty and _dn.empty:
+                return ""
+            ups = " ".join(_chip(t, v, True)  for t, v in _up.items()) or '<span style="color:var(--muted)">—</span>'
+            dns = " ".join(_chip(t, v, False) for t, v in _dn.items()) or '<span style="color:var(--muted)">—</span>'
+            disp = "" if visible else "display:none"
+            return (
+                f'<div class="fpa-highlights" data-bench="{bench_label.lower()}" '
+                f'style="align-items:center;gap:12px;flex-wrap:wrap;padding:8px 12px;'
+                f'margin:8px 0 12px;border:1px solid var(--line);border-radius:6px;'
+                f'background:rgba(0,0,0,.15);display:{"flex" if visible else "none"}">'
+                '<span style="font-size:10px;color:var(--muted);letter-spacing:.12em;'
+                f'text-transform:uppercase">Highlights · α vs {bench_label} hoje</span>'
+                f'<span style="color:var(--up);font-weight:700">↑</span> {ups}'
+                '<span style="color:var(--line)">·</span>'
+                f'<span style="color:var(--down);font-weight:700">↓</span> {dns}'
+                '</div>'
+            )
+        except Exception:
+            return ""
+
+    highlights_html = (
+        _highlights_div("TOTAL_IBVSP_DAY",          "IBOV", True)
+      + _highlights_div("TOTAL_IBOD_Benchmark_DAY", "IBOD", False)
+      + _highlights_div("TOTAL_CDI_DAY",            "CDI",  False)
+    )
+
+    # ── Toggle bar (bench IBOV/IBOD/CDI · view Por Nome/Por Setor) + JS ────────
+    has_sector = (df_sectors is not None and not df_sectors.empty)
+    view_buttons = ("" if not has_sector else """
+      <div style="display:flex;gap:4px;margin-left:auto;align-items:center">
+        <button class="toggle-btn active fpa-view-btn" data-view="name"
+                onclick="fpaView('name')">Por Nome</button>
+        <button class="toggle-btn fpa-view-btn" data-view="sector"
+                onclick="fpaView('sector')">Por Setor</button>
+        <span id="fpa-expand-btns" style="display:none;gap:4px;margin-left:4px">
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="fpaExpandAll()">▼ All</button>
+          <button class="toggle-btn" style="font-size:10px;padding:2px 7px"
+                  onclick="fpaCollapseAll()">▶ All</button>
+        </span>
+      </div>""")
+    toggle_bar = f"""
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px">
+        <button class="toggle-btn active fpa-btn" data-bench="ibov"
+                onclick="fpaBmk('ibov')">IBOV</button>
+        <button class="toggle-btn fpa-btn" data-bench="ibod"
+                onclick="fpaBmk('ibod')">IBOD</button>
+        <button class="toggle-btn fpa-btn" data-bench="cdi"
+                onclick="fpaBmk('cdi')">CDI</button>
+      </div>
+      {view_buttons}
+    </div>"""
+
+    toggle_js = """
+    <script>
+    (function() {
+      if (window.fpaBmk) return;  // only define once
+      window.fpaBmk = function(bmk) {
+        document.querySelectorAll('.fpa-btn').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.bench === bmk);
+        });
+        document.querySelectorAll('.fpa-highlights').forEach(function(d) {
+          d.style.display = (d.dataset.bench === bmk) ? 'flex' : 'none';
+        });
+        var lbl = bmk.toUpperCase();
+        document.querySelectorAll('.fpa-th-er-d').forEach(function(th) { th.textContent = 'ER '+lbl+' D'; });
+        document.querySelectorAll('.fpa-th-er-m').forEach(function(th) { th.textContent = 'ER '+lbl+' MTD'; });
+        document.querySelectorAll('.fpa-th-er-y').forEach(function(th) { th.textContent = 'ER '+lbl+' YTD'; });
+        document.querySelectorAll('.fpa-er-cell').forEach(function(td) {
+          var raw = td.dataset[bmk];
+          if (raw === '' || raw === undefined) { td.textContent = '—'; td.style.color = 'var(--muted)'; return; }
+          var v = parseFloat(raw);
+          if (isNaN(v))                        { td.textContent = '—'; td.style.color = 'var(--muted)'; return; }
+          td.textContent = (v >= 0 ? '+' : '') + (v*100).toFixed(2) + '%';
+          td.style.color = v >= 0 ? 'var(--up)' : 'var(--down)';
+        });
+      };
+      window.fpaView = function(view) {
+        ['name','sector'].forEach(function(v) {
+          var el = document.getElementById('fpa-view-'+v);
+          if (el) el.style.display = (v === view) ? '' : 'none';
+        });
+        document.querySelectorAll('.fpa-view-btn').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.view === view);
+        });
+        var exp = document.getElementById('fpa-expand-btns');
+        if (exp) exp.style.display = (view === 'sector') ? 'inline-flex' : 'none';
+      };
+      window.fpaToggleSector = function(tr) {
+        var arrow = tr.querySelector('.fpa-sector-arrow');
+        var open = arrow ? arrow.textContent.trim() === '▼' : true;
+        if (arrow) arrow.textContent = open ? '▶' : '▼';
+        var sid = tr.getAttribute('data-sec-id');
+        if (!sid) return;
+        document.querySelectorAll('.fpa-sector-child[data-sec-parent="'+sid+'"]').forEach(function(r) {
+          r.style.display = open ? 'none' : '';
+        });
+      };
+      window.fpaExpandAll = function() {
+        document.querySelectorAll('.fpa-sector-row').forEach(function(tr) {
+          var arrow = tr.querySelector('.fpa-sector-arrow');
+          if (arrow && arrow.textContent.trim() === '▶') window.fpaToggleSector(tr);
+        });
+      };
+      window.fpaCollapseAll = function() {
+        document.querySelectorAll('.fpa-sector-row').forEach(function(tr) {
+          var arrow = tr.querySelector('.fpa-sector-arrow');
+          if (arrow && arrow.textContent.trim() === '▼') window.fpaToggleSector(tr);
+        });
+      };
+      // Sub-tab switcher (Long Only / PA hierárquica)
+      window.fpaTab = function(tab) {
+        ['lo','pa'].forEach(function(t) {
+          var el = document.getElementById('fpa-tab-'+t);
+          if (el) el.style.display = (t === tab) ? '' : 'none';
+        });
+        document.querySelectorAll('.fpa-tab-btn').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.tab === tab);
+        });
+      };
+    })();
+    </script>"""
+
+    # ── Sub-tabs (Long Only default · PA hierárquica if df_pa has GFA) ─────────
+    if pa_hier_html:
+        # Strip outer <section class="pa-card">…</section> so it nests cleanly inside the tab.
+        # Simplest: render as-is; inner card becomes visually flush via CSS overrides.
+        sub_tab_bar = """
+    <div style="display:flex;gap:4px;margin:0 0 12px;border-bottom:1px solid var(--line);padding-bottom:6px">
+      <button class="toggle-btn active fpa-tab-btn" data-tab="lo"
+              onclick="fpaTab('lo')" style="font-weight:700">Long Only</button>
+      <button class="toggle-btn fpa-tab-btn" data-tab="pa"
+              onclick="fpaTab('pa')" style="font-weight:700">PA (hierárquica)</button>
+    </div>"""
+        lo_content = f"""<div id="fpa-tab-lo">{toggle_bar}{highlights_html}{table_html}</div>"""
+        pa_content = (
+            '<div id="fpa-tab-pa" style="display:none" class="fpa-pa-nested">'
+            f'{pa_hier_html}'
+            '</div>'
+        )
+        body = f"{sub_tab_bar}{lo_content}{pa_content}"
+    else:
+        body = f"{toggle_bar}{highlights_html}{table_html}"
 
     return f"""
     <section class="card">
       <div class="card-head">
-        <span class="card-title">Long Only</span>
+        <span class="card-title">Performance Attribution</span>
         <span class="card-sub">— Frontier Ações · {val_date}{stale_badge} · NAV R$ {nav_fmt} · Beta {beta_fmt}</span>
       </div>
       {header_metrics}
-      {table_html}
+      {body}
+      {toggle_js}
     </section>"""
 
 
@@ -4816,7 +5231,7 @@ def _evo_render_camada1(rows: list) -> str:
       <table class="summary-table">
         <thead><tr>
           <th style="text-align:left">Estratégia</th>
-          <th style="text-align:right">VaR (bps)</th>
+          <th style="text-align:right"><span class="kc">VaR</span> (bps)</th>
           <th style="text-align:right">Percentil 252d</th>
           <th style="text-align:center">Estado</th>
         </tr></thead>
@@ -5115,7 +5530,6 @@ REPORTS = [
     ("distribution",    "Distribuição 252d"),
     ("vol-regime",      "Vol Regime"),
     ("stop-monitor",    "Risk Budget"),
-    ("frontier-lo",     "Long Only"),
     ("briefing",        "Briefing"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
@@ -5144,6 +5558,7 @@ _FUND_PA_KEY = {
     "EVOLUTION": "EVOLUTION",
     "MACRO_Q":   "GLOBAL",
     "ALBATROZ":  "ALBATROZ",
+    "FRONTIER":  "GFA",
     "IDKA_3Y":   "IDKAIPCAY3",
     "IDKA_10Y":  "IDKAIPCAY10",
 }
@@ -5516,7 +5931,7 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
 def _build_fund_mini_briefing(
     short: str, house_row: dict, series_map: dict, td_by_short: dict,
     df_pa, factor_matrix: dict, bench_matrix: dict,
-    pm_margem=None, frontier_bvar=None,
+    pm_margem=None, frontier_bvar=None, df_frontier=None,
 ) -> str:
     """Compact 1–2 min per-fund briefing card. Shows at top of each fund's
        reports as the "Briefing" tab.
@@ -5742,7 +6157,35 @@ def _build_fund_mini_briefing(
             for r in top_detract.itertuples(index=False)
         )
         bullets.append(f'<li><span style="color:var(--down)">▼</span> <b>Detratores:</b> {items}</li>')
-    if dominant_factor:
+    # FRONTIER — net vs IBOV bench is misleading (90% long + 10% cash reads as "10% short").
+    # Report gross equity allocation + weighted portfolio beta from df_frontier instead.
+    if short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
+        _tot = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+        if not _tot.empty:
+            _gross = float(_tot.iloc[0]["% Cash"]) if pd.notna(_tot.iloc[0]["% Cash"]) else None
+            _cash  = max(0.0, 1.0 - _gross) if _gross is not None else None
+            _stocks = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL","SUBTOTAL","AÇÕES ALIENADAS"])]
+            _sv = _stocks.dropna(subset=["BETA","% Cash"])
+            _psum = _sv["% Cash"].sum()
+            _wbeta = float((_sv["% Cash"] * _sv["BETA"]).sum() / _psum) if _psum else None
+            parts = []
+            if _gross is not None:
+                parts.append(f'<b class="mono" style="color:var(--up)">{_gross*100:.0f}%</b> equity')
+            if _cash is not None:
+                parts.append(f'<span class="mono" style="color:var(--muted)">{_cash*100:.0f}% caixa</span>')
+            if _wbeta is not None:
+                beta_col = ("var(--down)" if _wbeta > 1.10
+                            else "var(--warn)" if _wbeta > 1.05
+                            else "var(--text)")
+                parts.append(
+                    f'β ponderado <b class="mono" style="color:{beta_col}">{_wbeta:.2f}</b>'
+                    f' <span style="color:var(--muted);font-size:10px">(IBOV β=1.00)</span>'
+                )
+            if parts:
+                bullets.append(
+                    '<li>📊 <b>Alocação:</b> ' + ' · '.join(parts) + '</li>'
+                )
+    elif dominant_factor:
         fk, v = dominant_factor
         is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         if is_rate:
@@ -5751,22 +6194,18 @@ def _build_fund_mini_briefing(
         else:
             direction = "longo" if v > 0 else "curto"
             dir_color = "var(--up)" if v > 0 else "var(--down)"
-        # Per-fund bullets use RELATIVE measures (%NAV or yr-equivalent);
-        # aggregate (cross-fund) cards use financeiro absoluto. Here we're
-        # per-fund, so both rate and non-rate get relative units first, with
-        # raw BRL/BRL·yr as a muted secondary for reference.
+        # Per-fund bullets use RELATIVE measures only: yr-equivalent for rate factors,
+        # %NAV for everything else. Absolute BRL is cross-fund territory.
         is_rate_unit = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         fund_nav = house_row["nav"] if house_row else 0
         if is_rate_unit and fund_nav:
             yr_eq = v / fund_nav
-            val_str = (f'<span class="mono">{yr_eq:+.2f} yr</span> · '
-                       f'<span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}·yr</span>')
+            val_str = f'<span class="mono">{yr_eq:+.2f} yr</span>'
         elif fund_nav:
             pct_nav = v / fund_nav * 100
-            val_str = (f'<span class="mono">{pct_nav:+.1f}% NAV</span> · '
-                       f'<span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}</span>')
+            val_str = f'<span class="mono">{pct_nav:+.1f}% NAV</span>'
         else:
-            val_str = f'<span class="mono">{_mm(v)}</span>'
+            val_str = '<span class="mono" style="color:var(--muted)">—</span>'
         bullets.append(
             f'<li>🎯 <b>Posição líquida:</b> '
             f'<b class="mono" style="color:{dir_color} !important">{direction}</b> em '
@@ -5834,7 +6273,20 @@ def _build_fund_mini_briefing(
             pos_notes.append(f"util VaR em <b>{util:.0f}%</b> do soft — próximo do limite")
         elif util >= 70:
             pos_notes.append(f"util VaR em {util:.0f}% — vigilância")
-    if dominant_factor:
+    # FRONTIER — report gross equity allocation + weighted beta (not net vs IBOV).
+    if short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
+        _tot2 = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+        if not _tot2.empty and pd.notna(_tot2.iloc[0]["% Cash"]):
+            _gross2 = float(_tot2.iloc[0]["% Cash"])
+            _stk = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL","SUBTOTAL","AÇÕES ALIENADAS"])]
+            _stkv = _stk.dropna(subset=["BETA","% Cash"])
+            _ps = _stkv["% Cash"].sum()
+            _wb = float((_stkv["% Cash"] * _stkv["BETA"]).sum() / _ps) if _ps else None
+            _bit = f"alocação equity <b>{_gross2*100:.0f}%</b>"
+            if _wb is not None:
+                _bit += f", β ponderado <b>{_wb:.2f}</b>"
+            pos_notes.append(_bit)
+    elif dominant_factor:
         fk, v = dominant_factor
         is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         dir_word = (("tomado" if v > 0 else "dado") if is_rate
@@ -6032,14 +6484,14 @@ def _build_executive_briefing(
         for _, r in contribs.iterrows():
             fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
             parts_alpha.append(
-                f'<li><span class="mono up">+{r["brl_dia"]/1e6:.2f}M</span> · '
-                f'<b>{r["PRODUCT"]}</b> ({fund_lbl}, {r["dia_bps"]:+.1f} bps)</li>'
+                f'<li><span class="mono up">{r["dia_bps"]:+.1f} bps</span> · '
+                f'<b>{r["PRODUCT"]}</b> ({fund_lbl})</li>'
             )
         for _, r in detract.iterrows():
             fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
             parts_alpha.append(
-                f'<li><span class="mono down">{r["brl_dia"]/1e6:.2f}M</span> · '
-                f'<b>{r["PRODUCT"]}</b> ({fund_lbl}, {r["dia_bps"]:+.1f} bps)</li>'
+                f'<li><span class="mono down">{r["dia_bps"]:+.1f} bps</span> · '
+                f'<b>{r["PRODUCT"]}</b> ({fund_lbl})</li>'
             )
 
     # ── LEITURA DO DIA (non-obvious insights) ─────────────────────────────────
@@ -6460,10 +6912,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         sections.append(("MACRO", "exposure", _expo_html))
 
     # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle.
-    # Engine HS source (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION): MACRO, QUANT, EVOLUTION only.
-    # ALBATROZ/MACRO_Q/FRONTIER/IDKA_3Y/IDKA_10Y sem série HS — parkeado em CLAUDE.md.
+    # Engine HS source (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION): MACRO, QUANT, EVOLUTION.
+    # FRONTIER: realized α vs IBOV (LONG_ONLY_MAINBOARD).
+    # ALBATROZ/MACRO_Q/IDKA_3Y/IDKA_10Y sem série — parkeado em CLAUDE.md.
     if (dist_map or dist_map_prev) and dist_actuals is not None:
-        for fs in ["MACRO", "EVOLUTION", "QUANT"]:
+        for fs in ["MACRO", "EVOLUTION", "QUANT", "FRONTIER"]:
             html_sect = build_distribution_card(
                 fs, dist_map or {}, dist_map_prev or {}, dist_actuals,
             )
@@ -6504,6 +6957,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             "m12": float(alb_pa_rows["m12_bps"].sum()) if not alb_pa_rows.empty else 0.0,
         }
         for short in FUND_ORDER:
+            # FRONTIER PA is rendered via build_frontier_lo_section (Long Only card)
+            # — it occupies the "performance" slot for FRONTIER. The GFA rows in
+            # df_pa still feed Top Movers / Outliers / Mudanças Materiais.
+            if short == "FRONTIER":
+                continue
             idx_ret = (idka_idx_ret or {}).get(short)
             w_alb   = (walb or {}).get(short)
             pa_html = build_pa_section_hier(
@@ -6531,11 +6989,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
 
-    # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz) — factor buckets + gap vs benchmark
+    # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz, MACRO, EVOLUTION)
+    # MACRO/EVOLUTION use bench_dur=0 ("—" label) since they have no fixed-duration mandate.
     _RF_MAP_CFG = {
-        "IDKA_3Y":  {"desk": "IDKA IPCA 3Y FIRF",           "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
-        "IDKA_10Y": {"desk": "IDKA IPCA 10Y FIRF",          "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
-        "ALBATROZ": {"desk": "GALAPAGOS ALBATROZ FIRF LP",  "bench_dur": 0.0,  "bench_label": "CDI"},
+        "IDKA_3Y":   {"desk": "IDKA IPCA 3Y FIRF",              "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
+        "IDKA_10Y":  {"desk": "IDKA IPCA 10Y FIRF",             "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
+        "ALBATROZ":  {"desk": "GALAPAGOS ALBATROZ FIRF LP",     "bench_dur": 0.0,  "bench_label": "CDI"},
+        "MACRO":     {"desk": "Galapagos Macro FIM",            "bench_dur": 0.0,  "bench_label": "—"},
+        "EVOLUTION": {"desk": "Galapagos Evolution FIC FIM CP", "bench_dur": 0.0,  "bench_label": "—"},
     }
     if rf_expo_maps:
         for short_k, cfg_k in _RF_MAP_CFG.items():
@@ -6557,11 +7018,22 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         if rb_html:
             sections.append(("ALBATROZ", "stop-monitor", rb_html))
 
-    # FRONTIER — Long Only position/attribution tab
+    # FRONTIER — Performance Attribution lives in the PA tab (no separate LO tab);
+    # Frontier is not in REPORT_ALPHA_ATRIBUTION, so build_pa_section_hier renders
+    # nothing for it — this section fills the "performance" slot for Frontier.
     if df_frontier is not None and not df_frontier.empty:
-        frontier_html = build_frontier_lo_section(df_frontier, DATA_STR)
+        # Build the hierarchical PA (from GFA in df_pa) to embed as a sub-tab inside the LO card.
+        cdi_row_fr = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+        pa_hier_html = build_pa_section_hier(
+            "FRONTIER", df_pa, cdi_row_fr, ibov=ibov,
+        ) if (df_pa is not None and not df_pa.empty) else ""
+        frontier_html = build_frontier_lo_section(
+            df_frontier, DATA_STR,
+            df_sectors=df_frontier_sectors,
+            pa_hier_html=pa_hier_html,
+        )
         if frontier_html:
-            sections.append(("FRONTIER", "frontier-lo", frontier_html))
+            sections.append(("FRONTIER", "performance", frontier_html))
         # Frontier exposure card (active weight vs IBOV/IBOD, By Name/Sector toggle)
         if (df_frontier_ibov is not None and not df_frontier_ibov.empty):
             expo_html = build_frontier_exposure_section(
@@ -7126,6 +7598,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             factor_matrix, bench_matrix,
             pm_margem=pm_margem if short == "MACRO" else None,
             frontier_bvar=frontier_bvar if short == "FRONTIER" else None,
+            df_frontier=df_frontier if short == "FRONTIER" else None,
         )
         if mini_html:
             _briefing_by_short[short] = mini_html
@@ -7373,11 +7846,11 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <thead><tr>
           <th style="text-align:left">Fundo</th>
           <th style="text-align:right">NAV</th>
-          <th style="text-align:right">VaR abs (%)</th>
-          <th style="text-align:right">VaR abs (R$)</th>
+          <th style="text-align:right"><span class="kc">VaR</span> abs (%)</th>
+          <th style="text-align:right"><span class="kc">VaR</span> abs (R$)</th>
           <th style="text-align:center">Bench</th>
-          <th style="text-align:right">BVaR rel (%)</th>
-          <th style="text-align:right">BVaR rel (R$)</th>
+          <th style="text-align:right"><span class="kc">BVaR</span> rel (%)</th>
+          <th style="text-align:right"><span class="kc">BVaR</span> rel (R$)</th>
         </tr></thead>
         <tbody>{house_rows_html}</tbody>
         <tfoot>{house_total_row}</tfoot>
@@ -7403,10 +7876,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           <th style="text-align:right">MTD</th>
           <th style="text-align:right">YTD</th>
           <th style="text-align:right">12M</th>
-          <th style="text-align:right">VaR</th>
-          <th style="text-align:right">Util VaR</th>
+          <th style="text-align:right"><span class="kc">VaR</span></th>
+          <th style="text-align:right">Util <span class="kc">VaR</span></th>
           <th style="text-align:right">Util Stop</th>
-          <th style="text-align:right">Δ VaR D-1</th>
+          <th style="text-align:right">Δ <span class="kc">VaR</span> D-1</th>
         </tr></thead>
         <tbody>{summary_rows_html}{bench_rows_html}</tbody>
       </table>
@@ -7642,9 +8115,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         except Exception as e:
             print(f"  changes (MACRO) block failed ({e})")
 
-    # QUANT / EVOLUTION / MACRO_Q / ALBATROZ — factor-level
+    # QUANT / EVOLUTION / MACRO_Q / ALBATROZ / FRONTIER — factor-level
     if position_changes:
-        for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ"):
+        for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER"):
             df_chg = position_changes.get(short)
             if df_chg is None or df_chg.empty:
                 continue
@@ -8119,6 +8592,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     padding:1px 6px; border-radius:4px;
     background:rgba(26,143,209,0.10); border:1px solid rgba(26,143,209,0.25);
   }}
+
+  /* Utility: keep mixed-case inside uppercase-transformed parents (e.g. "VaR" in th) */
+  .kc {{ text-transform:none !important; }}
+
+  /* Frontier PA card — nested hierarchical PA (sub-tab) gets flush styling */
+  .fpa-pa-nested > section.card {{
+    background:transparent !important; border:none !important;
+    padding:0 !important; margin:0 !important; box-shadow:none !important;
+  }}
+  .fpa-pa-nested > section.card > .card-head {{ padding:0 0 8px !important; }}
 
   /* Per-fund nav chips — appear at the top of each fund's section-wrap.
      Sticky below the header: as you scroll past one fund section the next
@@ -9457,6 +9940,9 @@ if __name__ == "__main__":
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
             "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
             "ALBATROZ":  ex.submit(fetch_rf_exposure_map, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR),
+            "MACRO":     ex.submit(fetch_rf_exposure_map, "Galapagos Macro FIM", DATA_STR),
+            "EVOLUTION": ex.submit(fetch_rf_exposure_map, "Galapagos Evolution FIC FIM CP",
+                                   DATA_STR, True),
         }
         # Pre-warm NAV cache for today + D-1 so every _latest_nav() call hits memory.
         fut_navs    = ex.submit(fetch_all_latest_navs, DATA_STR)
@@ -9465,7 +9951,7 @@ if __name__ == "__main__":
         fut_frontier_expo = ex.submit(fetch_frontier_exposure_data)
         fut_chg        = {
             short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
-            for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ")
+            for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
