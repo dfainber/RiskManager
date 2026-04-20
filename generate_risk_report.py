@@ -7847,7 +7847,20 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         var btn = document.createElement('button');
         btn.className = 'chip' + (s === fs ? ' active' : '');
         btn.textContent = LABELS[s] || s;
-        btn.onclick = function() {{ window.selectFund(s); }};
+        // In "report" mode: stay in report, just scroll to that fund's section
+        // for the currently selected report. In "fund" mode: switch fund.
+        btn.onclick = function() {{
+          var mode = document.body.dataset.mode || 'summary';
+          if (mode === 'report') {{
+            var currentReport = (location.hash.match(/report=([^&]+)/) || [])[1];
+            var target = currentReport
+              ? document.querySelector('#sec-' + s + '-' + currentReport)
+              : document.querySelector('.section-wrap[data-fund="' + s + '"]');
+            if (target) target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+          }} else {{
+            window.selectFund(s);
+          }}
+        }};
         bar.appendChild(btn);
       }});
       wrap.insertBefore(bar, wrap.firstChild);
