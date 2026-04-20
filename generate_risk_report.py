@@ -5020,8 +5020,10 @@ def _build_executive_briefing(
                 direction = "tomado" if dom[1] > 0 else "dado"
             else:
                 direction = "longo" if dom[1] > 0 else "curto"
+            dir_color = "var(--down)" if dom[1] < 0 else "var(--up)"
             parts_insight.append(
-                f'<li><b>Fator dominante:</b> casa está <i>{direction}</i> em '
+                f'<li><b>Fator dominante:</b> casa está '
+                f'<b style="color:{dir_color}">{direction}</b> em '
                 f'<b>{dom[0]}</b> · <span class="mono">{_mm(dom[1])}</span> líquido do bench.</li>'
             )
 
