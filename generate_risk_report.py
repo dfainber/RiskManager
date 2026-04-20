@@ -5009,6 +5009,71 @@ def _build_fund_mini_briefing(
     if not bullets:
         bullets.append('<li><span style="color:var(--muted)">— sem destaques materiais hoje</span></li>')
 
+    # ── Commentary (prose synthesis, 1–3 sentences) ───────────────────────────
+    commentary_parts = []
+
+    # Sentence 1 — day summary
+    if dia_bps is None:
+        commentary_parts.append(
+            f"Sem PA disponível no dia; olhar apenas o VaR e as exposições abaixo."
+        )
+    elif abs(dia_bps) < 5 and (dvar_bps is None or abs(dvar_bps) < 5):
+        commentary_parts.append(
+            f"Dia tranquilo — alpha e risco estáveis, sem eventos materiais para reportar."
+        )
+    else:
+        parts1 = []
+        if abs(dia_bps) >= 5:
+            sign = "+" if dia_bps > 0 else ""
+            tone = "positivo" if dia_bps > 0 else "negativo"
+            parts1.append(f"DIA {tone} em {sign}{dia_bps/100:.2f}%")
+        if dvar_bps is not None and abs(dvar_bps) >= 5:
+            parts1.append(
+                f"risco {'subindo' if dvar_bps > 0 else 'caindo'} {abs(dvar_bps):.0f} bps vs D-1"
+            )
+        commentary_parts.append(
+            ("Dia com " + " e ".join(parts1) + ".") if parts1 else "Dia neutro em resultado."
+        )
+
+    # Sentence 2 — driver / concentration. Only call it out if the fund's
+    # daily alpha is itself material (|dia| ≥ 5 bps) — otherwise the "share"
+    # ratio is meaningless (small denominator).
+    if (len(top_contrib) > 0 or len(top_detract) > 0) and dia_bps is not None and abs(dia_bps) >= 5:
+        all_drv = []
+        for r in top_contrib.itertuples(index=False):
+            all_drv.append((r.PRODUCT, float(r.dia_bps)))
+        for r in top_detract.itertuples(index=False):
+            all_drv.append((r.PRODUCT, float(r.dia_bps)))
+        if all_drv:
+            main = max(all_drv, key=lambda x: abs(x[1]))
+            share = abs(main[1]) / abs(dia_bps) * 100
+            if share >= 50 and abs(main[1]) >= 3:
+                verb = "puxando" if (main[1] * dia_bps) > 0 else "contra"
+                commentary_parts.append(
+                    f"Driver principal: <b>{main[0]}</b> ({main[1]/100:+.2f}%, "
+                    f"{verb} ~{min(share, 100):.0f}% do resultado)."
+                )
+
+    # Sentence 3 — positioning / warnings
+    pos_notes = []
+    if util is not None:
+        if util >= 85:
+            pos_notes.append(f"util VaR em <b>{util:.0f}%</b> do soft — próximo do limite")
+        elif util >= 70:
+            pos_notes.append(f"util VaR em {util:.0f}% — vigilância")
+    if dominant_factor:
+        fk, v = dominant_factor
+        is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
+        dir_word = (("tomado" if v > 0 else "dado") if is_rate
+                    else ("longo" if v > 0 else "curto"))
+        pos_notes.append(f"{dir_word} em {fk}")
+    if stop_min and stop_min[1] < 30:
+        pos_notes.append(f"PM {stop_min[0]} com apenas {stop_min[1]:.0f} bps de stop")
+    if pos_notes:
+        commentary_parts.append("Posicionamento: " + "; ".join(pos_notes) + ".")
+
+    commentary = " ".join(commentary_parts)
+
     return f"""
     <section class="card brief-card">
       <div class="card-head">
@@ -5016,6 +5081,7 @@ def _build_fund_mini_briefing(
         <span class="card-sub">— {DATA_STR} · resumo rápido 1–2 min</span>
       </div>
       <div class="brief-headline">{headline}</div>
+      <p class="brief-commentary">{commentary}</p>
       <div class="sn-inline-stats mono" style="margin-bottom:14px; flex-wrap:wrap; gap:6px 14px">
         {chips}
       </div>
@@ -7313,6 +7379,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   .brief-annex a {{ color:var(--accent-2); text-decoration:none; border-bottom:1px dotted var(--accent-2); }}
   .brief-annex a:hover {{ color:var(--text); border-bottom-color:var(--text); }}
+  .brief-commentary {{
+    font-size:13px; color:var(--text); line-height:1.65;
+    padding:10px 14px; margin:0 0 14px;
+    background:rgba(26,143,209,.04); border-left:2px solid var(--accent-2);
+    border-radius:6px;
+  }}
+  .brief-commentary b {{ color:var(--text); font-weight:600; }}
 
   /* PA Contribuições — Por Tamanho / Por Fundo grid (flows side-by-side) */
   .pa-alert-view {{
