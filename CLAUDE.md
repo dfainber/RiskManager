@@ -235,6 +235,14 @@ dashboards originais.
 - **IDKA HS BVaR stub** (`compute_idka_bvar_hs`) — realized ER via NAV_SHARE.SHARE × IDKA index; não wired ainda (pendente diff vs calculadora Option B)
 
 **Fase 4 — pendente (consolidado e priorizado):**
+- **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
+  - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
+  - QUANT herda as colunas de MACRO que hoje não tem: **Δ Expo** (D-0 vs D-1), **σ (bps)**, **VaR (bps)** signed, **Δ VaR** vs D-1
+  - QUANT já tem Gross %NAV + Gross BRL — user confirmou que quer manter
+  - Renomear "Barra" no MACRO para "σ (bps)" (label não bate com conteúdo — é |std| de fato)
+  - Column headers clicáveis para sort (QUANT já tem; MACRO passa a ter), arrow ↓/↑
+  - Default sort em ambos: |Net| desc
+  - Escopo decidido: "formatação e o gross do QUANT, o resto da info do MACRO"
 - **EVOLUTION — direcionalidade das estratégias / diversification benefit** (user 2026-04-19, tarde):
   - Medir se as sub-estratégias do Evolution (MACRO, SIST, FRONTIER, CREDITO, etc.) estão tomando risco na mesma direção
   - Uma forma: matriz de correlação realizada dos PnLs por estratégia
