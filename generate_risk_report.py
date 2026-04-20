@@ -4991,10 +4991,20 @@ def _build_fund_mini_briefing(
         else:
             direction = "longo" if v > 0 else "curto"
             dir_color = "var(--up)" if v > 0 else "var(--down)"
+        # Format per factor unit. Rate factors (Real/Nominal/IPCA Idx) carry
+        # BRL·yr (ANO_EQ) — convert to years-equivalent (÷ NAV) for readability.
+        # Non-rate (Equity/FX/Commodities) are BRL notional — show in R$.
+        is_rate_unit = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
+        fund_nav = house_row["nav"] if house_row else 0
+        if is_rate_unit and fund_nav:
+            yr_eq = v / fund_nav
+            val_str = f'<span class="mono">{yr_eq:+.2f} yr</span> · <span class="mono" style="color:var(--muted); font-size:11px">{_mm(v)}·yr</span>'
+        else:
+            val_str = f'<span class="mono">{_mm(v)}</span>'
         bullets.append(
             f'<li>🎯 <b>Posição líquida:</b> '
             f'<b class="mono" style="color:{dir_color} !important">{direction}</b> em '
-            f'<b>{fk}</b> · <span class="mono">{_mm(v)}</span></li>'
+            f'<b>{fk}</b> · {val_str}</li>'
         )
     if stop_min and stop_min[1] < 30:
         pm, m = stop_min
@@ -5066,7 +5076,11 @@ def _build_fund_mini_briefing(
         is_rate = fk in ("Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx")
         dir_word = (("tomado" if v > 0 else "dado") if is_rate
                     else ("longo" if v > 0 else "curto"))
-        pos_notes.append(f"{dir_word} em {fk}")
+        fund_nav_tmp = house_row["nav"] if house_row else 0
+        if is_rate and fund_nav_tmp:
+            pos_notes.append(f"{dir_word} em {fk} ({v/fund_nav_tmp:+.2f} yr eq)")
+        else:
+            pos_notes.append(f"{dir_word} em {fk}")
     if stop_min and stop_min[1] < 30:
         pos_notes.append(f"PM {stop_min[0]} com apenas {stop_min[1]:.0f} bps de stop")
     if pos_notes:
