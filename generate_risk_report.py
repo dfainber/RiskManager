@@ -3503,11 +3503,44 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
             + '</tr>'
         )
 
+    # Direct positions subtotal = Direct α (replica) + Swap leg (bench cross effect
+    # caused by the decision to allocate to Albatroz). Swap is a consequence of the
+    # allocation choice, so it belongs in the "Direct positions" block.
+    direct_subtotal = {w: direct[w] + swap[w] for w in windows}
+
     rows = ""
-    rows += _row("Direct α", direct, sub=f"(IDKA vs. {fund_short.replace('_',' ')} index, na parcela direta)")
-    rows += _row("Via Albatroz", via_alb, sub=f"(Albatroz α vs. CDI × w_alb {w_alb:.1%})")
-    rows += _row("Swap leg", swap, sub=f"(CDI − IDKA_index) × w_alb — ajusta bench")
-    rows += _row("<b>Total</b>", total, bold=True, sub="vs. IDKA benchmark")
+    # Direct positions block (header + 2 sub-rows + subtotal)
+    rows += (
+        '<tr class="pa-row pa-group-header">'
+        '<td class="pa-name" style="font-weight:700; color:var(--accent-2); '
+        'text-transform:uppercase; letter-spacing:.05em; font-size:11px; padding-top:10px">Direct Positions</td>'
+        '<td></td><td></td><td></td><td></td></tr>'
+    )
+    rows += _row(
+        "&nbsp;&nbsp;↳ Direct α",
+        direct, sub="(réplica vs. IDKA index, parcela direta)",
+    )
+    rows += _row(
+        "&nbsp;&nbsp;↳ Swap leg",
+        swap, sub="(CDI − IDKA_index) × w_alb — ajuste de bench pela alocação em Albatroz",
+    )
+    rows += _row(
+        "<b>Direct subtotal</b>",
+        direct_subtotal, bold=True, sub="soma Direct α + Swap",
+    )
+    # Via Albatroz (standalone)
+    rows += (
+        '<tr class="pa-row pa-group-header">'
+        '<td class="pa-name" style="font-weight:700; color:var(--accent-2); '
+        'text-transform:uppercase; letter-spacing:.05em; font-size:11px; padding-top:10px">Via Albatroz</td>'
+        '<td></td><td></td><td></td><td></td></tr>'
+    )
+    rows += _row(
+        "&nbsp;&nbsp;↳ Albatroz α",
+        via_alb, sub=f"(Albatroz α vs. CDI × w_alb {w_alb:.1%})",
+    )
+    # Grand total
+    rows += _row("<b>Total vs. IDKA benchmark</b>", total, bold=True)
 
     return f"""
     <div class="pa-view" data-pa-view="bench" style="display:none">
