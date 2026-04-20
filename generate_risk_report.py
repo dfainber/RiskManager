@@ -22,6 +22,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
+from evolution_diversification_card import (
+    build_ratio_series as _evo_build_ratio_series,
+    compute_camada1   as _evo_compute_camada1,
+    compute_camada3   as _evo_compute_camada3,
+)
 
 # ── Config ──────────────────────────────────────────────────────────────────
 DATA_STR  = sys.argv[1] if len(sys.argv) > 1 else (
@@ -1162,7 +1167,7 @@ def _quant_classify_factor(book: str, primitive_class: str) -> str:
 def fetch_quant_exposure(date_str: str = DATA_STR) -> tuple:
     """Exposure snapshot for QUANT — rows × BOOK × PRIMITIVE_CLASS.
        Returns (df, nav). df cols: BOOK, PRODUCT_CLASS, PRIMITIVE_CLASS, PRODUCT,
-       delta, delta_dur, factor.
+       delta, delta_dur, factor, sigma (annualised σ from STANDARD_DEVIATION_ASSETS).
     """
     nav = _latest_nav("Galapagos Quantitativo FIM", date_str)
     if nav is None:
@@ -1187,122 +1192,488 @@ def fetch_quant_exposure(date_str: str = DATA_STR) -> tuple:
         lambda r: _quant_classify_factor(r["BOOK"], r["PRIMITIVE_CLASS"]),
         axis=1,
     )
+    # σ per instrument — STANDARD_DEVIATION_ASSETS has rows per (INSTRUMENT, BOOK).
+    # QUANT books: SIST, SIST_RF, SIST_FX, SIST_COMMO, SIST_GLOBAL, Bracco, Quant_PA.
+    # Pull any of them and pick the row matching our df's BOOK when possible,
+    # falling back to the first available match per PRODUCT.
+    sigma_df = read_sql(f"""
+        SELECT "INSTRUMENT" AS "PRODUCT", "BOOK", "STANDARD_DEVIATION" AS sigma
+        FROM q_models."STANDARD_DEVIATION_ASSETS"
+        WHERE "VAL_DATE" = DATE '{date_str}'
+          AND "BOOK" IN ('SIST','SIST_RF','SIST_FX','SIST_COMMO','SIST_GLOBAL',
+                         'Bracco','Quant_PA')
+    """)
+    if not sigma_df.empty:
+        sig_exact = sigma_df.rename(columns={"sigma": "sigma_exact"})
+        df = df.merge(sig_exact, on=["PRODUCT", "BOOK"], how="left")
+        sig_any = (sigma_df.groupby("PRODUCT", as_index=False)
+                           .agg(sigma_any=("sigma", "mean")))
+        df = df.merge(sig_any, on="PRODUCT", how="left")
+        df["sigma"] = df["sigma_exact"].fillna(df["sigma_any"])
+        df = df.drop(columns=["sigma_exact", "sigma_any"])
+    else:
+        df["sigma"] = float("nan")
     return df, nav
 
 
-def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
+def fetch_quant_var(date_str: str = DATA_STR) -> pd.DataFrame:
+    """QUANT parametric VaR per (BOOK, PRODUCT, PRODUCT_CLASS) at LEVEL=3.
+       Returns df with: BOOK, PRODUCT, PRODUCT_CLASS, var_brl, var_pct (bps of NAV, positive = loss).
+    """
+    nav = _latest_nav("Galapagos Quantitativo FIM", date_str) or 1.0
+    df = read_sql(f"""
+        SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS",
+               SUM("PARAMETRIC_VAR") AS var_brl
+        FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
+        WHERE "TRADING_DESK" = 'Galapagos Quantitativo FIM'
+          AND "VAL_DATE"     = DATE '{date_str}'
+          AND "LEVEL"        = 3
+        GROUP BY "BOOK", "PRODUCT", "PRODUCT_CLASS"
+    """)
+    if df.empty:
+        df["var_pct"] = []
+        return df
+    df["var_brl"] = df["var_brl"].astype(float).fillna(0.0)
+    # PARAMETRIC_VAR is negative (loss) at the source; convert to positive bps of NAV.
+    df["var_pct"] = df["var_brl"] * -10000 / nav
+    return df
+
+
+# ── Unified Exposure card (shared between MACRO and QUANT) ──────────────────
+# Columns (factor row + product drill-down):
+#   Fator | Net %NAV | Net BRL | Gross %NAV | Gross BRL | Δ Expo | σ (bps) | VaR (bps) | Δ VaR
+# Default sort: |Net| desc. Headers clickable (↑/↓). Drill children collapse with parent.
+
+_UEXPO_JS = r"""<script>
+if (!window.__uexpoJSLoaded) {
+  window.__uexpoJSLoaded = true;
+  window.__uexpoSortState = {};
+
+  window.uexpoToggle = function(row) {
+    var path  = row.getAttribute('data-expo-path');
+    var caret = row.querySelector('.uexpo-caret');
+    var table = row.closest('table');
+    if (!table || !path) return;
+    var sel   = 'tr[data-expo-parent="' + path.replace(/"/g,'\\"') + '"]';
+    var kids  = table.querySelectorAll(sel);
+    if (!kids.length) return;
+    var opening = kids[0].style.display === 'none';
+    kids.forEach(function(c){ c.style.display = opening ? '' : 'none'; });
+    if (caret) caret.textContent = opening ? '▼' : '▶';
+  };
+
+  window.uexpoSort = function(th, sortKey) {
+    var table = th.closest('table'); if (!table) return;
+    var tbody = table.tBodies[0];   if (!tbody) return;
+    var key   = (table.id || '') + ':' + sortKey;
+
+    // The name column cycles through 3 states: A→Z, Z→A, default.
+    // Numeric columns toggle asc/desc.
+    var prev = window.__uexpoSortState[key];
+    var state;
+    if (sortKey === 'name') {
+      state = (prev === 'asc') ? 'desc' : (prev === 'desc') ? 'default' : 'asc';
+    } else {
+      state = (prev === 'asc') ? 'desc' : 'asc';
+    }
+    window.__uexpoSortState = {}; window.__uexpoSortState[key] = state;
+
+    // Group factor-level rows with their children (level=1 rows follow their parent).
+    var groups = [];
+    var cur = null;
+    Array.from(tbody.rows).forEach(function(r){
+      if (r.getAttribute('data-expo-lvl') === '0' || r.classList.contains('pa-total-row')) {
+        cur = { head: r, kids: [], total: r.classList.contains('pa-total-row') };
+        groups.push(cur);
+      } else if (cur) {
+        cur.kids.push(r);
+      }
+    });
+    var totals = groups.filter(function(g){ return g.total; });
+    var sortable = groups.filter(function(g){ return !g.total; });
+
+    if (state === 'default') {
+      sortable.sort(function(a, b){
+        var va = parseInt(a.head.getAttribute('data-default-order'), 10);
+        var vb = parseInt(b.head.getAttribute('data-default-order'), 10);
+        return va - vb;
+      });
+    } else {
+      var asc = (state === 'asc');
+      sortable.sort(function(a, b){
+        if (sortKey === 'name') {
+          var na = a.head.getAttribute('data-sort-name') || '';
+          var nb = b.head.getAttribute('data-sort-name') || '';
+          return asc ? na.localeCompare(nb) : nb.localeCompare(na);
+        }
+        var va = parseFloat(a.head.getAttribute('data-sort-' + sortKey));
+        var vb = parseFloat(b.head.getAttribute('data-sort-' + sortKey));
+        var aNaN = isNaN(va), bNaN = isNaN(vb);
+        if (aNaN && bNaN) {
+          var na2 = a.head.getAttribute('data-sort-name') || '';
+          var nb2 = b.head.getAttribute('data-sort-name') || '';
+          return asc ? na2.localeCompare(nb2) : nb2.localeCompare(na2);
+        }
+        if (aNaN) return 1;
+        if (bNaN) return -1;
+        return asc ? va - vb : vb - va;
+      });
+    }
+
+    sortable.forEach(function(g){
+      tbody.appendChild(g.head);
+      g.kids.forEach(function(k){ tbody.appendChild(k); });
+    });
+    totals.forEach(function(g){
+      tbody.appendChild(g.head);
+      g.kids.forEach(function(k){ tbody.appendChild(k); });
+    });
+
+    table.querySelectorAll('th[data-expo-sort]').forEach(function(h){
+      var arrow = h.querySelector('.uexpo-arrow');
+      if (!arrow) return;
+      var active = (h === th) && (state !== 'default');
+      var glyph  = state === 'asc' ? '↑' : state === 'desc' ? '↓' : '';
+      arrow.textContent = (h === th) ? glyph : '';
+      arrow.style.opacity = active ? '0.9' : '0';
+      h.classList.toggle('uexpo-sort-active', active);
+    });
+  };
+}
+</script>"""
+
+
+def _build_expo_unified_table(
+    fund_key: str,
+    nav: float,
+    df: pd.DataFrame,
+    df_d1: pd.DataFrame | None,
+    df_var: pd.DataFrame | None,
+    df_var_d1: pd.DataFrame | None,
+    factor_order: list,
+    table_id: str | None = None,
+) -> str:
+    """Render a unified Exposure factor × product table.
+       Expected df columns: factor, PRODUCT, PRODUCT_CLASS, delta, pct_nav, sigma.
+       Expected df_var columns: factor, PRODUCT, PRODUCT_CLASS, var_pct (bps, positive=loss).
+       factor_order: ordered list of factor keys for initial display (default sort |Net| desc).
+    """
+    if df is None or df.empty:
+        return ""
+    tbl_id = table_id or f"tbl-uexpo-{fund_key}"
+
+    # ── Aggregate to (factor, PRODUCT, PRODUCT_CLASS) at product level ────────
+    prod = (df.assign(_abs=df["delta"].abs())
+              .groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+              .agg(delta=("delta", "sum"),
+                   gross_brl=("_abs", "sum"),
+                   sigma=("sigma", "mean")))
+    prod["net_pct"]   = prod["delta"]     * 100 / nav
+    prod["gross_pct"] = prod["gross_brl"] * 100 / nav
+
+    # D-1 product lookup
+    d1_prod = {}
+    if df_d1 is not None and not df_d1.empty:
+        p1 = (df_d1.assign(_abs=df_d1["delta"].abs())
+                    .groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+                    .agg(delta=("delta", "sum")))
+        p1["net_pct"] = p1["delta"] * 100 / nav
+        for _, r in p1.iterrows():
+            d1_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["net_pct"]
+
+    # VaR at product level
+    v_prod = {}
+    if df_var is not None and not df_var.empty:
+        vp = (df_var.groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+                    .agg(var_pct=("var_pct", "sum")))
+        for _, r in vp.iterrows():
+            v_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = float(r["var_pct"])
+
+    v1_prod = {}
+    if df_var_d1 is not None and not df_var_d1.empty:
+        vp1 = (df_var_d1.groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+                         .agg(var_pct=("var_pct", "sum")))
+        for _, r in vp1.iterrows():
+            v1_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = float(r["var_pct"])
+
+    # ── Factor-level aggregates ───────────────────────────────────────────────
+    def _sigma_weighted(sub: pd.DataFrame) -> float | None:
+        s = sub.dropna(subset=["sigma"])
+        w = s["net_pct"].abs()
+        tot = w.sum()
+        if tot <= 0:
+            return None
+        return float((w * s["sigma"]).sum() / tot)
+
+    factors = []
+    for f in prod["factor"].unique():
+        sub = prod[prod["factor"] == f]
+        net_pct   = float(sub["net_pct"].sum())
+        gross_pct = float(sub["gross_pct"].sum())
+        net_brl   = float(sub["delta"].sum())
+        gross_brl = float(sub["gross_brl"].sum())
+        sig       = _sigma_weighted(sub)
+        var_pct   = None
+        if v_prod:
+            var_pct = sum(v_prod.get((f, r["PRODUCT"], r["PRODUCT_CLASS"]), 0.0)
+                          for _, r in sub.iterrows())
+        # D-1 factor-level
+        d1_net_pct = None
+        if df_d1 is not None and not df_d1.empty:
+            sub1 = df_d1[df_d1["factor"] == f]
+            if not sub1.empty:
+                d1_net_pct = float(sub1["delta"].sum()) * 100 / nav
+        d1_var_pct = None
+        if v1_prod:
+            d1_var_pct = sum(v1_prod.get((f, r["PRODUCT"], r["PRODUCT_CLASS"]), 0.0)
+                             for _, r in sub.iterrows())
+        factors.append(dict(
+            factor=f, net_pct=net_pct, net_brl=net_brl,
+            gross_pct=gross_pct, gross_brl=gross_brl,
+            sigma=sig, var_pct=var_pct,
+            d_expo=(net_pct - d1_net_pct) if d1_net_pct is not None else None,
+            d_var=(var_pct - d1_var_pct) if (var_pct is not None and d1_var_pct is not None) else None,
+            n_prods=len(sub),
+        ))
+
+    # Default sort: |Net| desc, with factor_order as tiebreaker
+    order_idx = {f: i for i, f in enumerate(factor_order or [])}
+    factors.sort(key=lambda r: (-abs(r["net_pct"]), order_idx.get(r["factor"], 99)))
+
+    # ── Format helpers ────────────────────────────────────────────────────────
+    def _num(v, n=1):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—", "var(--muted)"
+        return f'{v:+.{n}f}', ("var(--up)" if v >= 0 else "var(--down)")
+
+    def _abs_num(v, n=2, unit="%"):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f'{v:.{n}f}{unit}'
+
+    def _money(v_brl):
+        if v_brl is None or (isinstance(v_brl, float) and pd.isna(v_brl)):
+            return "—"
+        return f'{v_brl/1e6:+,.1f}M'.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def _money_abs(v_brl):
+        if v_brl is None or (isinstance(v_brl, float) and pd.isna(v_brl)):
+            return "—"
+        return f'{v_brl/1e6:,.1f}M'.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def _dv(v):
+        return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else f'{v:.6f}'
+
+    def _cell(txt, color=None, extra=""):
+        col = f'color:{color};' if color else ''
+        return (f'<td class="mono" style="text-align:right;font-size:11.5px;{col}{extra}" '
+                f'>{txt}</td>')
+
+    # ── Render factor rows + product children ────────────────────────────────
+    body = ""
+    tot_net = 0.0; tot_gross = 0.0; tot_net_brl = 0.0; tot_gross_brl = 0.0
+    tot_var = 0.0; any_var = False
+    for _default_idx, g in enumerate(factors):
+        f = g["factor"]
+        tot_net       += g["net_pct"]
+        tot_gross     += g["gross_pct"]
+        tot_net_brl   += g["net_brl"]
+        tot_gross_brl += g["gross_brl"]
+        if g["var_pct"] is not None:
+            tot_var += g["var_pct"]; any_var = True
+        path = f'{fund_key}-' + f.replace(' ', '_').replace('(', '').replace(')', '')
+
+        net_s, net_c = _num(g["net_pct"], 2)
+        gross_s = _abs_num(g["gross_pct"], 1)
+        dexp_s, dexp_c = _num(g["d_expo"], 2)
+        sig_s = _abs_num(g["sigma"], 1, unit="")
+        var_raw = g["var_pct"]
+        if var_raw is None:
+            var_s, var_c = "—", "var(--muted)"
+        else:
+            var_s = f'{var_raw:.1f}'
+            var_c = "var(--down)" if var_raw > 0 else "var(--muted)"
+        dvar_s, dvar_c = _num(g["d_var"], 1)
+
+        body += (
+            f'<tr class="uexpo-row" data-expo-lvl="0" data-expo-path="{path}" '
+            f'onclick="uexpoToggle(this)" style="cursor:pointer; border-top:1px solid var(--border)" '
+            f'data-default-order="{_default_idx}" '
+            f'data-sort-name="{f}" '
+            f'data-sort-net="{-abs(g["net_pct"]):.6f}" '
+            f'data-sort-dexp="{_dv(g["d_expo"])}" '
+            f'data-sort-gross="{-g["gross_pct"]:.6f}" '
+            f'data-sort-sigma="{_dv(g["sigma"])}" '
+            f'data-sort-var="{_dv(var_raw)}" '
+            f'data-sort-dvar="{_dv(g["d_var"])}">'
+            f'<td class="sum-fund" style="font-weight:700"><span class="uexpo-caret">▶</span> {f} '
+            f'<span style="color:var(--muted);font-size:10px;font-weight:400">· {g["n_prods"]}</span></td>'
+            + _cell(f'{net_s}%', net_c, "font-weight:700")
+            + _cell(f'{dexp_s}%' if dexp_s != '—' else '—', dexp_c)
+            + _cell(gross_s, "var(--muted)")
+            + _cell(sig_s, "var(--muted)")
+            + _cell(var_s, var_c)
+            + _cell(f'{dvar_s}' if dvar_s != '—' else '—', dvar_c)
+            + '</tr>'
+        )
+
+        # Product children — sort by |net_pct| desc
+        sub_prods = prod[prod["factor"] == f].copy()
+        sub_prods["_abs"] = sub_prods["net_pct"].abs()
+        sub_prods = sub_prods.sort_values("_abs", ascending=False)
+        for _, p in sub_prods.iterrows():
+            key = (f, p["PRODUCT"], p["PRODUCT_CLASS"])
+            p_net = float(p["net_pct"])
+            p_net_brl = float(p["delta"])
+            p_gross = float(p["gross_pct"])
+            p_gross_brl = float(p["gross_brl"])
+            p_sig = float(p["sigma"]) if pd.notna(p["sigma"]) else None
+            p_var = v_prod.get(key)
+            p_d1 = d1_prod.get(key)
+            p_dexp = (p_net - p_d1) if p_d1 is not None else None
+            p_dvar = (p_var - v1_prod.get(key)) if (p_var is not None and key in v1_prod) else None
+
+            net_col = "var(--up)" if p_net >= 0 else "var(--down)"
+            if p_var is None:
+                pvar_s, pvar_c = "—", "var(--muted)"
+            else:
+                pvar_s = f'{p_var:.1f}'
+                pvar_c = "var(--down)" if p_var > 0 else "var(--muted)"
+            pdexp_s, pdexp_c = _num(p_dexp, 2)
+            pdvar_s, pdvar_c = _num(p_dvar, 1)
+            p_sig_s = _abs_num(p_sig, 1, unit="")
+            body += (
+                f'<tr class="uexpo-row" data-expo-lvl="1" data-expo-parent="{path}" '
+                f'style="display:none; background:var(--bg-alt, rgba(0,0,0,0.12))">'
+                f'<td style="padding-left:28px; font-size:11px; color:var(--muted)">'
+                f'  <span style="color:var(--text); font-weight:600">{p["PRODUCT"]}</span> '
+                f'<span style="color:var(--muted); font-size:10px">({p["PRODUCT_CLASS"]})</span>'
+                f'</td>'
+                + _cell(f'{p_net:+.2f}%', net_col)
+                + _cell(f'{pdexp_s}%' if pdexp_s != '—' else '—', pdexp_c)
+                + _cell(f'{p_gross:.2f}%', "var(--muted)")
+                + _cell(p_sig_s, "var(--muted)")
+                + _cell(pvar_s, pvar_c)
+                + _cell(pdvar_s if pdvar_s != '—' else '—', pdvar_c)
+                + '</tr>'
+            )
+
+    # ── Total row (pinned) ────────────────────────────────────────────────────
+    # Net %NAV total omitted (user: net can cross long/short and aggregate is
+    # not meaningful). Gross total kept — sum of |exposures| is the book size.
+    body += (
+        '<tr class="pa-total-row" data-pinned="1" '
+        'style="border-top:2px solid var(--border); font-weight:700">'
+        '<td class="sum-fund" style="font-weight:700">Total</td>'
+        + '<td></td>'
+        + '<td></td>'
+        + _cell(f'{tot_gross:.1f}%', "var(--text)", "font-weight:700")
+        + '<td></td>'
+        + _cell(f'{tot_var:.1f}' if any_var else '—',
+                "var(--down)" if (any_var and tot_var > 0) else "var(--muted)",
+                "font-weight:700")
+        + '<td></td>'
+        + '</tr>'
+    )
+
+    def _th(label, sort_key, active=False, align="right"):
+        arrow = '↓' if active else ''
+        act_cls = ' uexpo-sort-active' if active else ''
+        return (f'<th class="uexpo-sort-th{act_cls}" data-expo-sort="{sort_key}" '
+                f'style="text-align:{align}; cursor:pointer; user-select:none" '
+                f'onclick="uexpoSort(this,\'{sort_key}\')">'
+                f'{label} <span class="uexpo-arrow" '
+                f'style="font-size:9px;opacity:{0.9 if active else 0}">{arrow}</span></th>')
+
+    header = (
+        _th("Fator",      "name",  active=False, align="left")
+        + _th("Net %NAV",   "net",   active=True)
+        + _th("Δ Expo",     "dexp",  active=False)
+        + _th("Gross %NAV", "gross", active=False)
+        + _th("σ (bps)",    "sigma", active=False)
+        + _th("VaR (bps)",  "var",   active=False)
+        + _th("Δ VaR",      "dvar",  active=False)
+    )
+
+    return (
+        f'<table id="{tbl_id}" class="summary-table" data-no-sort="1">'
+        f'<thead><tr>{header}</tr></thead>'
+        f'<tbody>{body}</tbody>'
+        f'</table>'
+    )
+
+
+_QUANT_FACTOR_ORDER = [
+    "Equity BR", "FX", "Commodities",
+    "Juros Nominais", "Juros Reais (IPCA)", "CDI", "Outros",
+]
+
+# QUANT BOOK → factor mapping for VaR aggregation (LEVEL=3 is by BOOK).
+_QUANT_VAR_BOOK_FACTOR = {
+    "Bracco":      "Equity BR",
+    "Quant_PA":    "Equity BR",
+    "SIST_COMMO":  "Commodities",
+    "SIST_FX":     "FX",
+    "SIST_RF":     "Juros Nominais",
+    "SIST_GLOBAL": "FX",
+    "Caixa":       "CDI",
+    "CAIXA USD":   "CDI",
+}
+
+
+def _prepare_quant_var_for_unified(df_var: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Tag BOOK-level QUANT VaR with a factor column matching the Por Fator view."""
+    if df_var is None or df_var.empty:
+        return df_var
+    out = df_var.copy()
+    out["factor"] = out["BOOK"].map(_QUANT_VAR_BOOK_FACTOR).fillna("Outros")
+    return out
+
+
+def build_quant_exposure_section(df: pd.DataFrame, nav: float,
+                                   df_d1: pd.DataFrame = None,
+                                   df_var: pd.DataFrame = None,
+                                   df_var_d1: pd.DataFrame = None) -> str:
     """QUANT exposure card — two views:
-       1. Por Fator: aggregated % NAV per factor (flat)
-       2. Por Livro: factor × livro matrix (shows which livro drives each factor)
+       1. Por Fator: unified factor × product table (Net/Gross + σ + VaR + Δs).
+       2. Por Livro: factor × livro matrix (which livro drives each factor).
     """
     if df is None or df.empty or not nav:
         return ""
 
-    def _pct(v, color_bias=True):
+    df_var_tagged    = _prepare_quant_var_for_unified(df_var)
+    df_var_d1_tagged = _prepare_quant_var_for_unified(df_var_d1)
+    if df_d1 is not None and not df_d1.empty:
+        if "pct_nav" not in df_d1.columns:
+            df_d1 = df_d1.copy()
+            df_d1["pct_nav"] = df_d1["delta"] * 100 / nav
+    if "pct_nav" not in df.columns:
+        df = df.copy()
+        df["pct_nav"] = df["delta"] * 100 / nav
+
+    factor_table = _build_expo_unified_table(
+        fund_key="quant",
+        nav=nav,
+        df=df,
+        df_d1=df_d1,
+        df_var=df_var_tagged,
+        df_var_d1=df_var_d1_tagged,
+        factor_order=_QUANT_FACTOR_ORDER,
+    )
+
+    # ── Por Livro matrix (livro × factor, Net %NAV) ──────────────────────────
+    def _pct(v):
         pct = v * 100 / nav if nav else 0
         if abs(pct) < 0.01:
             return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-        col = "var(--up)" if v >= 0 else "var(--down)" if color_bias else "var(--text)"
+        col = "var(--up)" if v >= 0 else "var(--down)"
         return f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
 
-    # ── View 1: By Factor (aggregated) ────────────────────────────────────────
-    _FACTOR_ORDER = [
-        "Equity BR", "FX", "Commodities",
-        "Juros Nominais", "Juros Reais (IPCA)", "CDI", "Outros",
-    ]
-    df["_abs_delta"] = df["delta"].abs()
-    by_factor = df.groupby("factor").agg(
-        delta=("delta", "sum"),
-        gross=("_abs_delta", "sum"),
-        delta_dur=("delta_dur", "sum"),
-        n=("PRODUCT", "count"),
-    ).reset_index()
-    by_factor["_ord"] = by_factor["factor"].apply(
-        lambda f: _FACTOR_ORDER.index(f) if f in _FACTOR_ORDER else 99
-    )
-    by_factor = by_factor.sort_values("_ord").drop(columns="_ord")
-
-    factor_rows = ""
-    total_delta = 0.0
-    for r in by_factor.itertuples(index=False):
-        total_delta += r.delta
-        is_rate = r.factor in ("Juros Nominais", "Juros Reais (IPCA)")
-        dur_cell = (
-            f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta_dur/1e6:+,.1f}M·yr</td>'
-            if is_rate and abs(r.delta_dur) >= 1e4
-            else '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-        )
-        # Factor header row — clickable to expand positions
-        path = f"qexpo-{r.factor}"
-        gross_pct = (r.gross * 100 / nav) if nav else 0
-        factor_rows += (
-            f'<tr class="qexpo-row qexpo-lvl-0" data-qexpo-path="{path}" '
-            f'onclick="toggleQuantExpoFactor(this)" style="cursor:pointer">'
-            f'<td class="sum-fund"><span class="qexpo-caret">▶</span> {r.factor}</td>'
-            + _pct(r.delta)
-            + f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta/1e6:+,.1f}M</td>'
-            + f'<td class="mono" style="text-align:right; color:var(--muted)">{gross_pct:.1f}%</td>'
-            + f'<td class="mono" style="text-align:right; color:var(--muted)">{r.gross/1e6:,.1f}M</td>'
-            + dur_cell
-            + f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11px">{r.n} pos</td>'
-            "</tr>"
-        )
-        # Per-product drill-down (aggregated across BOOK / PRIMITIVE — user
-        # cares about the instrument, not which livro holds it).
-        sub = df[df["factor"] == r.factor]
-        by_product = sub.groupby("PRODUCT").agg(
-            delta=("delta", "sum"),
-            delta_dur=("delta_dur", "sum"),
-            gross=("_abs_delta", "sum"),
-            livros=("BOOK", lambda s: ", ".join(sorted(set(s)))),
-        ).reset_index()
-        # Default sort: |delta| desc (user: "maior absoluto a menor")
-        by_product["_abs"] = by_product["delta"].abs()
-        by_product = by_product.sort_values("_abs", ascending=False)
-        for _, p in by_product.iterrows():
-            p_delta = float(p["delta"])
-            p_ddur  = float(p["delta_dur"])
-            p_abs   = float(p["gross"])
-            p_col   = "var(--up)" if p_delta >= 0 else "var(--down)"
-            p_pct_nav = (p_delta / nav * 100) if nav else 0
-            p_gross_pct = (p_abs / nav * 100) if nav else 0
-            dur_inline = (
-                f' · {p_ddur/1e6:+,.2f}M·yr'
-                if is_rate and abs(p_ddur) >= 1e4 else ''
-            )
-            factor_rows += (
-                f'<tr class="qexpo-row qexpo-lvl-1" data-qexpo-parent="{path}" '
-                f'data-sort-abs="{p_abs:.2f}" data-sort-delta="{p_delta:.2f}" '
-                f'style="display:none">'
-                f'<td style="padding-left:28px; font-size:11.5px">'
-                f'<span class="mono" style="color:var(--text); font-weight:600">{p["PRODUCT"]}</span> '
-                f'<span class="mono" style="color:var(--muted); font-size:10px">({p["livros"]})</span>'
-                f'</td>'
-                f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_pct_nav:+.2f}%</td>'
-                f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_delta/1e6:+,.2f}M{dur_inline}</td>'
-                f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11.5px">{p_gross_pct:.2f}%</td>'
-                f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11.5px">{p_abs/1e6:,.2f}M</td>'
-                f'<td></td><td></td>'
-                "</tr>"
-            )
-    total_gross = float(by_factor["gross"].sum())
-    total_gross_pct = (total_gross / nav * 100) if nav else 0
-    factor_rows += (
-        '<tr class="pa-total-row">'
-        '<td class="sum-fund" style="font-weight:700">Total</td>'
-        + _pct(total_delta)
-        + f'<td class="mono" style="text-align:right; font-weight:700">{total_delta/1e6:+,.1f}M</td>'
-        + f'<td class="mono" style="text-align:right; font-weight:700">{total_gross_pct:.1f}%</td>'
-        + f'<td class="mono" style="text-align:right; font-weight:700">{total_gross/1e6:,.1f}M</td>'
-        '<td></td><td></td></tr>'
-    )
-
-    # ── View 2: By Livro (matrix livro × factor) ──────────────────────────────
     pivot = df.pivot_table(
         index="BOOK", columns="factor", values="delta",
         aggfunc="sum", fill_value=0.0,
     )
-    livro_factors = [f for f in _FACTOR_ORDER if f in pivot.columns]
+    livro_factors = [f for f in _QUANT_FACTOR_ORDER if f in pivot.columns]
     pivot = pivot[livro_factors]
     pivot["_total"] = pivot.sum(axis=1)
     pivot = pivot.sort_values("_total", key=lambda s: s.abs(), ascending=False)
@@ -1312,15 +1683,10 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
     ) + '<th style="text-align:right">Total</th>'
     livro_rows = ""
     for livro, row in pivot.iterrows():
-        cells = ""
-        for f in livro_factors:
-            cells += _pct(row[f])
+        cells = "".join(_pct(row[f]) for f in livro_factors)
         cells += f'<td class="mono" style="text-align:right; font-weight:600">{row["_total"]/1e6:+,.1f}M</td>'
         livro_rows += f'<tr><td class="sum-fund">{livro}</td>{cells}</tr>'
-    # Totals row
-    totals_cells = ""
-    for f in livro_factors:
-        totals_cells += _pct(pivot[f].sum())
+    totals_cells = "".join(_pct(pivot[f].sum()) for f in livro_factors)
     totals_cells += f'<td class="mono" style="text-align:right; font-weight:700">{pivot["_total"].sum()/1e6:+,.1f}M</td>'
     livro_rows += (
         '<tr class="pa-total-row">'
@@ -1331,6 +1697,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
     nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
     return f"""
+    {_UEXPO_JS}
     <section class="card">
       <div class="card-head">
         <span class="card-title">Exposição — QUANT</span>
@@ -1343,25 +1710,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
         </div>
       </div>
 
-      <div class="qexpo-view" data-qexpo-view="factor">
-        <table class="summary-table" data-no-sort="1">
-          <thead><tr>
-            <th class="qexpo-sort-th" style="text-align:left; cursor:pointer"
-                data-qexpo-sort="name" onclick="sortQuantExpoPositions(this,'name')">Fator</th>
-            <th class="qexpo-sort-th qexpo-sort-active" style="text-align:right; cursor:pointer"
-                data-qexpo-sort="net_desc" onclick="sortQuantExpoPositions(this,'net_desc')">Net %NAV <span class="qexpo-sort-arrow">↓</span></th>
-            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
-                data-qexpo-sort="net_desc" onclick="sortQuantExpoPositions(this,'net_desc')">Net BRL</th>
-            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
-                data-qexpo-sort="gross" onclick="sortQuantExpoPositions(this,'gross')">Gross %NAV <span class="qexpo-sort-arrow"></span></th>
-            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
-                data-qexpo-sort="gross" onclick="sortQuantExpoPositions(this,'gross')">Gross BRL</th>
-            <th style="text-align:right">Duration (BRL·yr)</th>
-            <th style="text-align:right">#</th>
-          </tr></thead>
-          <tbody>{factor_rows}</tbody>
-        </table>
-      </div>
+      <div class="qexpo-view" data-qexpo-view="factor">{factor_table}</div>
 
       <div class="qexpo-view" data-qexpo-view="livro" style="display:none">
         <table class="summary-table" data-no-sort="1">
@@ -1371,8 +1720,8 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
       </div>
 
       <div class="bar-legend" style="margin-top:10px">
-        <b>Por Fator</b>: exposição líquida agregada por fator de risco. <b>Por Livro</b>: matriz livro × fator mostrando de onde vem cada exposição.
-        Valores em %NAV e BRL nocional (exceto coluna Duration que é BRL·ano para juros). Derivado de LOTE_PRODUCT_EXPO com source = QUANT direto.
+        <b>Por Fator</b>: factor × produto, mesma formatação do MACRO — Net/Gross em %NAV e BRL, Δ Expo vs D-1, σ (bps) e VaR (bps) por BOOK (LOTE_FUND_STRESS_RPM LEVEL=3).
+        <b>Por Livro</b>: matriz livro × fator, Net %NAV. Fonte: LOTE_PRODUCT_EXPO, source = QUANT direto.
       </div>
     </section>"""
 
@@ -2106,41 +2455,7 @@ def fetch_evolution_single_names(date_str: str = DATA_STR) -> tuple:
 def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: float,
                            df_expo_d1: pd.DataFrame = None, df_var_d1: pd.DataFrame = None,
                            df_pnl_prod: pd.DataFrame = None, pm_margem: dict = None) -> str:
-    """One row per risk factor. Drill-down: Product_Class+Product with Expo/VaR/Δ. Toggle: PM VaR."""
-
-    def mini_bar(val, scale=35.0, width=110, color=None):
-        w = min(abs(val) / scale * (width / 2), width / 2)
-        c = color or ("#f87171" if val < 0 else "#4ade80")
-        mid = width / 2
-        x  = mid - w if val < 0 else mid
-        return (f'<svg width="{width}" height="12" style="vertical-align:middle">'
-                f'<line x1="{mid}" y1="0" x2="{mid}" y2="12" stroke="#334155" stroke-width="1"/>'
-                f'<rect x="{x:.1f}" y="2" width="{w:.1f}" height="8" rx="2" fill="{c}" opacity="0.85"/>'
-                f'</svg>')
-
-    def dual_bar(expo_val, dur_val, scale=35.0, width=160):
-        """Two stacked bars: top=notional expo (% NAV), bottom=duration-weighted (% NAV). Rate only."""
-        def bsvg(val, y0, bh, clr):
-            w = min(abs(val) / scale * (width / 2), width / 2)
-            c = clr if val < 0 else "#4ade80"
-            mid = width / 2
-            x = mid - w if val < 0 else mid
-            tx = (mid - w - 3) if val < 0 else (mid + w + 3)
-            anchor = "end" if val < 0 else "start"
-            return (f'<rect x="{x:.1f}" y="{y0}" width="{w:.1f}" height="{bh}" rx="2" fill="{c}" opacity="0.85"/>'
-                    f'<text x="{tx:.1f}" y="{y0+bh-1}" font-size="8" fill="{c}" '
-                    f'font-family="monospace" text-anchor="{anchor}">{val:+.1f}%</text>')
-        mid = width / 2
-        return (f'<svg width="{width}" height="28" style="vertical-align:middle">'
-                f'<line x1="{mid}" y1="0" x2="{mid}" y2="28" stroke="#334155" stroke-width="1"/>'
-                f'<text x="2" y="8" font-size="7" fill="#475569">EXPO</text>'
-                f'{bsvg(expo_val, 0, 9, "#f87171")}'
-                f'<text x="2" y="22" font-size="7" fill="#475569">DUR</text>'
-                f'{bsvg(dur_val, 14, 9, "#fb923c")}'
-                f'</svg>')
-
-    def fmt_brl(delta):
-        return f'{delta/1e6:+.0f}M'
+    """POSIÇÕES (unified factor × produto table) + PM VaR toggle."""
 
     def delta_str(val):
         if val is None or (isinstance(val, float) and np.isnan(val)):
@@ -2149,7 +2464,6 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
         return f'{val:+.1f}', c
 
     def dv(val):
-        """Numeric string for data-val attribute; empty string if None/NaN."""
         if val is None or (isinstance(val, float) and np.isnan(val)):
             return ""
         return f'{val:.6f}'
@@ -2162,65 +2476,26 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
                 f'onclick="sortTable(\'{tbody_id}\',{col_idx},{paired_js})">'
                 f'{label}<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>')
 
-    # ── D-1 lookup tables (keyed by (rf, PRODUCT, PRODUCT_CLASS)) ────────────
+    # ── D-1 lookup tables (for PM VaR view) ──────────────────────────────────
     d1_prod_expo = {}
-    d1_prod_var  = {}
-    d1_rf_var    = {}
-    d1_rf_expo   = {}
     if df_expo_d1 is not None and not df_expo_d1.empty:
         for _, r in (df_expo_d1.groupby(["rf","PRODUCT","PRODUCT_CLASS"])
                                 .agg(pct_nav=("pct_nav","sum")).reset_index()).iterrows():
             d1_prod_expo[(r["rf"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["pct_nav"]
-        for _, r in (df_expo_d1.groupby("rf").agg(pct_nav=("pct_nav","sum")).reset_index()).iterrows():
-            d1_rf_expo[r["rf"]] = r["pct_nav"]
-    if df_var_d1 is not None and not df_var_d1.empty:
-        for _, r in (df_var_d1.groupby(["rf","PRODUCT","PRODUCT_CLASS"])
-                               .agg(var_pct=("var_pct","sum")).reset_index()).iterrows():
-            d1_prod_var[(r["rf"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["var_pct"]
-        for _, r in (df_var_d1.groupby("rf").agg(var_pct=("var_pct","sum")).reset_index()).iterrows():
-            d1_rf_var[r["rf"]] = r["var_pct"]
 
-    # ── DIA lookup: (livro, product) → dia_bps ───────────────────────────────
     dia_lookup = {}
     if df_pnl_prod is not None and not df_pnl_prod.empty:
         for _, r in df_pnl_prod.iterrows():
             dia_lookup[(r["LIVRO"], r["PRODUCT"])] = float(r["dia_bps"])
 
-    # ── Summary: one row per RF ───────────────────────────────────────────────
-    rf_expo = (df_expo.groupby("rf")
-                      .agg(pct_nav=("pct_nav","sum"), dur_pct=("dur_pct","sum"), delta=("delta","sum"))
-                      .reset_index())
     rf_var  = df_var.groupby("rf").agg(var_pct=("var_pct","sum")).reset_index()
-    summary = rf_expo.merge(rf_var, on="rf", how="left")
-    summary["_ord"] = summary["rf"].apply(lambda x: _RF_ORDER.index(x) if x in _RF_ORDER else 99)
-    summary = summary.sort_values("_ord")
-
-    # ── Product drill-down ───────────────────────────────────────────────────
-    prod_expo = (df_expo.groupby(["rf","PRODUCT","PRODUCT_CLASS"])
-                        .agg(pct_nav=("pct_nav","sum"), delta=("delta","sum"),
-                             sigma=("sigma","mean"))
-                        .reset_index()
-                        .sort_values("pct_nav"))
-    prod_var  = df_var.groupby(["rf","PRODUCT","PRODUCT_CLASS"]).agg(var_pct=("var_pct","sum")).reset_index()
-    prod      = prod_expo.merge(prod_var, on=["rf","PRODUCT","PRODUCT_CLASS"], how="left")
 
     # ── PM × product breakdown for grouped PM VaR view ───────────────────────
     pm_prod = (df_expo.groupby(["rf","pm","PRODUCT","PRODUCT_CLASS"])
                       .agg(pct_nav=("pct_nav","sum"), delta=("delta","sum"),
                            sigma=("sigma","mean"))
                       .reset_index())
-    # PM-level totals (for header rows)
-    pm_tot = pm_prod.groupby(["rf","pm"]).agg(
-        pct_nav_pm=("pct_nav","sum"), delta_pm=("delta","sum")).reset_index()
-    # VaR attribution: delta-proportional from RF-level VaR
     rf_delta_tot = df_expo.groupby("rf").agg(rf_delta=("delta","sum")).reset_index()
-    pm_tot = pm_tot.merge(rf_delta_tot, on="rf").merge(rf_var[["rf","var_pct"]], on="rf", how="left")
-    pm_tot["pm_var_pct"] = np.where(
-        pm_tot["rf_delta"] != 0,
-        pm_tot["delta_pm"] / pm_tot["rf_delta"] * pm_tot["var_pct"],
-        0.0
-    )
-    # Product-level VaR: same proportional attribution (product delta / rf delta)
     pm_prod = pm_prod.merge(rf_delta_tot, on="rf").merge(rf_var[["rf","var_pct"]], on="rf", how="left")
     pm_prod["prod_var_pct"] = np.where(
         pm_prod["rf_delta"] != 0,
@@ -2228,85 +2503,21 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
         0.0
     )
 
-    rows = ""
-    for _, r in summary.iterrows():
-        rf    = r["rf"]
-        rf_id = rf.replace("-","_").replace(" ","_")
-        color = _RF_COLOR.get(rf, "#94a3b8")
-        var_pct_raw = float(r["var_pct"]) if pd.notna(r.get("var_pct")) else None
-        var_s  = f'{var_pct_raw:.1f}' if var_pct_raw is not None else "—"
-        var_c  = "#f87171" if var_pct_raw is not None and var_pct_raw > 0 else "#94a3b8"
-
-        # Summary bar
-        is_rate = rf.startswith("RF-")
-        if is_rate and pd.notna(r["dur_pct"]) and r["dur_pct"] != 0:
-            bar = dual_bar(r["pct_nav"], r["dur_pct"])
-            bar_w = "width:170px"
-        else:
-            bar = mini_bar(r["pct_nav"], color=color)
-            bar_w = "width:120px"
-
-        # Δ for summary row
-        d1e = d1_rf_expo.get(rf)
-        d1v = d1_rf_var.get(rf)
-        dexp_raw = (r["pct_nav"] - d1e) if d1e is not None else None
-        dvar_raw = (var_pct_raw - d1v) if (d1v is not None and var_pct_raw is not None) else None
-        dexp_s, dexp_c = delta_str(dexp_raw)
-        dvar_s, dvar_c = delta_str(dvar_raw)
-
-        # ── PRODUTO drill rows ────────────────────────────────────────────────
-        prod_rows = ""
-        for _, p in prod[prod["rf"] == rf].iterrows():
-            key = (rf, p["PRODUCT"], p["PRODUCT_CLASS"])
-            vv  = float(p["var_pct"]) if pd.notna(p.get("var_pct")) else None
-            var_s2 = f'{vv:.2f}%' if vv is not None else ""
-            var_c2 = "#f87171" if vv and vv > 0 else "#64748b"
-            pv_c   = "#f87171" if p["pct_nav"] < 0 else "#4ade80"
-
-            de_raw = (p["pct_nav"] - d1_prod_expo[key]) if key in d1_prod_expo else None
-            dv_raw2 = (vv - d1_prod_var[key]) if (vv is not None and key in d1_prod_var) else None
-            de_s, de_c = delta_str(de_raw)
-            dv_s2, dv_c2 = delta_str(dv_raw2)
-
-            sig_raw = p["sigma"] if pd.notna(p.get("sigma")) else None
-            sig_s = f'{sig_raw:.1f}' if sig_raw is not None else "—"
-            prod_rows += (
-                f'<tr style="border-top:1px solid #0f172a">'
-                f'<td style="padding:2px 20px;font-size:10px;color:#94a3b8" data-val="{p["PRODUCT"]}">'
-                f'  {p["PRODUCT"]} <span style="color:#334155;font-size:9px">{p["PRODUCT_CLASS"]}</span>'
-                f'</td>'
-                f'<td style="padding:2px 8px;font-size:10px;font-family:monospace;color:{pv_c};text-align:right" data-val="{p["pct_nav"]:.6f}">{p["pct_nav"]:+.1f}%</td>'
-                f'<td style="padding:2px 8px;font-size:10px;font-family:monospace;color:#94a3b8;text-align:right" data-val="{dv(sig_raw)}">{sig_s}</td>'
-                f'<td style="padding:2px 8px;font-size:10px;font-family:monospace;color:{de_c};text-align:right" data-val="{dv(de_raw)}">{de_s}%</td>'
-                f'<td style="padding:2px 8px;font-size:10px;font-family:monospace;color:{var_c2};text-align:right" data-val="{dv(vv)}">{var_s2}</td>'
-                f'<td style="padding:2px 8px;font-size:10px;font-family:monospace;color:{dv_c2};text-align:right" data-val="{dv(dv_raw2)}">{dv_s2}%</td>'
-                f'</tr>'
-            )
-
-        prod_tbody_id = f"tbody-prod-{rf_id}"
-        prod_table = (
-            f'<table style="width:100%;border-collapse:collapse;background:#080d14">'
-            f'<thead><tr>'
-            f'{sort_th("Produto", prod_tbody_id, 0, False, align="left")}'
-            f'{sort_th("Expo%",   prod_tbody_id, 1, False)}'
-            f'{sort_th("σ (bps)", prod_tbody_id, 2, False)}'
-            f'{sort_th("ΔExpo",   prod_tbody_id, 3, False)}'
-            f'{sort_th("VaR(bps)",    prod_tbody_id, 4, False)}'
-            f'{sort_th("ΔVaR",    prod_tbody_id, 5, False)}'
-            f'</tr></thead><tbody id="{prod_tbody_id}">{prod_rows}</tbody></table>'
-        )
-
-        rows += f"""
-        <tr class="metric-row" style="cursor:pointer" onclick="toggleDrillMacro('{rf_id}')">
-          <td style="font-size:12px;font-weight:bold;color:{color};padding:5px 12px;width:90px" data-val="{rf}">▶ {rf}</td>
-          <td style="font-size:13px;font-family:monospace;font-weight:bold;color:{color};text-align:right;width:58px" data-val="{r["pct_nav"]:.6f}">{r["pct_nav"]:+.1f}%</td>
-          <td style="font-size:10px;font-family:monospace;color:{dexp_c};text-align:right;width:48px" data-val="{dv(dexp_raw)}">{dexp_s}%</td>
-          <td style="font-size:12px;font-family:monospace;color:{var_c};text-align:right;width:58px" data-val="{dv(var_pct_raw)}">{var_s}</td>
-          <td style="font-size:10px;font-family:monospace;color:{dvar_c};text-align:right;width:48px" data-val="{dv(dvar_raw)}">{dvar_s}</td>
-        </tr>
-        <tr id="drill-{rf_id}" style="display:none">
-          <td colspan="5" style="padding:0">{prod_table}</td>
-        </tr>"""
+    # ── POSIÇÕES: unified factor × produto table ─────────────────────────────
+    # Rename rf → factor for the shared helper.
+    _expo_u    = df_expo.rename(columns={"rf": "factor"})
+    _var_u     = df_var.rename(columns={"rf": "factor"})
+    _expo_d1_u = df_expo_d1.rename(columns={"rf": "factor"}) if df_expo_d1 is not None and not df_expo_d1.empty else None
+    _var_d1_u  = df_var_d1.rename(columns={"rf": "factor"})  if df_var_d1  is not None and not df_var_d1.empty  else None
+    rf_view_table = _build_expo_unified_table(
+        fund_key="macro",
+        nav=aum,
+        df=_expo_u,
+        df_d1=_expo_d1_u,
+        df_var=_var_u,
+        df_var_d1=_var_d1_u,
+        factor_order=_RF_ORDER,
+    )
 
     # ── D-1 PM totals (expo + VaR attribution) ───────────────────────────────
     d1_pm_expo_tot = {}
@@ -2471,6 +2682,23 @@ function _getVal(row, colIdx) {
     var f = parseFloat(v);
     return {n: f, s: v};
 }
+function _sortBodyByCol(tbody, colIdx, asc) {
+    if (!tbody) return;
+    var rows = Array.from(tbody.rows);
+    rows.sort(function(a, b) {
+        var va = _getVal(a, colIdx), vb = _getVal(b, colIdx);
+        var na = va.n, nb = vb.n;
+        if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+        if (!isNaN(na)) return -1;
+        if (!isNaN(nb)) return  1;
+        return asc ? va.s.localeCompare(vb.s) : vb.s.localeCompare(va.s);
+    });
+    rows.forEach(function(r){ tbody.appendChild(r); });
+}
+// PM-level colIdx → instrument-level colIdx (instrument tables have extra "Expo%" col).
+// PM:   0=PM  1=σ  2=ΔExpo  3=VaR  4=ΔVaR  5=Margem  6=DIA
+// Inst: 0=Ins 1=Expo% 2=σ 3=ΔExpo 4=VaR 5=ΔVaR 6=DIA
+var _PMV_TO_INST_COL = {0: 0, 1: 2, 2: 3, 3: 4, 4: 5, 6: 6};  // 5 (Margem) has no instrument counterpart
 function sortTable(tbodyId, colIdx, paired) {
     var key = tbodyId + ':' + colIdx;
     var asc = _macroSort[key] !== true;
@@ -2495,6 +2723,13 @@ function sortTable(tbodyId, colIdx, paired) {
         rows.sort(cmp);
         rows.forEach(function(r){ tbody.appendChild(r); });
     }
+    // Cascade: when sorting the PM-level table, sort each PM's instrument table by the same key.
+    if (tbodyId === 'tbody-pmv' && colIdx in _PMV_TO_INST_COL) {
+        var instCol = _PMV_TO_INST_COL[colIdx];
+        document.querySelectorAll('tbody[id^="tbody-inst-"]').forEach(function(tb){
+            _sortBodyByCol(tb, instCol, asc);
+        });
+    }
     var table = tbody.closest('table');
     if (!table) return;
     var thead = table.querySelector('thead');
@@ -2506,15 +2741,12 @@ function sortTable(tbodyId, colIdx, paired) {
 function setMacroView(v) {
     ['pos','pmv'].forEach(function(b) {
         var btn = document.getElementById('mbtn-' + b);
-        btn.style.background = b===v ? '#1e3a5f' : 'transparent';
-        btn.style.color = b===v ? '#60a5fa' : '#475569';
+        if (btn) btn.classList.toggle('active', b===v);
     });
-    document.getElementById('macro-rf-view').style.display = v==='pos' ? '' : 'none';
-    document.getElementById('macro-pm-view').style.display = v==='pmv' ? '' : 'none';
-}
-function toggleDrillMacro(id) {
-    var row = document.getElementById('drill-' + id);
-    if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+    var rfv = document.getElementById('macro-rf-view');
+    var pmv = document.getElementById('macro-pm-view');
+    if (rfv) rfv.style.display = v==='pos' ? '' : 'none';
+    if (pmv) pmv.style.display = v==='pmv' ? '' : 'none';
 }
 function toggleDrillPM(id) {
     var row = document.getElementById(id);
@@ -2522,39 +2754,23 @@ function toggleDrillPM(id) {
 }
 </script>"""
 
+    nav_fmt = f"{aum/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
     return f"""
+    {_UEXPO_JS}
     {js}
-    <div style="margin-top:28px">
-      <div style="font-size:11px; color:#64748b; letter-spacing:2px; text-transform:uppercase;
-                  padding-bottom:8px; border-bottom:1px solid #2d2d3d; margin-bottom:4px;
-                  display:flex; align-items:center; justify-content:space-between">
-        <span>Exposição MACRO
-          <span style="font-size:9px;letter-spacing:0;text-transform:none;color:#475569">(clique no fator)</span>
-        </span>
-        {toggle_btns}
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposição — MACRO</span>
+        <span class="card-sub">— NAV R$ {nav_fmt}M · por fator de risco e por PM</span>
+        <div class="pa-view-toggle" style="margin-left:auto">
+          <button id="mbtn-pos" class="pa-tgl active" onclick="setMacroView('pos')">POSIÇÕES</button>
+          <button id="mbtn-pmv" class="pa-tgl"        onclick="setMacroView('pmv')">PM VaR</button>
+        </div>
       </div>
-      <div id="macro-rf-view">
-        <table style="width:100%; border-collapse:collapse; margin-bottom:6px">
-          <thead>
-            <tr>
-              <th style="font-size:9px;color:#475569;padding:4px 12px;text-align:left;letter-spacing:1px;text-transform:uppercase;cursor:pointer;user-select:none"
-                  data-sort-col="0" onclick="sortTable('tbody-rf',0,true)">Fator<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>
-              <th style="font-size:9px;color:#475569;padding:4px 8px;text-align:right;letter-spacing:1px;text-transform:uppercase;cursor:pointer;user-select:none"
-                  data-sort-col="1" onclick="sortTable('tbody-rf',1,true)">% NAV<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>
-              <th style="font-size:9px;color:#475569;padding:4px 8px;text-align:right;letter-spacing:1px;text-transform:uppercase;cursor:pointer;user-select:none"
-                  data-sort-col="2" onclick="sortTable('tbody-rf',2,true)">Δ Expo<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>
-              <th style="font-size:9px;color:#475569;padding:4px 8px;letter-spacing:1px;text-transform:uppercase">Barra</th>
-              <th style="font-size:9px;color:#475569;padding:4px 8px;text-align:right;letter-spacing:1px;text-transform:uppercase;cursor:pointer;user-select:none"
-                  data-sort-col="3" onclick="sortTable('tbody-rf',3,true)">VaR (bps)<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>
-              <th style="font-size:9px;color:#475569;padding:4px 8px;text-align:right;letter-spacing:1px;text-transform:uppercase;cursor:pointer;user-select:none"
-                  data-sort-col="4" onclick="sortTable('tbody-rf',4,true)">Δ VaR<span class="sort-ind" style="opacity:0.3"> ▲▼</span></th>
-            </tr>
-          </thead>
-          <tbody id="tbody-rf">{rows}</tbody>
-        </table>
-      </div>
+      <div id="macro-rf-view">{rf_view_table}</div>
       <div id="macro-pm-view" style="display:none">{global_pm_table}</div>
-    </div>"""
+    </section>"""
 
 def build_single_names_section(fund_short: str, sub_label: str,
                                 df: pd.DataFrame, nav: float,
@@ -4504,18 +4720,403 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
     </section>"""
 
 
+# ── Evolution — Diversification Benefit (3 camadas da skill) ────────────────
+# Compute functions imported from evolution_diversification_card. Here we render
+# with the main report's dark theme (CSS vars --text, --muted, --up, etc.).
+# CREDITO VaR is winsorized (63d MAD, 3σ, causal) to absorb the dez/2025
+# cotas-júnior spike — see docs/CREDITO_TREATMENT.md.
+
+_EVO_EXPECTED_STRATS = ["MACRO", "SIST", "FRONTIER", "CREDITO", "EVO_STRAT", "CAIXA"]
+
+
+def _evo_spark_svg(series: "pd.Series", today_val: float,
+                   width: int = 560, height: int = 90) -> str:
+    if series is None or series.empty:
+        return ""
+    ys = series.values.astype(float)
+    y_min, y_max = float(np.nanmin(ys)), float(np.nanmax(ys))
+    if y_max - y_min < 1e-9:
+        y_max = y_min + 0.01
+    pad = 10
+    w, h = width - 2 * pad, height - 2 * pad
+    def xy(i, v):
+        x = pad + (i / (len(ys) - 1 or 1)) * w
+        y = pad + (1 - (v - y_min) / (y_max - y_min)) * h
+        return (x, y)
+    pts = " ".join(f"{x:.1f},{y:.1f}"
+                   for i, v in enumerate(ys) for (x, y) in [xy(i, v)])
+    dx, dy = xy(len(ys) - 1, today_val)
+    mean_val = float(np.nanmean(ys))
+    my = pad + (1 - (mean_val - y_min) / (y_max - y_min)) * h
+    return f"""
+    <svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;height:{height}px">
+      <line x1="{pad}" y1="{my:.1f}" x2="{width - pad}" y2="{my:.1f}"
+            stroke="var(--line-2)" stroke-dasharray="3 3" stroke-width="1"/>
+      <polyline points="{pts}" fill="none" stroke="var(--accent-2)" stroke-width="1.6"/>
+      <circle cx="{dx:.1f}" cy="{dy:.1f}" r="4"
+              fill="var(--accent-2)" stroke="var(--bg)" stroke-width="2"/>
+      <text x="{width - pad}" y="{my - 4:.1f}" text-anchor="end"
+            font-size="10" fill="var(--muted)">média 252d: {mean_val:.2f}</text>
+    </svg>"""
+
+
+def _evo_pct_color(pct: float) -> str:
+    """Cor para percentil 'high=bad' usando CSS vars do tema."""
+    if pd.isna(pct):        return "var(--muted)"
+    if pct < 70:            return "var(--up)"
+    if pct < 85:            return "var(--warn)"
+    if pct < 95:            return "var(--down)"
+    return "var(--down)"
+
+
+def _evo_pct_badge(pct: float) -> str:
+    if pd.isna(pct):   return "—"
+    if pct < 70:       return "🟢"
+    if pct < 85:       return "🟡"
+    if pct < 95:       return "🔴"
+    return "⚫"
+
+
+def _evo_render_camada1(rows: list) -> str:
+    # Excluir CAIXA, OUTROS e CREDITO (CAIXA e OUTROS são ruidosos; CREDITO tem
+    # caveat de cotas júnior — análise direcional se concentra em MACRO/SIST/
+    # FRONTIER/EVO_STRAT).
+    _EXCLUDED_C1 = {"CAIXA", "OUTROS", "CREDITO"}
+    rows = [r for r in rows if r["strat"] not in _EXCLUDED_C1]
+    elevated = [r for r in rows if not pd.isna(r["pct"]) and r["pct"] >= 70]
+    tr_html = ""
+    for r in rows:
+        c     = _evo_pct_color(r["pct"])
+        vstr  = "—" if pd.isna(r["var_today"]) else f"{r['var_today']:,.1f}"
+        pstr  = "—" if pd.isna(r["pct"])       else f"P{r['pct']:.0f}"
+        badge = _evo_pct_badge(r["pct"])
+        tr_html += (
+            f"<tr>"
+            f"<td>{r['strat']}</td>"
+            f"<td class='mono' style='text-align:right'>{vstr}</td>"
+            f"<td class='mono' style='text-align:right;color:{c};"
+            f"font-weight:600'>{pstr}</td>"
+            f"<td style='text-align:center'>{badge}</td>"
+            f"</tr>"
+        )
+    alert = ""
+    if len(elevated) >= 3:
+        names = ", ".join(r["strat"] for r in elevated)
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:rgba(245,196,81,0.12);border-left:3px solid var(--warn);"
+                 f"border-radius:4px;font-size:13px;color:var(--text)'>"
+                 f"⚠️ {len(elevated)} estratégias simultaneamente ≥ P70 "
+                 f"({names}) — sinal de carregamento agregado</div>")
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Camada 1 — Utilização histórica por estratégia</span>
+        <span class="card-sub">VaR em bps · percentil 252d próprio · sinal: quantas simultaneamente ≥ P70</span>
+      </div>
+      <table class="summary-table">
+        <thead><tr>
+          <th style="text-align:left">Estratégia</th>
+          <th style="text-align:right">VaR (bps)</th>
+          <th style="text-align:right">Percentil 252d</th>
+          <th style="text-align:center">Estado</th>
+        </tr></thead>
+        <tbody>{tr_html}</tbody>
+      </table>
+      {alert}
+      <div class="bar-legend" style="margin-top:10px">
+        cada estratégia vs. próprio histórico 252d ·
+        3+ simultâneas em P≥70 = bull market alignment ·
+        CAIXA / OUTROS / CREDITO excluídos
+      </div>
+    </section>"""
+
+
+def _evo_render_camada2(d: dict) -> str:
+    state_color = _evo_pct_color(d["ratio_wins_pct"])
+    state_label = ("diversificação saudável" if d["ratio_wins_pct"] < 60 else
+                   "abaixo da média histórica" if d["ratio_wins_pct"] < 80 else
+                   "estratégias alinhadas" if d["ratio_wins_pct"] < 95 else
+                   "sem diversificação efetiva")
+
+    # Strategy breakdown rows — CREDITO omitido da tabela (caveat cotas júnior).
+    # A Σ abaixo continua exibindo raw e winsorizada (que inclui CREDITO clipado).
+    rows = []
+    for s in _EVO_EXPECTED_STRATS:
+        if s == "CREDITO":
+            continue
+        v = d["strat_today_bps"].get(s)
+        rows.append((s, float(v) if v is not None else None))
+    if "OUTROS" in d["strat_today_bps"]:
+        rows.append(("OUTROS", float(d["strat_today_bps"]["OUTROS"])))
+
+    strat_rows_html = ""
+    for s, v in rows:
+        vstr  = "—" if v is None else f"{v:,.1f}"
+        share = "—" if (v is None or d["var_soma_bps"] == 0) \
+                     else f"{v/d['var_soma_bps']*100:.0f}%"
+        strat_rows_html += (
+            f"<tr><td>{s}</td>"
+            f"<td class='mono' style='text-align:right'>{vstr}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--muted)'>{share}</td></tr>"
+        )
+    strat_rows_html += (
+        "<tr style='border-top:1.5px solid var(--line-2);font-weight:600'>"
+        f"<td>Σ VaR estratégias <span style='color:var(--muted);font-weight:400'>(raw)</span></td>"
+        f"<td class='mono' style='text-align:right'>{d['var_soma_bps']:,.1f}</td>"
+        f"<td class='mono' style='text-align:right;color:var(--muted)'>100%</td></tr>"
+    )
+    if abs(d['var_soma_bps'] - d['var_soma_wins_bps']) > 0.01:
+        strat_rows_html += (
+            "<tr style='font-weight:700'>"
+            f"<td>Σ VaR estratégias <span style='color:var(--up);font-weight:400'>(winsorizado)</span></td>"
+            f"<td class='mono' style='text-align:right;color:var(--up)'>{d['var_soma_wins_bps']:,.1f}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--muted)'>—</td></tr>"
+        )
+
+    saving_pct = (1.0 - d["ratio_wins"]) * 100
+    cr_share    = d["credito_share_raw"]  * 100 if not pd.isna(d["credito_share_raw"])  else float("nan")
+    cr_share_w  = d["credito_share_wins"] * 100 if not pd.isna(d["credito_share_wins"]) else float("nan")
+    cr_color = ("var(--down)" if cr_share > 40
+                else "var(--warn)" if cr_share > 25
+                else "var(--muted)")
+
+    n_wins = len(d["credito_wins_dates"])
+    wins_note = ""
+    if n_wins > 0:
+        recent_wins = [pd.Timestamp(x).strftime("%Y-%m-%d")
+                       for x in d["credito_wins_dates"][-3:]]
+        wins_note = (
+            f"<div style='margin-top:10px;padding:8px 12px;"
+            f"background:rgba(245,196,81,0.12);border-left:3px solid var(--warn);"
+            f"border-radius:4px;font-size:12px;color:var(--text);line-height:1.5'>"
+            f"⚠️ CREDITO clipado em <b>{n_wins}</b> dias na janela 252d "
+            f"(spike de cotas júnior). Últimos: {', '.join(recent_wins)}. "
+            f"Ratio principal usa Σ winsorizado.</div>"
+        )
+
+    spark = _evo_spark_svg(d["ratio_wins_series"], d["ratio_wins"])
+
+    pct_fmt    = "—" if pd.isna(d['ratio_wins_pct']) else f"{d['ratio_wins_pct']:.0f}"
+    raw_pctfmt = "—" if pd.isna(d['ratio_pct'])      else f"{d['ratio_pct']:.0f}"
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Camada 2 — Diversification Benefit</span>
+        <span class="card-sub">CREDITO winsorizado (63d MAD, 3σ, causal) · ratio principal = Σ winsorizado</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:24px;align-items:start">
+        <div>
+          <div style="font-size:12px;color:var(--muted);text-transform:uppercase;
+                      letter-spacing:.5px;margin-bottom:6px">
+            VaR por estratégia (bps) — soma linear, corr=1
+          </div>
+          <table class="summary-table">
+            <tbody>{strat_rows_html}</tbody>
+          </table>
+        </div>
+
+        <div>
+          <div style="font-size:12px;color:var(--muted);text-transform:uppercase;
+                      letter-spacing:.5px;margin-bottom:6px">
+            Ratio = VaR_real / Σ VaR_estratégias
+          </div>
+          <div style="font-size:44px;font-weight:700;line-height:1;
+                      color:{state_color};font-family:'JetBrains Mono',monospace">
+            {d['ratio_wins']:.2f}
+          </div>
+          <div style="color:{state_color};font-size:13px;margin-top:4px;font-weight:600">
+            {state_label} · P{pct_fmt}
+          </div>
+          <div style="color:var(--muted);font-size:11px;margin-top:2px">
+            (raw sem winsor.: {d['ratio']:.2f} / P{raw_pctfmt})
+          </div>
+
+          <div style="margin-top:16px;font-size:13px;line-height:1.7">
+            <div><b>VaR real (fundo):</b>
+              <span class="mono">{d['var_real_bps']:,.1f} bps</span></div>
+            <div><b>Σ estratégias (winsor.):</b>
+              <span class="mono">{d['var_soma_wins_bps']:,.1f} bps</span></div>
+            <div><b>Benefício:</b>
+              <span class="mono">
+                −{d['var_soma_wins_bps'] - d['var_real_bps']:,.1f} bps
+                ({saving_pct:.0f}% redução)
+              </span></div>
+            <div style="margin-top:6px"><b>Share CREDITO na Σ:</b>
+              <span class="mono" style="color:{cr_color};font-weight:600">{cr_share:.0f}%</span>
+              <span style="color:var(--muted)">raw</span> ·
+              <span class="mono" style="color:var(--muted)">{cr_share_w:.0f}%</span>
+              <span style="color:var(--muted)">winsor.</span>
+            </div>
+            <div style="margin-top:6px"><b>Percentil 252d:</b>
+              <span class="mono">P{pct_fmt}</span>
+              · média {d['ratio_wins_mean']:.2f}
+              · range [{d['ratio_wins_min']:.2f}, {d['ratio_wins_max']:.2f}]
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {wins_note}
+
+      <div style="margin-top:20px">
+        <div style="font-size:12px;color:var(--muted);text-transform:uppercase;
+                    letter-spacing:.5px;margin-bottom:4px">
+          Ratio histórico (winsorizado) — últimos 252d · traço = média · dot = hoje
+        </div>
+        {spark}
+      </div>
+
+      <div class="bar-legend" style="margin-top:16px">
+        ratio baixo → diversificação reduzindo VaR linear · acima do P80 = alinhamento atípico ·
+        tratamento CREDITO: <a href="../../docs/CREDITO_TREATMENT.md" style="color:var(--accent-2)">docs/CREDITO_TREATMENT.md</a>
+      </div>
+    </section>"""
+
+
+def _evo_render_camada3(c3: dict) -> str:
+    if c3["corr_63d"] is None or not c3["pairs"]:
+        return """
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Camada 3 — Correlação realizada</span>
+            <span class="card-sub">dados insuficientes de PnL por LIVRO</span>
+          </div>
+        </section>"""
+
+    corr = c3["corr_63d"]
+    cols = list(corr.columns)
+
+    rows_html = ""
+    for i, a in enumerate(cols):
+        cells = f"<td style='padding:6px 8px;font-weight:600'>{a}</td>"
+        for j, b in enumerate(cols):
+            if j < i:
+                cells += "<td style='padding:6px 8px;color:var(--line-2)'>·</td>"
+            elif j == i:
+                cells += "<td style='padding:6px 8px;color:var(--line-2)'>—</td>"
+            else:
+                pair = next((p for p in c3["pairs"]
+                             if p["a"] == a and p["b"] == b), None)
+                if pair is None:
+                    cells += "<td>—</td>"
+                else:
+                    color = _evo_pct_color(pair["c63_pct"])
+                    pstr = "—" if pd.isna(pair['c63_pct']) else f"P{pair['c63_pct']:.0f}"
+                    cells += (
+                        f"<td style='padding:6px 8px;text-align:center' class='mono'>"
+                        f"<span style='font-weight:600;color:{color}'>{pair['c63']:+.2f}</span>"
+                        f"<br><span style='font-size:11px;color:var(--muted)'>{pstr}</span>"
+                        f"</td>"
+                    )
+        rows_html += f"<tr>{cells}</tr>"
+
+    header_cells = (
+        "<th></th>"
+        + "".join(f"<th style='color:var(--muted)'>{c}</th>" for c in cols)
+    )
+
+    pairs_sorted = sorted(c3["pairs"], key=lambda p: -abs(p["c63"]))
+    pair_rows = ""
+    for p in pairs_sorted:
+        color = _evo_pct_color(p["c63_pct"])
+        pstr = "—" if pd.isna(p["c63_pct"]) else f"P{p['c63_pct']:.0f}"
+        pair_rows += (
+            f"<tr>"
+            f"<td>{p['a']} × {p['b']}</td>"
+            f"<td class='mono' style='text-align:right'>{p['c21']:+.2f}</td>"
+            f"<td class='mono' style='text-align:right;color:{color};font-weight:600'>{p['c63']:+.2f}</td>"
+            f"<td class='mono' style='text-align:right;color:{color}'>{pstr}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--muted)'>{p['c63_mean']:+.2f}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--muted)'>[{p['c63_min']:+.2f}, {p['c63_max']:+.2f}]</td>"
+            f"</tr>"
+        )
+
+    flagged = [p for p in c3["pairs"]
+               if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
+    alert = ""
+    if flagged:
+        names = ", ".join(f"{p['a']}×{p['b']} (P{p['c63_pct']:.0f})"
+                          for p in flagged)
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:rgba(255,90,106,0.12);border-left:3px solid var(--down);"
+                 f"border-radius:4px;font-size:13px;color:var(--text)'>"
+                 f"⚠️ Pares em alinhamento atípico (P ≥ 85): {names}</div>")
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Camada 3 — Correlação realizada entre estratégias</span>
+        <span class="card-sub">PnL diário · janela 63d · percentil 252d de rolling 63d · {c3['n_obs']} obs</span>
+      </div>
+
+      <div style="font-size:12px;color:var(--muted);text-transform:uppercase;
+                  letter-spacing:.5px;margin-bottom:6px">
+        Matriz 63d (percentil 252d abaixo)
+      </div>
+      <table class="summary-table" style="width:auto;margin-bottom:18px">
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+
+      <div style="font-size:12px;color:var(--muted);text-transform:uppercase;
+                  letter-spacing:.5px;margin-bottom:6px">
+        Pares — 21d · 63d · P252d · média · range
+      </div>
+      <table class="summary-table">
+        <thead><tr>
+          <th style="text-align:left">Par</th>
+          <th style="text-align:right">21d</th>
+          <th style="text-align:right">63d</th>
+          <th style="text-align:right">P252d</th>
+          <th style="text-align:right">média</th>
+          <th style="text-align:right">range</th>
+        </tr></thead>
+        <tbody>{pair_rows}</tbody>
+      </table>
+
+      {alert}
+
+      <div class="bar-legend" style="margin-top:16px">
+        correlação positiva entre direcionais reduz diversificação ·
+        P &gt; 85 = alinhamento atípico ·
+        21d sensível · 63d baseline
+      </div>
+    </section>"""
+
+
+def build_evolution_diversification_section(date_str: str) -> str:
+    """Retorna o fragmento HTML com as 3 camadas do Evolution Risk Concentration.
+       Tema dark nativo do relatório. Só deve ser chamado para EVOLUTION."""
+    try:
+        d       = _evo_build_ratio_series(date_str)
+        c1_rows = _evo_compute_camada1(d["strat_pivot"], d["effective_date"])
+        c3      = _evo_compute_camada3(date_str, d["effective_date"])
+    except Exception as e:
+        return (f"<section class='card'><div class='card-head'>"
+                f"<span class='card-title'>Diversificação</span></div>"
+                f"<div style='color:var(--muted);padding:12px'>"
+                f"Sem dados para {date_str}: {e}</div></section>")
+
+    return (_evo_render_camada2(d)
+            + _evo_render_camada1(c1_rows)
+            + _evo_render_camada3(c3))
+
+
 REPORTS = [
-    ("performance",  "PA"),
-    ("exposure",     "Exposure"),
-    ("exposure-map", "Exposure Map"),
-    ("single-name",  "Single-Name"),
-    ("risk-monitor", "Risk Monitor"),
-    ("analise",      "Análise"),
-    ("distribution", "Distribuição 252d"),
-    ("vol-regime",   "Vol Regime"),
-    ("stop-monitor", "Risk Budget"),
-    ("frontier-lo",  "Long Only"),
-    ("briefing",     "Briefing"),
+    ("performance",     "PA"),
+    ("exposure",        "Exposure"),
+    ("exposure-map",    "Exposure Map"),
+    ("single-name",     "Single-Name"),
+    ("risk-monitor",    "Risk Monitor"),
+    ("diversification", "Diversificação"),
+    ("analise",         "Análise"),
+    ("distribution",    "Distribuição 252d"),
+    ("vol-regime",      "Vol Regime"),
+    ("stop-monitor",    "Risk Budget"),
+    ("frontier-lo",     "Long Only"),
+    ("briefing",        "Briefing"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
 FUND_LABELS = {
@@ -4546,6 +5147,23 @@ _FUND_PA_KEY = {
     "IDKA_3Y":   "IDKAIPCAY3",
     "IDKA_10Y":  "IDKAIPCAY10",
 }
+
+# Livros that are benchmark-tracking (passive replica) per fund PA key.
+# Their dia_bps contribution moves with the index, not with alpha — exclude
+# from "≥ 1% NAV" alerts since the index itself is not a risk event.
+_PA_BENCH_LIVROS = {
+    "IDKAIPCAY3":  {"CI"},   # CI book tracks the IDKA 3Y index
+    "IDKAIPCAY10": {"CI"},   # CI book tracks the IDKA 10Y index
+}
+
+def _pa_filter_alpha(df):
+    """Drop PA rows from benchmark-tracking livros; keep only alpha-bearing contributions."""
+    if df is None or df.empty:
+        return df
+    mask = True
+    for pa_key, livros in _PA_BENCH_LIVROS.items():
+        mask = mask & ~((df["FUNDO"] == pa_key) & (df["LIVRO"].isin(livros)))
+    return df[mask]
 
 def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_daily):
     """
@@ -4768,6 +5386,38 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
                 f'DIA {dia_val:+.1f} bps · σ={sigma:.1f} bps</td></tr>'
             )
 
+    # ≥1% NAV single-product contribution (alpha only — benchmark-tracking livros excluded)
+    if df_pa is not None and not df_pa.empty:
+        _pa_alpha_sc = _pa_filter_alpha(df_pa)
+        _PA_TO_SHORT = {v: k for k, v in _PA_KEY.items()}
+        for short in FUND_ORDER:
+            pa_key = _PA_KEY.get(short)
+            if pa_key is None: continue
+            sub = _pa_alpha_sc[
+                (_pa_alpha_sc["FUNDO"] == pa_key) &
+                (~_pa_alpha_sc["LIVRO"].isin({"Caixa", "Caixa USD", "Taxas e Custos", "Prev"})) &
+                (~_pa_alpha_sc["CLASSE"].isin({"Caixa", "Custos"}))
+            ]
+            if sub.empty:
+                continue
+            hits = sub[sub["dia_bps"].abs() >= 100.0].sort_values(
+                "dia_bps", key=lambda s: s.abs(), ascending=False
+            )
+            if hits.empty:
+                continue
+            top = hits.iloc[0]
+            n = len(hits)
+            extra = f" · +{n-1} outros" if n > 1 else ""
+            _b = float(top["dia_bps"])
+            sanity_rows += (
+                f'<tr><td style="padding:5px 12px;white-space:nowrap">{FUND_LABELS.get(short,short)}</td>'
+                f'<td style="padding:5px 12px">Contribuição PA ≥ 1% NAV</td>'
+                f'<td style="text-align:center;padding:5px 8px">'
+                f'<span style="color:#f87171;font-weight:700;font-size:11px">🚨 {_b/100:+.2f}%</span></td>'
+                f'<td style="padding:5px 12px;color:var(--muted);font-size:11.5px">'
+                f'{top["PRODUCT"]} ({top["LIVRO"]}) {_b:+.0f} bps{extra}</td></tr>'
+            )
+
     # ── Full HTML ─────────────────────────────────────────────────────────────
     full_html = f"""
     <section class="card">
@@ -4902,6 +5552,7 @@ def _build_fund_mini_briefing(
     pa_key = _FUND_PA_KEY.get(short)
     top_contrib = []
     top_detract = []
+    big_hits = []  # PA contributions ≥ 1% (100 bps) of NAV — flagged as alerts
     if pa_key and df_pa is not None and not df_pa.empty:
         sub = df_pa[
             (df_pa["FUNDO"] == pa_key) &
@@ -4912,6 +5563,13 @@ def _build_fund_mini_briefing(
             sub_sorted = sub.sort_values("dia_bps", ascending=False)
             top_contrib = sub_sorted[sub_sorted["dia_bps"] > 0.5].head(2)
             top_detract = sub_sorted[sub_sorted["dia_bps"] < -0.5].tail(2)
+            # ≥ 1% alert must exclude benchmark-tracking livros (IDKA CI tracks
+            # the index; a 200 bp move there is tracking, not alpha).
+            sub_alpha = _pa_filter_alpha(sub)
+            _big = sub_alpha[sub_alpha["dia_bps"].abs() >= 100.0].sort_values(
+                "dia_bps", key=lambda s: s.abs(), ascending=False
+            )
+            big_hits = list(_big.itertuples(index=False))
 
     # Fund-level factor dominance (net of bench) — only for funds in factor_matrix
     dominant_factor = None
@@ -5014,6 +5672,16 @@ def _build_fund_mini_briefing(
 
     # ── Headline ──────────────────────────────────────────────────────────────
     headline_parts = []
+    # Rule 0: single PA contribution ≥ 1% (100 bps) of NAV
+    if big_hits:
+        _h = big_hits[0]
+        _b = float(_h.dia_bps)
+        _icon = "🟢" if _b > 0 else "🚨"
+        _col  = "var(--up)" if _b > 0 else "var(--down)"
+        _extra = f" +{len(big_hits)-1}" if len(big_hits) > 1 else ""
+        headline_parts.append(
+            f'{_icon} <b>{_h.PRODUCT}</b> <span style="color:{_col}">{_b/100:+.2f}%</span> (≥ 1% NAV){_extra}'
+        )
     if budget_alert is not None:
         _rem, _mx, _v, _b = budget_alert
         headline_parts.append(
@@ -5034,6 +5702,17 @@ def _build_fund_mini_briefing(
 
     # ── Insights bullets ──────────────────────────────────────────────────────
     bullets = []
+    if big_hits:
+        _items = " · ".join(
+            (f'<b>{h.PRODUCT}</b> '
+             f'<span class="mono" style="color:{"var(--up)" if float(h.dia_bps) > 0 else "var(--down)"}">'
+             f'{float(h.dia_bps)/100:+.2f}%</span>')
+            for h in big_hits[:4]
+        )
+        _lead_icon = "🟢" if all(float(h.dia_bps) > 0 for h in big_hits) else "🚨"
+        bullets.append(
+            f'<li>{_lead_icon} <b style="color:var(--down)">Contribuição ≥ 1% NAV:</b> {_items}</li>'
+        )
     if budget_alert is not None:
         _rem, _mx, _v, _b = budget_alert
         _var_label_bps = "VaR"
@@ -5256,17 +5935,40 @@ def _build_executive_briefing(
 
     # ── HEADLINE ──────────────────────────────────────────────────────────────
     headline = None
+    # Rule 0 (highest priority): any single PA contribution ≥ 1% (100 bps) do NAV.
+    # Benchmark-tracking livros (IDKA CI) excluded — they move with the index, not alpha.
+    if df_pa is not None and not df_pa.empty:
+        _pa_alpha = _pa_filter_alpha(df_pa)
+        _pa_hit = _pa_alpha[
+            ~_pa_alpha["LIVRO"].isin({"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}) &
+            ~_pa_alpha["CLASSE"].isin({"Caixa", "Custos"}) &
+            (_pa_alpha["dia_bps"].abs() >= 100.0)
+        ].sort_values("dia_bps", key=lambda s: s.abs(), ascending=False)
+        if not _pa_hit.empty:
+            _r0 = _pa_hit.iloc[0]
+            _PA_TO_SHORT = {v: k for k, v in _FUND_PA_KEY.items()}
+            _fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(_r0["FUNDO"], _r0["FUNDO"]), _r0["FUNDO"])
+            _bps0 = float(_r0["dia_bps"])
+            _col = "var(--up)" if _bps0 > 0 else "var(--down)"
+            _icon = "🟢" if _bps0 > 0 else "🚨"
+            _extra = ""
+            if len(_pa_hit) > 1:
+                _extra = f' · mais {len(_pa_hit)-1} contribuição(ões) ≥ 1% em outros produtos'
+            headline = (
+                f'{_icon} <b>{_r0["PRODUCT"]}</b> ({_fund_lbl}) contribuiu '
+                f'<span class="mono" style="color:{_col}">{_bps0/100:+.2f}%</span> do NAV hoje{_extra}.'
+            )
     # Rule 1: any fund ≥85% util VaR → flag
-    if utils and utils[0][2] >= 85:
+    if not headline and utils and utils[0][2] >= 85:
         s, lbl, u, v, soft = utils[0]
         headline = f'🔴 <b>{lbl}</b> em <span class="mono">{u:.0f}%</span> do soft limit VaR (<span class="mono">{v:.2f}%</span> vs soft {soft:.2f}%).'
     # Rule 2: Δ VaR material
-    elif dvar_list and abs(dvar_list[0][1]) >= 10:
+    if not headline and dvar_list and abs(dvar_list[0][1]) >= 10:
         s, dv, lbl, v_today = dvar_list[0]
         direction = "subiu" if dv > 0 else "caiu"
         headline = f'<b>{lbl}</b> VaR {direction} <span class="mono">{abs(dv):.0f} bps</span> vs D-1 (agora <span class="mono">{v_today:.2f}%</span>).'
     # Rule 3: concentration — top fund absorbs >40% of house BVaR
-    elif house_rows and house_bvar_total > 0:
+    if not headline and house_rows and house_bvar_total > 0:
         house_rows_sorted = sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)
         top = house_rows_sorted[0]
         pct = top["bvar_brl"] / house_bvar_total * 100
@@ -5483,6 +6185,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                idka_idx_ret=None, walb=None,
                df_alb_expo=None, alb_nav=None,
                df_quant_expo=None, quant_expo_nav=None,
+               df_quant_expo_d1=None,
+               df_quant_var=None, df_quant_var_d1=None,
                rf_expo_maps=None,
                df_frontier=None, frontier_bvar=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
@@ -5599,6 +6303,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         </section>"""
         sections.append((short, "risk-monitor", risk_monitor_html))
 
+        # Diversificação — só para EVOLUTION, imediatamente após Risk Monitor
+        if short == "EVOLUTION":
+            try:
+                div_html = build_evolution_diversification_section(DATA_STR)
+                sections.append(("EVOLUTION", "diversification", div_html))
+            except Exception as _e:
+                sections.append(("EVOLUTION", "diversification",
+                    f"<section class='card'><div class='card-head'>"
+                    f"<span class='card-title'>Diversificação</span></div>"
+                    f"<div style='color:var(--muted);padding:12px'>"
+                    f"Falha ao montar: {_e}</div></section>"))
+
     # Build alerts section
     # ── PA contribution alerts — filter by |dia_bps|, sorted by contribution ──
     PA_ALERT_MIN_BPS   = 5.0   # minimum absolute contribution to show
@@ -5630,17 +6346,29 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
             def _card_html(r):
                 bps = float(r.dia_bps); abs_bps = abs(bps)
+                # ≥1% alert excludes benchmark-tracking livros (IDKA CI replica)
+                _is_bench = r.LIVRO in _PA_BENCH_LIVROS.get(r.FUNDO, set())
+                big = (abs_bps >= 100.0) and (not _is_bench)
                 color      = "var(--up)" if bps > 0 else "var(--down)"
                 bg_color   = "#0f2d1a" if bps > 0 else "#2d0f0f"
-                border_col = "#22c55e" if bps > 0 else "#f87171"
+                # Red border + thicker line on ≥ 1% hits regardless of direction (size is the risk signal)
+                border_col = "#dc2626" if big else ("#22c55e" if bps > 0 else "#f87171")
+                border_w   = "2px" if big else "1px"
                 livro_disp = _pa_render_name(r.LIVRO)
                 fund_disp  = FUND_LABELS.get(r.FUNDO, r.FUNDO)
                 sigma = _zscore_map.get((r.FUNDO, r.LIVRO, r.PRODUCT))
                 z_txt = f"z = {bps/sigma:+.1f}σ" if sigma else ""
                 bar_pct = min(abs_bps / max_abs * 100, 100)
                 bar_color = "#22c55e" if bps > 0 else "#f87171"
+                flag = '🚨 ' if big else ''
+                big_tag = (
+                    ' <span style="font-size:10px;color:#dc2626;font-weight:700;'
+                    'border:1px solid #dc2626;border-radius:3px;padding:1px 5px;'
+                    'margin-left:6px;letter-spacing:0.5px">≥ 1% NAV</span>'
+                    if big else ''
+                )
                 return f"""
-                <div style="border:1px solid {border_col};border-radius:6px;padding:12px 16px;
+                <div style="border:{border_w} solid {border_col};border-radius:6px;padding:12px 16px;
                             background:{bg_color};display:flex;align-items:center;gap:16px">
                   <div style="flex:0 0 auto;text-align:right;min-width:80px">
                     <div style="font-size:28px;font-weight:700;color:{color};
@@ -5649,7 +6377,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                   </div>
                   <div style="flex:1;min-width:0">
                     <div style="font-size:15px;font-weight:700;color:var(--text);
-                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{r.PRODUCT}</div>
+                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{flag}{r.PRODUCT}{big_tag}</div>
                     <div style="font-size:11px;color:var(--muted);margin-top:2px">
                       {fund_disp} · {livro_disp}
                       {f'&nbsp;·&nbsp;<span style="color:var(--muted)">{z_txt}</span>' if z_txt else ''}
@@ -5794,7 +6522,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 
     # QUANT — exposure card (by factor + by livro × factor)
     if df_quant_expo is not None and not df_quant_expo.empty and quant_expo_nav:
-        q_expo_html = build_quant_exposure_section(df_quant_expo, quant_expo_nav)
+        q_expo_html = build_quant_exposure_section(
+            df_quant_expo, quant_expo_nav,
+            df_d1=df_quant_expo_d1,
+            df_var=df_quant_var,
+            df_var_d1=df_quant_var_d1,
+        )
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
 
@@ -6633,7 +7366,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     house_html = f"""
     <section class="card">
       <div class="card-head">
-        <span class="card-title">Risco Agregado</span>
+        <span class="card-title">Risco VaR e BVaR por fundo</span>
         <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
       </div>
       <table class="summary-table" data-no-sort="1">
@@ -7387,12 +8120,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     background:rgba(26,143,209,0.10); border:1px solid rgba(26,143,209,0.25);
   }}
 
-  /* Per-fund nav chips — appear at the top of each fund's section-wrap */
+  /* Per-fund nav chips — appear at the top of each fund's section-wrap.
+     Sticky below the header: as you scroll past one fund section the next
+     section's chip bar naturally takes over (each bar highlights its own fund). */
   .fund-nav-chips {{
+    position:sticky; top:var(--header-h, 72px); z-index:40;
     display:flex; flex-wrap:wrap; gap:6px;
     padding:8px 12px; margin-bottom:14px;
-    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    background:rgba(17,20,26,.92); backdrop-filter:blur(8px);
+    border:1px solid var(--line); border-radius:8px;
     font-size:11px; letter-spacing:.03em;
+    box-shadow:0 4px 14px -8px rgba(0,0,0,.55);
   }}
   .fund-nav-chips .chip-label {{
     color:var(--muted); text-transform:uppercase; letter-spacing:.12em;
@@ -7818,6 +8556,16 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     }});
   }};
 
+  function syncHeaderH() {{
+    var h = document.querySelector('header');
+    if (!h) return;
+    // rAF: header height depends on sub-tabs visibility, which is set earlier
+    // in the same tick — let layout settle before reading offsetHeight.
+    requestAnimationFrame(function() {{
+      document.documentElement.style.setProperty('--header-h', h.offsetHeight + 'px');
+    }});
+  }}
+
   function applyState() {{
     var st = parseHash();
     var mode = st.mode, sel = st.sel;
@@ -7862,6 +8610,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     );
     var empty = document.getElementById('empty-state');
     if (empty) empty.style.display = anyVisible ? 'none' : '';
+    // Recompute header height — it changes when #report-jump-bar shows/hides.
+    syncHeaderH();
   }}
   window.selectMode = function(mode, sel) {{
     if (!sel) {{
@@ -7911,6 +8661,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     attachVrCaretToggle();
     highlightFundNames();
     injectFundNavChips();
+    syncHeaderH();
+    window.addEventListener('resize', syncHeaderH);
   }});
   // --- Wrap fund shortnames in card-sub elements with an accent chip ---
   function highlightFundNames() {{
@@ -8696,7 +9448,10 @@ if __name__ == "__main__":
             "IDKA_10Y": ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 10Y FIRF", DATA_STR),
         }
         fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
-        fut_quant_expo = ex.submit(fetch_quant_exposure, DATA_STR)
+        fut_quant_expo    = ex.submit(fetch_quant_exposure, DATA_STR)
+        fut_quant_expo_d1 = ex.submit(fetch_quant_exposure, d1_str)
+        fut_quant_var     = ex.submit(fetch_quant_var,      DATA_STR)
+        fut_quant_var_d1  = ex.submit(fetch_quant_var,      d1_str)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
         fut_rf_expo = {
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
@@ -8870,6 +9625,21 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"  QUANT exposure fetch failed ({e})")
         df_quant_expo, quant_expo_nav = None, None
+    try:
+        df_quant_expo_d1, _ = fut_quant_expo_d1.result()
+    except Exception as e:
+        print(f"  QUANT D-1 exposure fetch failed ({e})")
+        df_quant_expo_d1 = None
+    try:
+        df_quant_var = fut_quant_var.result()
+    except Exception as e:
+        print(f"  QUANT VaR fetch failed ({e})")
+        df_quant_var = None
+    try:
+        df_quant_var_d1 = fut_quant_var_d1.result()
+    except Exception as e:
+        print(f"  QUANT D-1 VaR fetch failed ({e})")
+        df_quant_var_d1 = None
 
     try:
         df_evo_direct, _evo_direct_nav, _ = fut_evo_direct.result()
@@ -8969,6 +9739,8 @@ if __name__ == "__main__":
                       idka_idx_ret=idka_idx_ret, walb=walb,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
                       df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
+                      df_quant_expo_d1=df_quant_expo_d1,
+                      df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
                       rf_expo_maps=rf_expo_maps,
                       df_frontier=df_frontier,
                       frontier_bvar=frontier_bvar,

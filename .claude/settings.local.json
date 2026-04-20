@@ -57,7 +57,22 @@
       "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\); import pandas\")",
       "Bash(C:/Users/diego.fainberg/AppData/Local/Programs/Python/Python312/python.exe -c ' *)",
       "Read(//f//**)",
-      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-16)"
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-16)",
+      "Bash(/f/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/.venv/Scripts/python.exe -c ' *)",
+      "Bash(/f/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/.venv/Scripts/python.exe -m pip list)",
+      "Bash(py -0)",
+      "Bash(py -3.12 -c ' *)",
+      "Read(//c/Users/diego.fainberg/.venvs/risk_monitor/Scripts//**)",
+      "Bash(/c/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe -c ' *)",
+      "Bash(/c/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-17)",
+      "Bash(/c/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-03-16)",
+      "Bash(/c/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-03-03)",
+      "Bash(python generate_risk_report.py 2026-04-20)",
+      "Bash(.venv/Scripts/python.exe generate_risk_report.py 2026-04-20)",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-20)",
+      "Bash(start \"\" \"data/morning-calls/2026-04-20_risk_monitor.html\")",
+      "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe evolution_diversification_card.py 2026-04-20)",
+      "Bash(start \"\" \"data/morning-calls/evolution_diversification_2026-04-17.html\")"
     ]
   }
 }

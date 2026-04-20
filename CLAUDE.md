@@ -239,6 +239,7 @@ dashboards originais.
 - **Risk budget alert no briefing** — VaR (ou BVaR) > 1.5× orçamento MTD remanescente dispara 🚨 headline + bullet vermelho no `_build_fund_mini_briefing`. MACRO usa `sum(max(0, m) for m in pm_margem)`; ALBATROZ usa `max(0, 150 + min(0, mtd_bps))`. Outros fundos sem risk budget explícito ficam silenciosos. Alerta mostra VaR · BVaR separados se os dois existem (IDKAs).
 - **IBOV removido da tabela PA dos IDKAs** (bloco Referência) — user pediu; mantidos Retorno Absoluto, IDKA index, CDI.
 - **Top Posições — consolidado** (já em prod) **cobre cross-fund overlap instrument-level** — falta só agregação por emissor (VALE3+VALE5+ADR+opções → "Vale"), parkeado.
+- **EVOLUTION Risk Concentration — standalone MVP** ([evolution_diversification_card.py](evolution_diversification_card.py)): 3 camadas (utilização por estratégia · diversification benefit · correlação 21d/63d entre PnLs direcionais MACRO/SIST/FRONTIER/CREDITO). Template sozinho em `data/morning-calls/evolution_diversification_<DATA>.html` — ainda não wired no relatório principal. **Tratamento do CREDITO:** o VaR é **winsorizado causalmente** (rolling 63d, mediana ± 3 × 1.4826·MAD, tail superior apenas) para absorver o spike de cotas júnior de dez/2025 sem dropar observações. Ratio principal usa Σ winsorizada; raw continua visível como referência. Share do CREDITO no Σ exibido como semáforo (>40% vermelho, 25-40% amarelo). Substitui o `Ratio_ex_credito` do spec da skill, que era inviável (subtrair `VaR_CREDITO` linearmente de `VaR_real` é matematicamente errado — VaR não é aditivo). Detalhes completos em [docs/CREDITO_TREATMENT.md](docs/CREDITO_TREATMENT.md).
 
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
@@ -249,13 +250,12 @@ dashboards originais.
   - Column headers clicáveis para sort (QUANT já tem; MACRO passa a ter), arrow ↓/↑
   - Default sort em ambos: |Net| desc
   - Escopo decidido: "formatação e o gross do QUANT, o resto da info do MACRO"
-- **EVOLUTION — direcionalidade das estratégias / diversification benefit** (user 2026-04-19, tarde):
-  - Medir se as sub-estratégias do Evolution (MACRO, SIST, FRONTIER, CREDITO, etc.) estão tomando risco na mesma direção
-  - Uma forma: matriz de correlação realizada dos PnLs por estratégia
-  - Outra: para cada fator de risco, quem está de que lado (ex.: MACRO tomado em Juros Nominais + SIST também tomado = alinhamento perigoso)
-  - Diversification benefit: VaR aggregate vs soma linear dos VaRs por sub-estratégia
-  - Skill `evolution-risk-concentration` já tem alguma infra (diversification benefit + correlação entre MACRO/SIST/FRONTIER)
-  - Abordagem ainda não está clara — pendente desenho antes de codar
+- **EVOLUTION — direcionalidade (Camada 4 / "bull market alignment")** (pendente após MVP de 2026-04-20):
+  - Camadas 1+2+3 entregues (utilização histórica, diversification benefit, correlação 63d)
+  - Falta: Camada 4 alerta combinado (≥3 condições → "bull market alignment")
+  - Falta: matriz `RISK_DIRECTION_REPORT` (`DELTA_SISTEMATICO` × `DELTA_DISCRICIONARIO`) para smoking gun posição-a-posição
+  - Falta: filtro "relevantes ≥ P70" na Camada 3 (matriz 3x3 já OK, mas sem filtro de significância)
+  - Falta: exclusão opcional de CREDITO também da Σ da Camada 2 (hoje ratio usa Σ winsorizada; pode ter variante "ex-CREDITO" na Σ também)
 - **Distribuição 252d para os demais fundos** (user 2026-04-19, noite — prioridade ALBATROZ pra conversa com Pedro Igor):
   - Hoje o card só cobre MACRO/QUANT/EVOLUTION (engine roda pros 3 em `q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
   - ALBATROZ, MACRO_Q, FRONTIER, IDKA_3Y, IDKA_10Y não têm série HS no DB
