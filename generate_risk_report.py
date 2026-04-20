@@ -1201,8 +1201,10 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
         "Equity BR", "FX", "Commodities",
         "Juros Nominais", "Juros Reais (IPCA)", "CDI", "Outros",
     ]
+    df["_abs_delta"] = df["delta"].abs()
     by_factor = df.groupby("factor").agg(
         delta=("delta", "sum"),
+        gross=("_abs_delta", "sum"),
         delta_dur=("delta_dur", "sum"),
         n=("PRODUCT", "count"),
     ).reset_index()
@@ -1215,25 +1217,64 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
     total_delta = 0.0
     for r in by_factor.itertuples(index=False):
         total_delta += r.delta
+        is_rate = r.factor in ("Juros Nominais", "Juros Reais (IPCA)")
         dur_cell = (
             f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta_dur/1e6:+,.1f}M·yr</td>'
-            if r.factor in ("Juros Nominais", "Juros Reais (IPCA)") and abs(r.delta_dur) >= 1e4
+            if is_rate and abs(r.delta_dur) >= 1e4
             else '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
         )
+        # Factor header row — clickable to expand positions
+        path = f"qexpo-{r.factor}"
+        gross_pct = (r.gross * 100 / nav) if nav else 0
         factor_rows += (
-            "<tr>"
-            f'<td class="sum-fund">{r.factor}</td>'
+            f'<tr class="qexpo-row qexpo-lvl-0" data-qexpo-path="{path}" '
+            f'onclick="toggleQuantExpoFactor(this)" style="cursor:pointer">'
+            f'<td class="sum-fund"><span class="qexpo-caret">▶</span> {r.factor}</td>'
             + _pct(r.delta)
             + f'<td class="mono" style="text-align:right; color:var(--muted)">{r.delta/1e6:+,.1f}M</td>'
+            + f'<td class="mono" style="text-align:right; color:var(--muted)">{gross_pct:.1f}%</td>'
+            + f'<td class="mono" style="text-align:right; color:var(--muted)">{r.gross/1e6:,.1f}M</td>'
             + dur_cell
             + f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11px">{r.n} pos</td>'
             "</tr>"
         )
+        # Per-position drill-down rows (hidden by default)
+        sub = df[df["factor"] == r.factor].sort_values(
+            "delta", key=lambda s: s.abs(), ascending=False
+        )
+        for _, p in sub.iterrows():
+            p_delta = float(p["delta"])
+            p_ddur  = float(p["delta_dur"])
+            p_col   = "var(--up)" if p_delta >= 0 else "var(--down)"
+            p_pct_nav = (p_delta / nav * 100) if nav else 0
+            dur_inline = (
+                f' · {p_ddur/1e6:+,.2f}M·yr'
+                if is_rate and abs(p_ddur) >= 1e4 else ''
+            )
+            p_abs = abs(p_delta)
+            p_gross_pct = (p_abs / nav * 100) if nav else 0
+            factor_rows += (
+                f'<tr class="qexpo-row qexpo-lvl-1" data-qexpo-parent="{path}" style="display:none">'
+                f'<td style="padding-left:28px; font-size:11.5px">'
+                f'<span class="mono" style="color:var(--text); font-weight:600">{p["PRODUCT"]}</span> '
+                f'<span class="mono" style="color:var(--muted); font-size:10.5px">({p["BOOK"]} · {p["PRIMITIVE_CLASS"]})</span>'
+                f'</td>'
+                f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_pct_nav:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:{p_col}; font-size:11.5px">{p_delta/1e6:+,.2f}M{dur_inline}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11.5px">{p_gross_pct:.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--muted); font-size:11.5px">{p_abs/1e6:,.2f}M</td>'
+                f'<td></td><td></td>'
+                "</tr>"
+            )
+    total_gross = float(by_factor["gross"].sum())
+    total_gross_pct = (total_gross / nav * 100) if nav else 0
     factor_rows += (
         '<tr class="pa-total-row">'
-        '<td class="sum-fund" style="font-weight:700">Total Net</td>'
+        '<td class="sum-fund" style="font-weight:700">Total</td>'
         + _pct(total_delta)
         + f'<td class="mono" style="text-align:right; font-weight:700">{total_delta/1e6:+,.1f}M</td>'
+        + f'<td class="mono" style="text-align:right; font-weight:700">{total_gross_pct:.1f}%</td>'
+        + f'<td class="mono" style="text-align:right; font-weight:700">{total_gross/1e6:,.1f}M</td>'
         '<td></td><td></td></tr>'
     )
 
@@ -1289,6 +1330,8 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
             <th style="text-align:left">Fator</th>
             <th style="text-align:right">Net %NAV</th>
             <th style="text-align:right">Net BRL</th>
+            <th style="text-align:right">Gross %NAV</th>
+            <th style="text-align:right">Gross BRL</th>
             <th style="text-align:right">Duration (BRL·yr)</th>
             <th style="text-align:right">#</th>
           </tr></thead>
@@ -7688,6 +7731,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     card.querySelectorAll('.rf-brl-body').forEach(function(v) {{
       v.style.display = (v.dataset.rfBrl === mode) ? '' : 'none';
     }});
+  }};
+  // QUANT exposure — Por Fator drill-down (click factor to expand positions)
+  window.toggleQuantExpoFactor = function(tr) {{
+    var path = tr.getAttribute('data-qexpo-path');
+    if (!path) return;
+    var table = tr.closest('table'); if (!table) return;
+    var children = table.querySelectorAll('tr[data-qexpo-parent="' + path + '"]');
+    var anyVisible = false;
+    children.forEach(function(r) {{ if (r.style.display !== 'none') anyVisible = true; }});
+    var willOpen = !anyVisible;
+    children.forEach(function(r) {{ r.style.display = willOpen ? '' : 'none'; }});
+    var caret = tr.querySelector('.qexpo-caret');
+    if (caret) caret.textContent = willOpen ? '▼' : '▶';
   }};
   // QUANT exposure — Por Fator / Por Livro toggle
   window.selectQuantExpoView = function(btn, view) {{
