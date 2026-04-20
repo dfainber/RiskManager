@@ -1335,26 +1335,18 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float) -> str:
       </div>
 
       <div class="qexpo-view" data-qexpo-view="factor">
-        <div class="qexpo-sort-bar" style="display:flex; gap:6px; margin:4px 0 8px; font-size:10.5px; align-items:center">
-          <span style="color:var(--muted); letter-spacing:.1em; text-transform:uppercase">Drill sort:</span>
-          <button class="pa-tgl active" data-qexpo-sort="abs_delta"
-                  onclick="sortQuantExpoPositions(this,'abs_delta')">↓ |Net|</button>
-          <button class="pa-tgl" data-qexpo-sort="gross"
-                  onclick="sortQuantExpoPositions(this,'gross')">↓ Gross</button>
-          <button class="pa-tgl" data-qexpo-sort="net_desc"
-                  onclick="sortQuantExpoPositions(this,'net_desc')">↓ Net</button>
-          <button class="pa-tgl" data-qexpo-sort="net_asc"
-                  onclick="sortQuantExpoPositions(this,'net_asc')">↑ Net</button>
-          <button class="pa-tgl" data-qexpo-sort="name"
-                  onclick="sortQuantExpoPositions(this,'name')">A-Z</button>
-        </div>
         <table class="summary-table" data-no-sort="1">
           <thead><tr>
-            <th style="text-align:left">Fator</th>
-            <th style="text-align:right">Net %NAV</th>
-            <th style="text-align:right">Net BRL</th>
-            <th style="text-align:right">Gross %NAV</th>
-            <th style="text-align:right">Gross BRL</th>
+            <th class="qexpo-sort-th" style="text-align:left; cursor:pointer"
+                data-qexpo-sort="name" onclick="sortQuantExpoPositions(this,'name')">Fator</th>
+            <th class="qexpo-sort-th qexpo-sort-active" style="text-align:right; cursor:pointer"
+                data-qexpo-sort="net_desc" onclick="sortQuantExpoPositions(this,'net_desc')">Net %NAV <span class="qexpo-sort-arrow">↓</span></th>
+            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
+                data-qexpo-sort="net_desc" onclick="sortQuantExpoPositions(this,'net_desc')">Net BRL</th>
+            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
+                data-qexpo-sort="gross" onclick="sortQuantExpoPositions(this,'gross')">Gross %NAV <span class="qexpo-sort-arrow"></span></th>
+            <th class="qexpo-sort-th" style="text-align:right; cursor:pointer"
+                data-qexpo-sort="gross" onclick="sortQuantExpoPositions(this,'gross')">Gross BRL</th>
             <th style="text-align:right">Duration (BRL·yr)</th>
             <th style="text-align:right">#</th>
           </tr></thead>
@@ -7565,6 +7557,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .toggle-btn:hover {{ color:var(--text); border-color:var(--line-2); background:rgba(0,113,187,.06); }}
   .toggle-btn.active {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
 
+  /* QUANT Exposure sortable column headers */
+  .qexpo-sort-th {{ user-select:none; transition: color .12s ease; }}
+  .qexpo-sort-th:hover {{ color:var(--accent-2); }}
+  .qexpo-sort-th.qexpo-sort-active {{ color:var(--accent-2); }}
+  .qexpo-sort-arrow {{ color:var(--accent-2); font-weight:700; margin-left:3px; }}
+
   .pa-table {{
     width:100%; background:var(--bg-2); border-radius:8px; overflow:hidden;
     font-size:12px; border-collapse:collapse;
@@ -8158,13 +8156,38 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     var caret = tr.querySelector('.dist-caret');
     if (caret) caret.textContent = willOpen ? '▼' : '▶';
   }};
-  // QUANT exposure — sort positions within each factor (respects hierarchy)
-  window.sortQuantExpoPositions = function(btn, mode) {{
-    var card = btn.closest('.card');
+  // QUANT exposure — sort positions within each factor (respects hierarchy).
+  // Clicking a header toggles direction on repeat click; clicking a different
+  // header resets to its default direction.
+  window.sortQuantExpoPositions = function(el, mode) {{
+    var card = el.closest('.card');
     if (!card) return;
-    card.querySelectorAll('.qexpo-sort-bar .pa-tgl').forEach(function(b) {{
-      b.classList.toggle('active', b.dataset.qexpoSort === mode);
+    // If the same header is clicked again, toggle direction between net_desc/asc,
+    // or A-Z/Z-A, or gross desc/asc. For simplicity, we track "active" state;
+    // repeat click on the active header flips direction where applicable.
+    var wasActive = el.classList.contains('qexpo-sort-active');
+    var newMode = mode;
+    if (wasActive) {{
+      if (mode === 'net_desc') newMode = 'net_asc';
+      else if (mode === 'net_asc')  newMode = 'net_desc';
+      else if (mode === 'gross')    newMode = 'gross_asc';
+      else if (mode === 'gross_asc') newMode = 'gross';
+      else if (mode === 'name')     newMode = 'name_desc';
+      else if (mode === 'name_desc') newMode = 'name';
+    }}
+    // Clear active state across all headers; mark the clicked one.
+    card.querySelectorAll('.qexpo-sort-th').forEach(function(th) {{
+      th.classList.remove('qexpo-sort-active');
+      var arrow = th.querySelector('.qexpo-sort-arrow');
+      if (arrow) arrow.textContent = '';
     }});
+    el.classList.add('qexpo-sort-active');
+    var arrow = el.querySelector('.qexpo-sort-arrow');
+    if (arrow) {{
+      if (newMode.indexOf('asc') >= 0 || newMode === 'name_desc') arrow.textContent = '↑';
+      else arrow.textContent = '↓';
+    }}
+    // Sort children
     var tbody = card.querySelector('.qexpo-view[data-qexpo-view="factor"] table tbody');
     if (!tbody) return;
     var parents = tbody.querySelectorAll('tr[data-qexpo-path]');
@@ -8176,14 +8199,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         var db = parseFloat(b.dataset.sortDelta || '0');
         var ga = parseFloat(a.dataset.sortAbs   || '0');
         var gb = parseFloat(b.dataset.sortAbs   || '0');
-        if (mode === 'gross')    return gb - ga;
-        if (mode === 'net_desc') return db - da;
-        if (mode === 'net_asc')  return da - db;
-        if (mode === 'name')     return (a.textContent || '').localeCompare(b.textContent || '');
-        // default abs_delta
-        return Math.abs(db) - Math.abs(da);
+        if (newMode === 'gross')     return gb - ga;
+        if (newMode === 'gross_asc') return ga - gb;
+        if (newMode === 'net_desc')  return db - da;
+        if (newMode === 'net_asc')   return da - db;
+        if (newMode === 'name')      return (a.textContent || '').localeCompare(b.textContent || '');
+        if (newMode === 'name_desc') return (b.textContent || '').localeCompare(a.textContent || '');
+        return Math.abs(db) - Math.abs(da);  // abs_delta default
       }});
-      // Re-insert children in order right after the parent.
       var anchor = p;
       children.forEach(function(c) {{ anchor.after(c); anchor = c; }});
     }});
