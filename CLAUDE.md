@@ -65,8 +65,15 @@ Schemas e tabelas principais:
 | `q_models`  | `STANDARD_DEVIATION_ASSETS`       | σ por instrumento, BOOK='MACRO' |
 | `q_models`  | `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION` | Drawdowns simulados, retornos históricos |
 
-Outras fontes (Access local, Excel diário) são **secundárias** e só entram
-quando explicitamente necessárias.
+**O generator (`generate_risk_report.py`) é 100% DB-sourced** — não lê
+Excel, CSV, JSON ou qualquer arquivo de dados em runtime (verificado
+2026-04-19 via grep — zero `read_excel`/`open()`/`read_csv`/`json.load`).
+
+Arquivos externos (Access local, xlsx oficial da Controle, `RELATORIO_POSICOES_*.xlsx`)
+aparecem apenas como **referência de validação** durante desenvolvimento
+(comparar números do kit com a fonte oficial), não como input. Mandatos
+(limites por fundo) estão **hardcoded** nos dicts `FUNDS`/`RAW_FUNDS`/
+`IDKA_FUNDS` no topo do código, não lidos de JSONs em runtime.
 
 ---
 
