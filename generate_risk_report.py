@@ -3009,6 +3009,80 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
     return flagged
 
 
+def fetch_idka_index_returns(index_name: str, date_str: str = DATA_STR) -> dict:
+    """IDKA benchmark index cumulative returns D/MTD/YTD/12M in bps.
+       index_name: 'IDKA_IPCA_3A' ou 'IDKA_IPCA_10A'. Source: public.ECO_INDEX.
+    """
+    q = f"""
+    SELECT "DATE", "VALUE"
+    FROM public."ECO_INDEX"
+    WHERE "INSTRUMENT" = '{index_name}' AND "FIELD" = 'INDEX'
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '400 days'
+      AND "DATE" <= DATE '{date_str}'
+    ORDER BY "DATE"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    df = df.drop_duplicates("DATE").set_index("DATE").sort_index()
+    target = pd.Timestamp(date_str)
+    last = df[df.index <= target]
+    if last.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    v_now = float(last["VALUE"].iloc[-1])
+
+    def ret(anchor):
+        prior = df[df.index <= anchor]
+        if prior.empty:
+            return 0.0
+        v0 = float(prior["VALUE"].iloc[-1])
+        return (v_now / v0 - 1.0) * 10000 if v0 else 0.0
+
+    prev_day = last["VALUE"].iloc[-2] if len(last) >= 2 else v_now
+    dia = (v_now / float(prev_day) - 1.0) * 10000 if prev_day else 0.0
+    month_start = target.to_period("M").to_timestamp()
+    mtd = ret(month_start - pd.Timedelta(days=1))
+    year_start = pd.Timestamp(f"{target.year}-01-01")
+    ytd = ret(year_start - pd.Timedelta(days=1))
+    m12 = ret(target - pd.DateOffset(years=1))
+    return {"dia": dia, "mtd": mtd, "ytd": ytd, "m12": m12}
+
+
+def fetch_idka_albatroz_weight(idka_desk: str, date_str: str = DATA_STR) -> float:
+    """IDKA's Albatroz proportion (w_alb) as a fraction of IDKA NAV.
+
+    Per user: sum TOTAL positions attributed to IDKA in Albatroz, compare
+    to Albatroz NAV. Pro-rata share_source attribution means:
+      slice_ratio = |POSITION attributed to IDKA| / |total POSITION in Albatroz|
+      w_alb       = slice_ratio × Albatroz_NAV / IDKA_NAV
+
+    ABS used because futures vs bonds vs cash can have mixed signs.
+    Snapshot — applied uniformly across DIA/MTD/YTD/12M in the decomposition.
+    """
+    q = f"""
+    SELECT "TRADING_DESK_SHARE_SOURCE" AS source, SUM(ABS("POSITION")) AS pos
+    FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+    WHERE "TRADING_DESK" = 'GALAPAGOS ALBATROZ FIRF LP'
+      AND "VAL_DATE"     = DATE '{date_str}'
+    GROUP BY "TRADING_DESK_SHARE_SOURCE"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return 0.0
+    df["pos"] = df["pos"].astype(float)
+    slice_val = float(df[df["source"] == idka_desk]["pos"].sum())
+    total     = float(df["pos"].sum())
+    if total == 0 or slice_val == 0:
+        return 0.0
+    alb_nav   = _latest_nav("GALAPAGOS ALBATROZ FIRF LP", date_str) or 0.0
+    idka_nav  = _latest_nav(idka_desk, date_str) or 0.0
+    if idka_nav == 0:
+        return 0.0
+    idka_cota_value = (slice_val / total) * alb_nav
+    return idka_cota_value / idka_nav
+
+
 def fetch_ibov_returns(date_str: str = DATA_STR) -> dict:
     """IBOV cumulative returns over DIA/MTD/YTD/12M windows (bps).
        Compound (1+r_i) products from EQUITIES_PRICES.CLOSE. One date per row (INSTRUMENT='IBOV').
@@ -3369,11 +3443,98 @@ def _build_pa_view(fund_short: str, df: pd.DataFrame, view_id: str,
     </div>"""
 
 
-def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> str:
+def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
+                                  idka_index_ret: dict, w_alb: float,
+                                  albatroz_pa_sum: dict) -> str:
+    """3-line bench decomposition table for IDKA PA (as a 3rd view).
+
+    For IDKA funds benchmarked to IDKA_index, decomposes α vs. bench into:
+      Total     = fund_return − IDKA_index   (per window)
+      Via Alb   = w_alb × Albatroz_α_vs_CDI
+      Swap leg  = w_alb × (CDI − IDKA_index)
+      Direct α  = Total − Via Alb − Swap  (residual, closes the identity)
+
+    All inputs in bps (from fetch_cdi_returns / fetch_idka_index_returns /
+    sum of PA rows in bps).
     """
-    PA card with two hierarchical views (Por Classe / Por Livro) and tree drill-down.
-    Default depth is 2 (top → PRODUCT). EVOLUTION Livro view uses 3 levels
-    (Strategy → Livro → PRODUCT) so macro/quant/equities/crédito appear as the first drill-down.
+    windows = ["dia", "mtd", "ytd", "m12"]
+
+    # Fund alpha vs CDI (from IDKA PA rows, already net of CDI in the engine)
+    sum_idka_pa = {w: 0.0 for w in windows}
+    for w in windows:
+        col = f"{w}_bps"
+        sum_idka_pa[w] = float(df[col].sum()) if col in df.columns else 0.0
+
+    # Derived per-window values
+    def _val(d, key):
+        return float(d.get(key, 0.0)) if d else 0.0
+
+    total = {}   # total α vs IDKA_index = sum_pa + CDI - idka_idx
+    via_alb = {}  # w_alb × Albatroz α vs CDI
+    swap = {}    # w_alb × (CDI - idka_idx)
+    direct = {}  # residual
+    for w in windows:
+        cdi_w = _val(cdi, w)
+        idx_w = _val(idka_index_ret, w)
+        alb_w = _val(albatroz_pa_sum, w)
+        total[w]   = sum_idka_pa[w] + cdi_w - idx_w
+        via_alb[w] = w_alb * alb_w
+        swap[w]    = w_alb * (cdi_w - idx_w)
+        direct[w]  = total[w] - via_alb[w] - swap[w]
+
+    def _cell(bps, bold=False):
+        pct = bps / 100.0  # bps → %
+        if abs(pct) < 0.005:
+            return '<td class="pa-val mono" style="color:var(--muted); text-align:right">—</td>'
+        col = "var(--up)" if bps >= 0 else "var(--down)"
+        weight = "font-weight:700;" if bold else ""
+        return f'<td class="pa-val mono" style="color:{col}; text-align:right; {weight}">{pct:+.2f}%</td>'
+
+    def _row(label, vals, bold=False, sub=""):
+        weight = "font-weight:700" if bold else ""
+        sub_html = f' <span style="color:var(--muted); font-size:10px">{sub}</span>' if sub else ''
+        return (
+            f'<tr class="pa-row" style="{weight}">'
+            f'<td class="pa-name" style="{weight}">{label}{sub_html}</td>'
+            + _cell(vals["dia"], bold)
+            + _cell(vals["mtd"], bold)
+            + _cell(vals["ytd"], bold)
+            + _cell(vals["m12"], bold)
+            + '</tr>'
+        )
+
+    rows = ""
+    rows += _row("Direct α", direct, sub=f"(IDKA vs. {fund_short.replace('_',' ')} index, na parcela direta)")
+    rows += _row("Via Albatroz", via_alb, sub=f"(Albatroz α vs. CDI × w_alb {w_alb:.1%})")
+    rows += _row("Swap leg", swap, sub=f"(CDI − IDKA_index) × w_alb — ajusta bench")
+    rows += _row("<b>Total</b>", total, bold=True, sub="vs. IDKA benchmark")
+
+    return f"""
+    <div class="pa-view" data-pa-view="bench" style="display:none">
+      <div style="padding:8px 4px; font-size:11px; color:var(--muted); line-height:1.5">
+        Decomposição α vs. IDKA benchmark · w_alb snapshot atual ({w_alb:.1%}) aplicado a todos os windows ·
+        Swap leg compensa o fato de Albatroz ser benchmarkeado a CDI dentro de IDKA (bench IDKA_index).
+      </div>
+      <table class="pa-table" data-no-sort="1" style="margin-top:6px">
+        <thead><tr>
+          <th style="text-align:left">Componente</th>
+          <th style="text-align:right">DIA</th>
+          <th style="text-align:right">MTD</th>
+          <th style="text-align:right">YTD</th>
+          <th style="text-align:right">12M</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
+                           idka_index_ret: dict = None, w_alb: float = None,
+                           albatroz_pa_sum: dict = None) -> str:
+    """
+    PA card with hierarchical views (Por Classe / Por Livro).
+    For IDKA funds, adds a 3rd view "Por Bench" with bench decomposition
+    (Direct α / Via Albatroz / Swap leg / Total vs. IDKA index).
     """
     pa_key = _FUND_PA_KEY.get(fund_short)
     if pa_key is None or df_pa is None or df_pa.empty:
@@ -3401,6 +3562,18 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> st
             ["LIVRO", "PRODUCT"], "Livro / Produto", active=False, cdi=cdi,
         )
 
+    # 3rd view: bench decomposition for IDKA funds only
+    view_bench = ""
+    bench_toggle_btn = ""
+    if fund_short in ("IDKA_3Y", "IDKA_10Y") and idka_index_ret and w_alb is not None and albatroz_pa_sum is not None:
+        view_bench = _build_pa_bench_decomp_view(
+            fund_short, df, cdi, idka_index_ret, w_alb, albatroz_pa_sum
+        )
+        bench_toggle_btn = (
+            '<button class="pa-tgl" data-pa-view="bench" '
+            'onclick="selectPaView(this,\'bench\')">Por Bench</button>'
+        )
+
     return f"""
     <section class="card pa-card" data-pa-fund="{fund_short}">
       <div class="card-head">
@@ -3416,10 +3589,12 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict) -> st
                   onclick="selectPaView(this,'classe')">Por Classe</button>
           <button class="pa-tgl" data-pa-view="livro"
                   onclick="selectPaView(this,'livro')">Por Livro</button>
+          {bench_toggle_btn}
         </div>
       </div>
       {view_classe}
       {view_livro}
+      {view_bench}
     </section>"""
 
 
@@ -4612,6 +4787,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_evo_sn=None, evo_nav=None, evo_legs=None,
                df_evo_direct=None,
                df_pa=None, cdi=None, ibov=None, df_pa_daily=None,
+               idka_idx_ret=None, walb=None,
                df_alb_expo=None, alb_nav=None, rf_expo_maps=None,
                df_frontier=None, frontier_bvar=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
@@ -4894,8 +5070,22 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     # Performance Attribution — one card per fund (MACRO, QUANT, EVOLUTION, MACRO_Q, ALBATROZ)
     if df_pa is not None and not df_pa.empty:
         cdi_row = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+        # Albatroz PA sum per window (for the IDKA bench decomposition)
+        alb_pa_rows = df_pa[df_pa["FUNDO"] == "ALBATROZ"]
+        albatroz_pa_sum = {
+            "dia": float(alb_pa_rows["dia_bps"].sum()) if not alb_pa_rows.empty else 0.0,
+            "mtd": float(alb_pa_rows["mtd_bps"].sum()) if not alb_pa_rows.empty else 0.0,
+            "ytd": float(alb_pa_rows["ytd_bps"].sum()) if not alb_pa_rows.empty else 0.0,
+            "m12": float(alb_pa_rows["m12_bps"].sum()) if not alb_pa_rows.empty else 0.0,
+        }
         for short in FUND_ORDER:
-            pa_html = build_pa_section_hier(short, df_pa, cdi_row)
+            idx_ret = (idka_idx_ret or {}).get(short)
+            w_alb   = (walb or {}).get(short)
+            pa_html = build_pa_section_hier(
+                short, df_pa, cdi_row,
+                idka_index_ret=idx_ret, w_alb=w_alb,
+                albatroz_pa_sum=albatroz_pa_sum,
+            )
             if pa_html:
                 sections.append((short, "performance", pa_html))
 
@@ -7624,6 +7814,14 @@ if __name__ == "__main__":
         fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
         fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
         fut_ibov       = ex.submit(fetch_ibov_returns, DATA_STR)
+        fut_idka_idx = {
+            "IDKA_3Y":  ex.submit(fetch_idka_index_returns, "IDKA_IPCA_3A",  DATA_STR),
+            "IDKA_10Y": ex.submit(fetch_idka_index_returns, "IDKA_IPCA_10A", DATA_STR),
+        }
+        fut_walb = {
+            "IDKA_3Y":  ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 3Y FIRF",  DATA_STR),
+            "IDKA_10Y": ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 10Y FIRF", DATA_STR),
+        }
         fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
         fut_rf_expo = {
@@ -7759,6 +7957,22 @@ if __name__ == "__main__":
         print(f"  IBOV fetch failed ({e})")
         ibov = None
 
+    idka_idx_ret = {}
+    for k, fut in fut_idka_idx.items():
+        try:
+            idka_idx_ret[k] = fut.result()
+        except Exception as e:
+            print(f"  IDKA index returns ({k}) failed ({e})")
+            idka_idx_ret[k] = None
+
+    walb = {}
+    for k, fut in fut_walb.items():
+        try:
+            walb[k] = fut.result()
+        except Exception as e:
+            print(f"  w_alb ({k}) failed ({e})")
+            walb[k] = 0.0
+
     rf_expo_maps = {}
     for short_k, fut_k in fut_rf_expo.items():
         try:
@@ -7870,6 +8084,7 @@ if __name__ == "__main__":
                       df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
                       df_evo_direct=df_evo_direct,
                       df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
+                      idka_idx_ret=idka_idx_ret, walb=walb,
                       df_alb_expo=df_alb_expo, alb_nav=alb_nav,
                       rf_expo_maps=rf_expo_maps,
                       df_frontier=df_frontier,
