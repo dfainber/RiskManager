@@ -4498,7 +4498,6 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
 
 
 REPORTS = [
-    ("briefing",     "Briefing"),
     ("performance",  "PA"),
     ("exposure",     "Exposure"),
     ("exposure-map", "Exposure Map"),
@@ -4509,6 +4508,7 @@ REPORTS = [
     ("vol-regime",   "Vol Regime"),
     ("stop-monitor", "Risk Budget"),
     ("frontier-lo",  "Long Only"),
+    ("briefing",     "Briefing"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
 FUND_LABELS = {
@@ -6345,23 +6345,23 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             _briefing_by_short[short] = mini_html
             available_pairs.add((short, "briefing"))
     if "briefing" not in reports_with_data:
-        reports_with_data = ["briefing"] + list(reports_with_data)
+        reports_with_data = list(reports_with_data) + ["briefing"]
 
-    # Rebuild sections_html: briefing first per fund, then the rest in their
-    # original REPORTS-order sequence.
+    # Rebuild sections_html: briefing comes LAST per fund (user parked it here
+    # while its quality is validated — tab stays accessible but not the default).
     _sections_by_fund = {}
     for f, r, h in sections:
         _sections_by_fund.setdefault(f, []).append((r, h))
     _reordered_html = ""
     for f in FUND_ORDER:
+        for r, h in _sections_by_fund.get(f, []):
+            _reordered_html += (
+                f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
+            )
         if f in _briefing_by_short:
             _reordered_html += (
                 f'<div id="sec-{f}-briefing" class="section-wrap" '
                 f'data-fund="{f}" data-report="briefing">{_briefing_by_short[f]}</div>'
-            )
-        for r, h in _sections_by_fund.get(f, []):
-            _reordered_html += (
-                f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
             )
     sections_html = _reordered_html
 
