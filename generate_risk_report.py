@@ -4464,8 +4464,8 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
     # status: "ok" | "stale" | "missing" | "na"
     items = []
 
-    _PA_KEY = {"MACRO":"MACRO","QUANT":"QUANT","EVOLUTION":"EVOLUTION",
-               "MACRO_Q":"GLOBAL","ALBATROZ":"ALBATROZ"}
+    # Use the canonical mapping (includes IDKAIPCAY3 / IDKAIPCAY10).
+    _PA_KEY = dict(_FUND_PA_KEY)
     _TD_BY_SHORT = {cfg["short"]: td_ for td_, cfg in ALL_FUNDS.items()}
 
     def _pa_item(short):
