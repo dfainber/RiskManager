@@ -1510,8 +1510,8 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     stat_row = (
         '<div class="sn-inline-stats mono" style="margin-bottom:12px; flex-wrap:wrap; gap:6px 18px">'
         f'<span class="sn-stat"><span class="sn-lbl">NAV</span><span class="sn-val mono">R$ {nav_fmt}M</span></span>'
-        f'<span class="sn-stat"><span class="sn-lbl">Duração Real</span><span class="sn-val mono">{dur_real:+.2f}yr</span></span>'
-        f'<span class="sn-stat"><span class="sn-lbl">Duração Nominal</span><span class="sn-val mono">{dur_nom:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Juros Reais (IPCA)</span><span class="sn-val mono">{dur_real:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Juros Nominais</span><span class="sn-val mono">{dur_nom:+.2f}yr</span></span>'
         f'<span class="sn-stat"><span class="sn-lbl">Total Fund</span><span class="sn-val mono">{dur_total:+.2f}yr</span></span>'
         f'<span class="sn-stat"><span class="sn-lbl">Bench</span><span class="sn-val mono">{bench_total:+.2f}yr</span></span>'
         '<span style="width:1px;background:var(--border);margin:0 4px;align-self:stretch"></span>'
@@ -1572,8 +1572,8 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
         '</div>'
         f'<div class="pa-view-toggle rf-view-toggle">'
         f'<button class="pa-tgl active" data-rf-view="both"    onclick="selectRfView(this,\'both\')">Ambos</button>'
-        f'<button class="pa-tgl"        data-rf-view="real"    onclick="selectRfView(this,\'real\')">Real</button>'
-        f'<button class="pa-tgl"        data-rf-view="nominal" onclick="selectRfView(this,\'nominal\')">Nominal</button>'
+        f'<button class="pa-tgl"        data-rf-view="real"    onclick="selectRfView(this,\'real\')">Juros Reais</button>'
+        f'<button class="pa-tgl"        data-rf-view="nominal" onclick="selectRfView(this,\'nominal\')">Juros Nominais</button>'
         '</div>'
         '</div>'
     )
@@ -1588,8 +1588,8 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
       {stat_row}
       <div style="overflow-x:auto">{svg}</div>
       <div class="rf-legend mono" style="margin-top:6px; font-size:10.5px; color:var(--muted); text-align:center">
-        <span class="rf-legend-item"><span class="rf-swatch rf-real"></span> Fund Real (IPCA)</span>
-        <span class="rf-legend-item"><span class="rf-swatch rf-nom"></span> Fund Nominal (Pré)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-real"></span> Fund Juros Reais (IPCA)</span>
+        <span class="rf-legend-item"><span class="rf-swatch rf-nom"></span> Fund Juros Nominais (Pré)</span>
         <span class="rf-legend-item"><span class="rf-swatch rf-benchbar"></span> Benchmark</span>
         <span class="rf-legend-item"><span class="rf-swatch rf-cum"></span> Cumulativo (Fund)</span>
       </div>
@@ -1600,8 +1600,8 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
           <table class="pa-table" style="margin-top:8px" data-no-sort="1">
             <thead><tr>
               <th style="text-align:left">Bucket</th>
-              <th style="text-align:right">Real (yr)</th>
-              <th style="text-align:right">Nominal (yr)</th>
+              <th style="text-align:right">Juros Reais (yr)</th>
+              <th style="text-align:right">Juros Nominais (yr)</th>
               <th style="text-align:right">Fund Total</th>
               <th style="text-align:right">Bench</th>
               <th style="text-align:right">Relative</th>
@@ -5347,20 +5347,20 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     #   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
     #   Equity BR (IBOV)                        → Frontier NAV (100% long); others pending
     factor_matrix = {  # factor_key -> {short: brl, ...}
-        "Real":       {},
-        "Nominal":    {},
-        "IPCA Idx":   {},
-        "Equity BR":  {},
-        "Equity DM":  {},
-        "Equity EM":  {},
-        "FX":         {},
-        "Commodities":{},
+        "Juros Reais (IPCA)": {},
+        "Juros Nominais":     {},
+        "IPCA Idx":           {},
+        "Equity BR":          {},
+        "Equity DM":          {},
+        "Equity EM":          {},
+        "FX":                 {},
+        "Commodities":        {},
     }
     if rf_expo_maps:
         for short_k, df_k in rf_expo_maps.items():
             if df_k is None or df_k.empty:
                 continue
-            for factor_key, factor_col in [("Real", "real"), ("Nominal", "nominal"), ("IPCA Idx", "ipca_idx")]:
+            for factor_key, factor_col in [("Juros Reais (IPCA)", "real"), ("Juros Nominais", "nominal"), ("IPCA Idx", "ipca_idx")]:
                 v = float(df_k[df_k["factor"] == factor_col]["ano_eq_brl"].sum())
                 if abs(v) >= 1_000:
                     factor_matrix[factor_key][short_k] = v
@@ -5407,7 +5407,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             # simpler: delta_dur column is already delta × mod_duration
             nominal_brl_yr = float(rf_bz["delta_dur"].sum()) if "delta_dur" in rf_bz.columns else 0.0
             if abs(nominal_brl_yr) >= 1_000:
-                factor_matrix["Nominal"]["MACRO"] = nominal_brl_yr
+                factor_matrix["Juros Nominais"]["MACRO"] = nominal_brl_yr
 
     # Benchmark allocations per fund, per factor (for net-of-bench view).
     # Real rates: IDKAs have duration-concentrated real-rate bench (3y × NAV, 10y × NAV).
@@ -5421,15 +5421,15 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             nav_by_short[short] = _latest_nav(td, DATA_STR) or 0.0
     bench_matrix = {k: {} for k in factor_matrix}
     if nav_by_short.get("IDKA_3Y"):
-        bench_matrix["Real"]["IDKA_3Y"]     = 3.0  * nav_by_short["IDKA_3Y"]
-        bench_matrix["IPCA Idx"]["IDKA_3Y"] = 1.0  * nav_by_short["IDKA_3Y"]
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_3Y"] = 3.0  * nav_by_short["IDKA_3Y"]
+        bench_matrix["IPCA Idx"]["IDKA_3Y"]           = 1.0  * nav_by_short["IDKA_3Y"]
     if nav_by_short.get("IDKA_10Y"):
-        bench_matrix["Real"]["IDKA_10Y"]     = 10.0 * nav_by_short["IDKA_10Y"]
-        bench_matrix["IPCA Idx"]["IDKA_10Y"] = 1.0  * nav_by_short["IDKA_10Y"]
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_10Y"] = 10.0 * nav_by_short["IDKA_10Y"]
+        bench_matrix["IPCA Idx"]["IDKA_10Y"]           = 1.0  * nav_by_short["IDKA_10Y"]
     if nav_by_short.get("FRONTIER"):
         bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
 
-    factor_list = ["Real", "Nominal", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
+    factor_list = ["Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
 
     def _render_factor_rows(net_of_bench: bool) -> str:
         rows = ""
@@ -5485,7 +5485,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 if abs(brl) < 1_000: continue
                 agg_rows.append({
                     "fund":    FUND_LABELS.get(short_k, short_k),
-                    "factor":  "Real" if r["factor"] == "real" else "Nominal",
+                    "factor":  "Juros Reais (IPCA)" if r["factor"] == "real" else "Juros Nominais",
                     "product": r["PRODUCT"],
                     "brl":     brl,
                     "unit":    "BRL-yr",
