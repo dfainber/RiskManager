@@ -3576,9 +3576,17 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     if df.empty:
         return ""
 
+    # For IDKAs, the "Por Bench" decomposition is the default active view —
+    # it's the most useful lens for a benchmarked RF fund.
+    is_idka = fund_short in ("IDKA_3Y", "IDKA_10Y")
+    bench_enabled = (is_idka and idka_index_ret and w_alb is not None
+                     and albatroz_pa_sum is not None)
+
     view_classe = _build_pa_view(
         fund_short, df, "classe",
-        ["CLASSE", "PRODUCT"], "Classe / Produto", active=True, cdi=cdi,
+        ["CLASSE", "PRODUCT"], "Classe / Produto",
+        active=(not bench_enabled),  # classe is default only if no bench view
+        cdi=cdi,
     )
 
     if fund_short == "EVOLUTION":
@@ -3595,15 +3603,21 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
             ["LIVRO", "PRODUCT"], "Livro / Produto", active=False, cdi=cdi,
         )
 
-    # 3rd view: bench decomposition for IDKA funds only
+    # 3rd view: bench decomposition — IDKA default
     view_bench = ""
     bench_toggle_btn = ""
-    if fund_short in ("IDKA_3Y", "IDKA_10Y") and idka_index_ret and w_alb is not None and albatroz_pa_sum is not None:
+    classe_active_cls = "active" if not bench_enabled else ""
+    if bench_enabled:
         view_bench = _build_pa_bench_decomp_view(
             fund_short, df, cdi, idka_index_ret, w_alb, albatroz_pa_sum
         )
+        # Force-display the bench view as active (override the default hidden)
+        view_bench = view_bench.replace(
+            'data-pa-view="bench" style="display:none"',
+            'data-pa-view="bench" style="display:block"',
+        )
         bench_toggle_btn = (
-            '<button class="pa-tgl" data-pa-view="bench" '
+            '<button class="pa-tgl active" data-pa-view="bench" '
             'onclick="selectPaView(this,\'bench\')">Por Bench</button>'
         )
 
@@ -3618,7 +3632,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
           <button class="pa-btn" onclick="collapseAllPa(this)"  title="Colapsar tudo">⤡ Colapsar</button>
         </div>
         <div class="pa-view-toggle">
-          <button class="pa-tgl active" data-pa-view="classe"
+          <button class="pa-tgl {classe_active_cls}" data-pa-view="classe"
                   onclick="selectPaView(this,'classe')">Por Classe</button>
           <button class="pa-tgl" data-pa-view="livro"
                   onclick="selectPaView(this,'livro')">Por Livro</button>
