@@ -53,7 +53,7 @@ Para cada par (A, B):
 import pandas as pd
 
 # pnl_df: DataFrame com colunas = estratégias, index = datas
-corr_rolling_63d = (
+corr_rolling_63d = (disse VAR?
     pnl_df.rolling(window=63)
           .apply(lambda x: x.corr().loc[A, B] if len(x) >= 63 else np.nan)
 )

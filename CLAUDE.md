@@ -282,6 +282,26 @@ dashboards originais.
   - `requirements.txt` criado via `pip freeze`
   - `.gitignore` inclui `.venv/` e `venv/`
 
+**Fase 4 — entregues (sessão 2026-04-21):**
+- **EVOLUTION Exposure** — novo card com look-through completo, toggle Vista 1 (Strategy → LIVRO → Instrumento, 3 níveis) / Vista 2 (Por Fator reutilizando `_build_expo_unified_table` com taxonomia RF). Classificação via `livros-map.json` + `_EVO_LIVRO_EXTRA_STRATEGY` (Cred_ON, FMN_*, AÇÕES BR LONG, GP_Cred_*, CAIXA USD, Taxas, etc.). Fonte: `LOTE_PRODUCT_EXPO` com `TRADING_DESK_SHARE_SOURCE='Galapagos Evolution FIC FIM CP'`. Sort cascateado entre 3 níveis via `evoExpoSort`.
+- **Camada 3 — filtro de significância** — par corr só flagado como "alinhamento relevante" se ambas estratégias ≥ P70 na Camada 1. Pares com corr ≥ P85 mas com uma estratégia ociosa mostram 🟡 "sinal desconsiderado". Estado sem sinal: ✓ verde.
+- **Matriz Direcional (EVOLUTION)** — nova camada via `q_models.RISK_DIRECTION_REPORT`. Para cada CATEGORIA aggrega `DELTA_SISTEMATICO × DELTA_DISCRICIONARIO` (usando `Net` quando existe, senão soma non-Gross). Flagra categorias com mesmo sinal com filtros `|delta| ≥ 5 bps` per perna e `|PCT_PL_TOTAL| ≥ 1%` (material).
+- **Camada 4 — Bull Market Alignment** — alerta agregado das 5 condições (≥3 buckets ≥ P70 · ≥1 ≥ P95 · Ratio C2 ≥ P80 · ≥1 par corr ≥ P85 filtrado · ≥3 categorias same-sign). Buckets direcionais = {MACRO, SIST, FRONTIER+EVO_STRAT unidos, CREDITO}. FRONTIER+EVO percentile recomputado da soma das séries. Dispara 🚨 quando ≥ 3 acesas, 🟡 parcial quando 1-2, ✓ verde quando 0. Headline no topo do tab Diversificação + Summary.
+- **docs/EVOLUTION_DIVERSIFICATION_METHODOLOGY.md** — doc completo (motivação, 4 camadas + Camada 4, thresholds, tratamento CREDITO, caveats, changelog).
+- **MACRO Budget vs VaR por PM** — novo card no Risk Budget tab, consolidado no mesmo `sec-MACRO-stop-monitor`. Colunas:
+  - **Margem atual** (91/63/124/123 bps — dinâmica por PM, igual Risk Budget Monitor)
+  - **VaR paramétrico** (Lote `PARAMETRIC_VAR` LEVEL=10 soma signed por prefixo de PM, magnitude)
+  - **VaR hist 21/63/252d** (`1.645 × σ(W)` sobre posição atual × retornos históricos, fonte `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
+  - **Worst day pos.** (min da série HS)
+  - Cores por linha contra Margem de cada PM: 🟡 ≥ 1σ · 🟠 ≥ VaR · 🔴 ≥ 2σ
+  - `compute_pm_hs_var(dist_map)` — ver `project_rule_hs_vs_realized_pnl_for_var.md`
+- **Email/mobile compatibility (Fase 1)**:
+  - `<noscript>` banner com instruções (Windows Mark-of-the-Web → Properties → Unblock, ou abrir no browser)
+  - Meta `X-UA-Compatible` + `viewport`
+  - `@media (max-width: 768px)` e `480px`: tabelas `overflow-x:auto` + `white-space:nowrap`, chips flex-wrap, fontes menores, header compacto
+  - Fase 2 (CSS-only refactor) **deliberadamente descartada** — ver `project_rule_mark_of_the_web.md`
+- **Bug fix — duplicate section IDs**: múltiplos `sections.append((fund, report, html))` com mesma chave criavam DOM duplicados. Consolidação: concatenar HTML em uma entry só (aplicado ao Risk Budget tab juntando stop monitor + Budget vs VaR).
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)

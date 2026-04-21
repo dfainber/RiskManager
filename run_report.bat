@@ -37,15 +37,23 @@ if errorlevel 1 (
 )
 
 set HTML_PATH=data\morning-calls\%DATA%_risk_monitor.html
-if not exist "%HTML_PATH%" (
-    echo *** Arquivo nao encontrado: %HTML_PATH%
+set HTML_FULL=%~dp0%HTML_PATH%
+if not exist "%HTML_FULL%" (
+    echo *** Arquivo nao encontrado: %HTML_FULL%
     pause
     exit /b 1
 )
 
 echo.
-echo ^> Abrindo %HTML_PATH% no browser...
-start "" "%HTML_PATH%"
+echo ^> Abrindo %HTML_FULL% no browser...
+REM Fallback chain: default app -> explorer -> chrome/edge hardcoded
+start "" "%HTML_FULL%" || explorer.exe "%HTML_FULL%" || (
+    if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" (
+        start "" "%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%HTML_FULL%"
+    ) else if exist "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" (
+        start "" "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" "%HTML_FULL%"
+    )
+)
 
 popd
 endlocal

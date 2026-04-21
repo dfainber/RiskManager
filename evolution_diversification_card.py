@@ -89,6 +89,18 @@ def fetch_fund_var_history(date_str: str) -> pd.DataFrame:
     """)
 
 
+def fetch_direction_report(date_str: str) -> pd.DataFrame:
+    """Matriz direcional — DELTA_SISTEMATICO × DELTA_DISCRICIONARIO por CATEGORIA
+       para Galapagos Evolution FIC FIM CP no dia `date_str`."""
+    return read_sql(f"""
+        SELECT "TIPO", "CATEGORIA", "NOME",
+               "DELTA_SISTEMATICO", "DELTA_DISCRICIONARIO", "PCT_PL_TOTAL"
+        FROM q_models."RISK_DIRECTION_REPORT"
+        WHERE "FUNDO"    = '{DESK}'
+          AND "VAL_DATE" = DATE '{date_str}'
+    """)
+
+
 def fetch_pnl_by_livro(date_str: str) -> pd.DataFrame:
     """PnL diário por LIVRO em até 400 dias antes de `date_str`."""
     return read_sql(f"""
@@ -389,6 +401,181 @@ def compute_camada3(date_str: str,
         "pairs":    pairs,
         "n_obs":    len(pivot_dir),
     }
+
+
+# ─── Matriz Direcional (DELTA_SIST × DELTA_DISC por CATEGORIA) ─────────────
+#
+# Pergunta respondida por esta camada:
+#   "As duas metades do fundo (sistemática + discricionária) estão apontando
+#    na MESMA direção nas mesmas classes de ativo?"
+#
+# Fonte: q_models.RISK_DIRECTION_REPORT — tabela com decomposição por categoria.
+# Cada CATEGORIA tem linhas NOME={Net, Gross, individual instruments}.
+# Usamos o 'Net' quando disponível, senão somamos os individuais (excluindo Gross).
+#
+# Thresholds (fixed):
+#   · |PCT_PL_TOTAL| ≥ 1% — categoria material (ignora classes irrelevantes)
+#   · |delta|/NAV  ≥ 5 bps — cada perna precisa de magnitude mínima pra contar
+#
+# Output: contagem de categorias onde sist/disc têm mesmo sinal, cada perna
+# acima do threshold. ≥3 → condição 5 do "bull market alignment" (Camada 4).
+
+def compute_camada_direcional(df: pd.DataFrame, nav: float,
+                               min_leg_bps: float = 5.0,
+                               min_cat_pct: float = 1.0) -> dict:
+    """Agrega por CATEGORIA e conta categorias com DELTA_SIST e DELTA_DISC
+       no mesmo sinal (filtro de magnitude em cada perna + filtro de material)."""
+    if df is None or df.empty or not nav:
+        return {"rows": [], "same_sign_count": 0, "same_sign_categorias": [],
+                "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct}}
+
+    # For each CATEGORIA, pick the 'Net' NOME if present; else sum non-Gross rows.
+    rows = []
+    for cat, sub in df.groupby("CATEGORIA", sort=False):
+        net_row = sub[sub["NOME"] == "Net"]
+        if not net_row.empty:
+            sist_brl = float(net_row["DELTA_SISTEMATICO"].iloc[0])
+            disc_brl = float(net_row["DELTA_DISCRICIONARIO"].iloc[0])
+            pct_pl   = float(net_row["PCT_PL_TOTAL"].iloc[0])
+        else:
+            non_gross = sub[sub["NOME"] != "Gross"]
+            sist_brl = float(non_gross["DELTA_SISTEMATICO"].sum())
+            disc_brl = float(non_gross["DELTA_DISCRICIONARIO"].sum())
+            pct_pl   = float(non_gross["PCT_PL_TOTAL"].sum())
+
+        sist_bps = sist_brl * 10000 / nav
+        disc_bps = disc_brl * 10000 / nav
+
+        # Classify sign-state
+        leg_sist_material = abs(sist_bps) >= min_leg_bps
+        leg_disc_material = abs(disc_bps) >= min_leg_bps
+        if not leg_sist_material and not leg_disc_material:
+            state = "dust"
+        elif not leg_sist_material:
+            state = "only-disc"
+        elif not leg_disc_material:
+            state = "only-sist"
+        elif (sist_bps > 0) == (disc_bps > 0):
+            state = "same-sign"
+        else:
+            state = "opposite"
+
+        material = abs(pct_pl) * 100 >= min_cat_pct  # |pct_pl| is fraction
+
+        rows.append(dict(
+            categoria=cat,
+            tipo=sub["TIPO"].iloc[0],
+            sist_brl=sist_brl, disc_brl=disc_brl,
+            sist_bps=sist_bps, disc_bps=disc_bps,
+            pct_pl=pct_pl, material=material, state=state,
+        ))
+
+    same_sign_cats = [r["categoria"] for r in rows
+                      if r["state"] == "same-sign" and r["material"]]
+    # Sort: same-sign material first, then by |pct_pl| desc
+    state_order = {"same-sign": 0, "opposite": 1, "only-sist": 2, "only-disc": 3, "dust": 4}
+    rows.sort(key=lambda r: (0 if r["material"] else 1,
+                              state_order.get(r["state"], 9),
+                              -abs(r["pct_pl"])))
+
+    return {
+        "rows": rows,
+        "same_sign_count": len(same_sign_cats),
+        "same_sign_categorias": same_sign_cats,
+        "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct},
+    }
+
+
+# ─── Camada 4 — Bull Market Alignment (alerta combinado 5 condições) ──────
+#
+# Spec na SKILL.md — dispara quando ≥3 condições acendem simultaneamente:
+#   1. ≥3 dos 4 buckets direcionais {MACRO, SIST, FRONTIER_EVO, CREDITO} ≥ P70
+#   2. ≥1 desses buckets ≥ P95
+#   3. Diversification Ratio (Camada 2, winsorizado) ≥ P80
+#   4. ≥1 par correlação 63d ≥ P85, RESPEITANDO filtro de significância
+#      (ambas estratégias do par ≥ P70 na Camada 1)
+#   5. Matriz direcional: ≥3 categorias com DELTA_SIST e DELTA_DISC mesmo sinal
+#
+# FRONTIER e EVO_STRAT são unidas num bucket só (pacote "tático direcional"):
+# somamos as VaR series em bps e recomputamos o percentil 252d.
+
+def _fronti_evo_pct(strat_pivot: pd.DataFrame,
+                     effective_date: pd.Timestamp) -> float | None:
+    """Percentil 252d da série VaR combinada FRONTIER+EVO_STRAT."""
+    cols = [c for c in ("FRONTIER", "EVO_STRAT") if c in strat_pivot.columns]
+    if not cols:
+        return None
+    combined = strat_pivot[cols].fillna(0.0).sum(axis=1)
+    window = combined.loc[:effective_date].tail(252).dropna()
+    if len(window) < 20:
+        return None
+    today_val = float(window.iloc[-1])
+    return float((window <= today_val).mean() * 100.0)
+
+
+def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
+                     strat_pivot: pd.DataFrame,
+                     effective_date: pd.Timestamp) -> dict:
+    """Avalia as 5 condições e decide se o alerta dispara (≥3 lit)."""
+    c1_pct = {r["strat"]: r["pct"] for r in (c1_rows or [])
+              if r.get("pct") is not None and not pd.isna(r.get("pct"))}
+
+    fr_evo_pct = _fronti_evo_pct(strat_pivot, effective_date)
+    buckets_pct = {
+        "MACRO":        c1_pct.get("MACRO"),
+        "SIST":         c1_pct.get("SIST"),
+        "FRONTIER+EVO": fr_evo_pct,
+        "CREDITO":      c1_pct.get("CREDITO"),
+    }
+    buckets_pct = {k: v for k, v in buckets_pct.items() if v is not None}
+
+    # Condition 1: ≥3 of 4 buckets ≥ P70
+    c1_hot = {k: v for k, v in buckets_pct.items() if v >= 70}
+    cond1 = len(c1_hot) >= 3
+
+    # Condition 2: ≥1 of 4 buckets ≥ P95
+    c2_hot = {k: v for k, v in buckets_pct.items() if v >= 95}
+    cond2 = len(c2_hot) >= 1
+
+    # Condition 3: Diversification Ratio (winsorized) ≥ P80
+    ratio_pct = d.get("ratio_wins_pct")
+    cond3 = (ratio_pct is not None and not pd.isna(ratio_pct) and ratio_pct >= 80)
+
+    # Condition 4: ≥1 pair corr ≥ P85 AND both C1 ≥ P70 (significance filter)
+    pairs = c3.get("pairs") or []
+    c4_hot = []
+    for p in pairs:
+        if pd.isna(p["c63_pct"]) or p["c63_pct"] < 85:
+            continue
+        pa, pb = c1_pct.get(p["a"]), c1_pct.get(p["b"])
+        if pa is not None and pa >= 70 and pb is not None and pb >= 70:
+            c4_hot.append(p)
+    cond4 = len(c4_hot) >= 1
+
+    # Condition 5: directional matrix ≥3 categories same sign
+    same_sign_count = c_dir.get("same_sign_count", 0) if c_dir else 0
+    cond5 = same_sign_count >= 3
+
+    conditions = [
+        dict(id=1, name="≥3 de 4 buckets em ≥ P70",
+             lit=cond1, detail=c1_hot),
+        dict(id=2, name="≥1 bucket em ≥ P95",
+             lit=cond2, detail=c2_hot),
+        dict(id=3, name="Ratio C2 (winsorizado) ≥ P80",
+             lit=cond3, detail=ratio_pct),
+        dict(id=4, name="≥1 par corr 63d ≥ P85 (filtro C1 ≥ P70)",
+             lit=cond4, detail=c4_hot),
+        dict(id=5, name="Matriz direcional ≥3 categorias mesmo sinal",
+             lit=cond5, detail=c_dir.get("same_sign_categorias", []) if c_dir else []),
+    ]
+    n_lit = sum(1 for c in conditions if c["lit"])
+
+    return dict(
+        n_lit=n_lit,
+        alert=n_lit >= 3,
+        conditions=conditions,
+        buckets_pct=buckets_pct,
+    )
 
 
 # ───────────────────── Render ─────────────────────
@@ -728,8 +915,10 @@ def render_camada1(rows: list[dict]) -> str:
     """
 
 
-def render_camada3(c3: dict) -> str:
-    """Renderiza matriz 63d + pares com percentil 252d."""
+def render_camada3(c3: dict, c1_rows: list | None = None) -> str:
+    """Renderiza matriz 63d + pares com percentil 252d.
+       c1_rows: resultado de compute_camada1 — usado para o filtro de significância
+       (pair só conta como alinhado se ambas estratégias ≥ P70 na Camada 1)."""
     if c3["corr_63d"] is None or not c3["pairs"]:
         return """
         <section class="card" style="max-width:760px;margin:24px auto;
@@ -798,17 +987,42 @@ def render_camada3(c3: dict) -> str:
             f"</tr>"
         )
 
-    # Flag pairs at P>85
-    flagged = [p for p in c3["pairs"]
-               if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
+    # Significance filter: pair only counts as aligned if BOTH strategies are
+    # simultaneously ≥ P70 in Camada 1 AND the pair's 63d correlation is ≥ P85.
+    c1_pct = {r["strat"]: r["pct"] for r in (c1_rows or [])
+              if r.get("pct") is not None and not pd.isna(r.get("pct"))}
+    flagged_raw = [p for p in c3["pairs"]
+                   if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
+    def _both_loaded(p):
+        pa, pb = c1_pct.get(p["a"]), c1_pct.get(p["b"])
+        return (pa is not None and pa >= 70 and pb is not None and pb >= 70)
+    flagged_sig   = [p for p in flagged_raw if _both_loaded(p)]
+    flagged_quiet = [p for p in flagged_raw if not _both_loaded(p)]
+
+    def _pair_str(p):
+        pa, pb = c1_pct.get(p["a"]), c1_pct.get(p["b"])
+        sa = f"P{pa:.0f}" if pa is not None else "—"
+        sb = f"P{pb:.0f}" if pb is not None else "—"
+        return f"{p['a']}×{p['b']} (corr P{p['c63_pct']:.0f} · C1 {p['a']} {sa}, {p['b']} {sb})"
+
     alert = ""
-    if flagged:
-        names = ", ".join(f"{p['a']}×{p['b']} (P{p['c63_pct']:.0f})"
-                          for p in flagged)
-        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
-                 f"background:#ffe5e5;border-left:3px solid #a8001a;"
-                 f"border-radius:4px;font-size:13px;color:#5a0000'>"
-                 f"⚠️ Pares em alinhamento atípico (P ≥ 85): {names}</div>")
+    if flagged_sig:
+        names = ", ".join(_pair_str(p) for p in flagged_sig)
+        alert += (f"<div style='margin-top:10px;padding:8px 12px;"
+                  f"background:#ffe5e5;border-left:3px solid #a8001a;"
+                  f"border-radius:4px;font-size:13px;color:#5a0000'>"
+                  f"🚨 Alinhamento relevante (corr ≥ P85 · ambas C1 ≥ P70): {names}</div>")
+    if flagged_quiet:
+        names = ", ".join(_pair_str(p) for p in flagged_quiet)
+        alert += (f"<div style='margin-top:8px;padding:8px 12px;"
+                  f"background:#fff4e0;border-left:3px solid #b88700;"
+                  f"border-radius:4px;font-size:13px;color:#554200'>"
+                  f"🟡 Correlação alta mas estratégia(s) abaixo de C1 P70 (sinal desconsiderado): {names}</div>")
+    if not flagged_raw:
+        alert = ("<div style='margin-top:10px;padding:8px 12px;"
+                 "background:#e6f7ec;border-left:3px solid #0e7a32;"
+                 "border-radius:4px;font-size:13px;color:#1a5430'>"
+                 "✓ Nenhum par em alinhamento atípico (corr 63d &lt; P85).</div>")
 
     return f"""
     <section class="card" style="max-width:760px;margin:24px auto;
@@ -869,7 +1083,7 @@ def render_camada3(c3: dict) -> str:
 def render_html(d: dict, c1_rows: list[dict], c3: dict) -> str:
     card1 = render_camada1(c1_rows)
     card2 = render_card(d)
-    card3 = render_camada3(c3)
+    card3 = render_camada3(c3, c1_rows)
     return f"""<!doctype html>
 <html lang="pt-br">
 <head>

@@ -23,9 +23,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
 from evolution_diversification_card import (
-    build_ratio_series as _evo_build_ratio_series,
-    compute_camada1   as _evo_compute_camada1,
-    compute_camada3   as _evo_compute_camada3,
+    build_ratio_series          as _evo_build_ratio_series,
+    compute_camada1             as _evo_compute_camada1,
+    compute_camada3             as _evo_compute_camada3,
+    fetch_direction_report      as _evo_fetch_direction_report,
+    compute_camada_direcional   as _evo_compute_camada_direcional,
+    compute_camada4             as _evo_compute_camada4,
 )
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -70,13 +73,72 @@ def fetch_pm_pnl_history():
     WHERE "FUNDO" = 'MACRO'
       AND "DATE" >= DATE '2025-01-01'
       AND "DATE" <= DATE '{DATA_STR}'
-      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
+      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ','Macro_QM')
     GROUP BY DATE_TRUNC('month', "DATE"), "LIVRO"
     ORDER BY "LIVRO", mes
     """
     df = read_sql(q)
     df["mes"] = pd.to_datetime(df["mes"], utc=True).dt.tz_localize(None)
     return df
+
+
+def fetch_macro_pm_pnl_daily(date_str: str = DATA_STR) -> pd.DataFrame:
+    """Daily PnL per (LIVRO, DATE) for MACRO over the last ~400 days (≥ 252 business).
+       Returns columns: VAL_DATE (datetime), LIVRO, pnl_bps.
+       PnL = SUM(DIA) × 10000  (DIA is fraction of NAV, so this gives bps of NAV per day).
+    """
+    livros = ", ".join(f"'{v}'" for v in _PM_LIVRO.values())
+    df = read_sql(f"""
+        SELECT "DATE" AS "VAL_DATE", "LIVRO",
+               SUM("DIA") * 10000 AS pnl_bps
+        FROM q_models."REPORT_ALPHA_ATRIBUTION"
+        WHERE "FUNDO" = 'MACRO'
+          AND "DATE" >= DATE '{date_str}' - INTERVAL '400 days'
+          AND "DATE" <= DATE '{date_str}'
+          AND "LIVRO" IN ({livros})
+        GROUP BY "DATE", "LIVRO"
+        ORDER BY "DATE"
+    """)
+    if not df.empty:
+        df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
+        df["pnl_bps"]  = df["pnl_bps"].astype(float)
+    return df
+
+
+def compute_pm_hs_var(dist_map: dict,
+                       windows: tuple = (21, 63, 252),
+                       z: float = 1.645) -> dict[str, dict]:
+    """Parametric 1d VaR per PM from the Historical Simulation series —
+       TODAY's portfolio × N historical days of factor returns.
+       Source: dist_map (from PORTIFOLIO_DAILY_HISTORICAL_SIMULATION via fetch_pnl_distribution).
+       For each PM (PORTFOLIO key in dist_map ∈ {"CI","LF","JD","RJ"}):
+         σ_N  = sample std of W[-N:]  (W already in bps of NAV)
+         VaR_N = z × σ_N                (default z=1.645 → 95%)
+       Also reports the worst simulated day (magnitude, bps) across the full window.
+       Returns {pm_code: {"v21": float, "v63": float, "v252": float, "worst": float, "n": int}}.
+    """
+    out: dict[str, dict] = {}
+    if not dist_map:
+        return out
+    for pm in ("CI", "LF", "JD", "RJ"):
+        w = dist_map.get(pm)
+        if w is None or len(w) < 21:
+            continue
+        w = np.asarray(w, dtype=float)
+        w = w[~np.isnan(w)]
+        if len(w) < 21:
+            continue
+        row: dict = {"n": int(len(w))}
+        for N in windows:
+            if len(w) >= N:
+                sigma = float(np.std(w[-N:], ddof=1))
+                row[f"v{N}"] = z * sigma
+            else:
+                row[f"v{N}"] = float("nan")
+        wmin = float(np.min(w))
+        row["worst"] = -wmin if wmin < 0 else 0.0
+        out[pm] = row
+    return out
 
 def fetch_risk_history():
     level_clause = " OR ".join([
@@ -1814,6 +1876,486 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
     </section>"""
 
 
+def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
+                                      df_d1: pd.DataFrame = None,
+                                      df_var: pd.DataFrame = None,
+                                      df_var_d1: pd.DataFrame = None,
+                                      df_pnl_prod: pd.DataFrame = None) -> str:
+    """EVOLUTION exposure — full look-through card with two views:
+       1. POR STRATEGY (default): Strategy → LIVRO → Instrumento, 3-level drill.
+       2. POR FATOR: factor × product using the shared _build_expo_unified_table.
+       Columns mirror MACRO: %NAV, σ, Δ Expo, VaR(bps), Δ VaR, DIA.
+    """
+    if df is None or df.empty or not nav:
+        return ""
+
+    # ── Build the Por Fator view (reuse MACRO helper) ────────────────────────
+    _expo_u    = df.rename(columns={"factor": "factor"}).copy()  # already tagged
+    _var_u     = df_var.rename(columns={"rf": "factor"}).copy() if df_var is not None and not df_var.empty else None
+    _expo_d1_u = df_d1.rename(columns={"factor": "factor"}).copy() if df_d1 is not None and not df_d1.empty else None
+    _var_d1_u  = df_var_d1.rename(columns={"rf": "factor"}).copy() if df_var_d1 is not None and not df_var_d1.empty else None
+    factor_table = _build_expo_unified_table(
+        fund_key="evolution",
+        nav=nav,
+        df=_expo_u,
+        df_d1=_expo_d1_u,
+        df_var=_var_u,
+        df_var_d1=_var_d1_u,
+        factor_order=_RF_ORDER,
+    )
+
+    # ── Build the Por Strategy view (Strategy → LIVRO → Instrumento) ────────
+    # VaR attribution: at the product level, allocate the factor's total VaR
+    # proportionally to each product's delta share within that factor.
+    rf_delta_tot = df.groupby("factor").agg(rf_delta=("delta", "sum")).reset_index()
+    rf_var_tot = (df_var.groupby("rf").agg(var_pct=("var_pct", "sum")).reset_index()
+                  if df_var is not None and not df_var.empty else pd.DataFrame(columns=["rf", "var_pct"]))
+    rf_var_map = dict(zip(rf_var_tot["rf"], rf_var_tot["var_pct"])) if not rf_var_tot.empty else {}
+
+    # Product-level agg: sum delta across primitives for the same instrument within a livro
+    prod_agg = (df.groupby(["strategy", "livro", "factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+                  .agg(delta=("delta", "sum"), sigma=("sigma", "mean")))
+    prod_agg = prod_agg.merge(rf_delta_tot, on="factor", how="left")
+    prod_agg["pct_nav"] = prod_agg["delta"] * 100 / nav
+    prod_agg["prod_var_pct"] = prod_agg.apply(
+        lambda r: (r["delta"] / r["rf_delta"] * rf_var_map.get(r["factor"], 0.0))
+                  if r["rf_delta"] else 0.0,
+        axis=1,
+    )
+
+    # D-1 product lookup (for Δ Expo / Δ VaR at instrument level)
+    d1_prod = {}
+    d1_prod_var = {}
+    if df_d1 is not None and not df_d1.empty:
+        rf_delta_tot_d1 = df_d1.groupby("factor").agg(rf_delta=("delta", "sum")).reset_index()
+        rf_var_tot_d1 = (df_var_d1.groupby("rf").agg(var_pct=("var_pct", "sum")).reset_index()
+                         if df_var_d1 is not None and not df_var_d1.empty
+                         else pd.DataFrame(columns=["rf", "var_pct"]))
+        rf_var_map_d1 = dict(zip(rf_var_tot_d1["rf"], rf_var_tot_d1["var_pct"])) if not rf_var_tot_d1.empty else {}
+        p1 = (df_d1.groupby(["strategy", "livro", "factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
+                    .agg(delta=("delta", "sum")))
+        p1 = p1.merge(rf_delta_tot_d1, on="factor", how="left")
+        p1["pct_nav"] = p1["delta"] * 100 / nav
+        p1["prod_var_pct"] = p1.apply(
+            lambda r: (r["delta"] / r["rf_delta"] * rf_var_map_d1.get(r["factor"], 0.0))
+                      if r["rf_delta"] else 0.0,
+            axis=1,
+        )
+        for _, r in p1.iterrows():
+            k = (r["strategy"], r["livro"], r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])
+            d1_prod[k] = r["pct_nav"]
+            d1_prod_var[k] = r["prod_var_pct"]
+
+    # DIA lookup per (LIVRO, PRODUCT)
+    dia_lookup = {}
+    if df_pnl_prod is not None and not df_pnl_prod.empty:
+        for _, r in df_pnl_prod.iterrows():
+            dia_lookup[(r["LIVRO"], r["PRODUCT"])] = float(r["dia_bps"])
+
+    def _num(v, n=1):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—", "var(--muted)"
+        return f'{v:+.{n}f}', ("var(--up)" if v >= 0 else "var(--down)")
+
+    def _abs_num(v, n=2, unit="%"):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f'{v:.{n}f}{unit}'
+
+    def _dv(v):
+        return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else f'{v:.6f}'
+
+    def _cell(txt, color=None, extra=""):
+        col = f'color:{color};' if color else ''
+        return (f'<td class="mono" style="text-align:right;font-size:11.5px;{col}{extra}">{txt}</td>')
+
+    # Rollups per (strategy, livro) and per strategy
+    livro_sum = (prod_agg.groupby(["strategy", "livro"], as_index=False)
+                          .agg(pct_nav=("pct_nav", "sum"),
+                               prod_var_pct=("prod_var_pct", "sum"),
+                               gross_brl=("delta", lambda s: s.abs().sum())))
+    strat_sum = (prod_agg.groupby("strategy", as_index=False)
+                          .agg(pct_nav=("pct_nav", "sum"),
+                               prod_var_pct=("prod_var_pct", "sum"),
+                               gross_brl=("delta", lambda s: s.abs().sum())))
+
+    # Weighted σ per (strategy, livro) and per strategy
+    def _sigma_w(sub: pd.DataFrame) -> float | None:
+        s = sub.dropna(subset=["sigma"])
+        w = s["pct_nav"].abs()
+        tot = w.sum()
+        if tot <= 0:
+            return None
+        return float((w * s["sigma"]).sum() / tot)
+    livro_sigma = {(r["strategy"], r["livro"]): _sigma_w(prod_agg[(prod_agg["strategy"] == r["strategy"]) & (prod_agg["livro"] == r["livro"])])
+                   for _, r in livro_sum.iterrows()}
+    strat_sigma = {r["strategy"]: _sigma_w(prod_agg[prod_agg["strategy"] == r["strategy"]])
+                   for _, r in strat_sum.iterrows()}
+
+    # D-1 rollups
+    d1_livro = {}
+    d1_strat = {}
+    d1_livro_var = {}
+    d1_strat_var = {}
+    if df_d1 is not None and not df_d1.empty:
+        p1_tmp = pd.DataFrame([
+            dict(strategy=k[0], livro=k[1], factor=k[2], PRODUCT=k[3], PRODUCT_CLASS=k[4],
+                 pct_nav=v, prod_var_pct=d1_prod_var.get(k, 0.0))
+            for k, v in d1_prod.items()
+        ])
+        if not p1_tmp.empty:
+            _l = p1_tmp.groupby(["strategy", "livro"]).agg(pct_nav=("pct_nav", "sum"),
+                                                          prod_var_pct=("prod_var_pct", "sum"))
+            for k, r in _l.iterrows():
+                d1_livro[k] = r["pct_nav"]; d1_livro_var[k] = r["prod_var_pct"]
+            _s = p1_tmp.groupby("strategy").agg(pct_nav=("pct_nav", "sum"),
+                                               prod_var_pct=("prod_var_pct", "sum"))
+            for k, r in _s.iterrows():
+                d1_strat[k] = r["pct_nav"]; d1_strat_var[k] = r["prod_var_pct"]
+
+    # ── Render rows ──────────────────────────────────────────────────────────
+    body = ""
+    strategies_sorted = sorted(
+        strat_sum["strategy"].tolist(),
+        key=lambda s: (_EVO_STRATEGY_ORDER.index(s) if s in _EVO_STRATEGY_ORDER else 99)
+    )
+    for strat in strategies_sorted:
+        s_row = strat_sum[strat_sum["strategy"] == strat].iloc[0]
+        s_pct  = float(s_row["pct_nav"])
+        s_var  = float(s_row["prod_var_pct"])
+        s_gross = float(s_row["gross_brl"]) * 100 / nav
+        s_sig = strat_sigma.get(strat)
+        s_dexp = (s_pct - d1_strat[strat]) if strat in d1_strat else None
+        s_dvar = (s_var - d1_strat_var[strat]) if strat in d1_strat_var else None
+        s_color = _EVO_STRATEGY_COLOR.get(strat, "#94a3b8")
+
+        s_net_s, s_net_c   = _num(s_pct, 2)
+        s_dexp_s, s_dexp_c = _num(s_dexp, 2)
+        s_var_s = f'{s_var:.1f}' if s_var else "—"
+        s_var_c = "var(--down)" if s_var > 0 else "var(--muted)"
+        s_dvar_s, s_dvar_c = _num(s_dvar, 1)
+        s_sig_s = _abs_num(s_sig, 1, unit="")
+        strat_path = f'evo-strat-{strat}'
+
+        # DIA at strategy level: sum across all livros in the strategy
+        s_dia = 0.0
+        for lv in prod_agg[prod_agg["strategy"] == strat]["livro"].unique():
+            for _, p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].iterrows():
+                s_dia += dia_lookup.get((lv, p["PRODUCT"]), 0.0)
+        s_dia_s = f'{s_dia:+.0f}' if abs(s_dia) > 0.05 else "—"
+        s_dia_c = "var(--down)" if s_dia < 0 else "var(--up)" if s_dia > 0 else "var(--muted)"
+
+        body += (
+            f'<tr class="uexpo-row" data-expo-lvl="0" data-expo-path="{strat_path}" '
+            f'onclick="uexpoToggle(this)" style="cursor:pointer; border-top:1px solid var(--border)" '
+            f'data-default-order="{strategies_sorted.index(strat)}" '
+            f'data-sort-name="{strat}" '
+            f'data-sort-net="{-abs(s_pct):.6f}" '
+            f'data-sort-dexp="{_dv(s_dexp)}" '
+            f'data-sort-gross="{-s_gross:.6f}" '
+            f'data-sort-sigma="{_dv(s_sig)}" '
+            f'data-sort-var="{_dv(s_var)}" '
+            f'data-sort-dvar="{_dv(s_dvar)}" '
+            f'data-sort-dia="{_dv(s_dia if abs(s_dia) > 0.05 else None)}">'
+            f'<td class="sum-fund" style="font-weight:700;color:{s_color}"><span class="uexpo-caret">▶</span> {strat}</td>'
+            + _cell(f'{s_net_s}%', s_net_c, "font-weight:700")
+            + _cell(f'{s_dexp_s}%' if s_dexp_s != '—' else '—', s_dexp_c)
+            + _cell(s_sig_s, "var(--muted)")
+            + _cell(s_var_s, s_var_c)
+            + _cell(f'{s_dvar_s}' if s_dvar_s != '—' else '—', s_dvar_c)
+            + _cell(s_dia_s, s_dia_c)
+            + '</tr>'
+        )
+
+        # Level 1: LIVROs within strategy
+        livros_here = livro_sum[livro_sum["strategy"] == strat].sort_values(
+            "pct_nav", key=lambda s: s.abs(), ascending=False
+        )
+        for _, lrow in livros_here.iterrows():
+            lv = lrow["livro"]
+            l_pct = float(lrow["pct_nav"])
+            l_var = float(lrow["prod_var_pct"])
+            l_gross = float(lrow["gross_brl"]) * 100 / nav
+            l_sig = livro_sigma.get((strat, lv))
+            k_l = (strat, lv)
+            l_dexp = (l_pct - d1_livro[k_l]) if k_l in d1_livro else None
+            l_dvar = (l_var - d1_livro_var[k_l]) if k_l in d1_livro_var else None
+
+            l_net_s, l_net_c   = _num(l_pct, 2)
+            l_dexp_s, l_dexp_c = _num(l_dexp, 2)
+            l_var_s = f'{l_var:.1f}' if l_var else "—"
+            l_var_c = "var(--down)" if l_var > 0 else "var(--muted)"
+            l_dvar_s, l_dvar_c = _num(l_dvar, 1)
+            l_sig_s = _abs_num(l_sig, 1, unit="")
+            livro_path = f'{strat_path}-{lv}'
+
+            # DIA for LIVRO: sum dia_bps across instruments
+            l_dia = sum(dia_lookup.get((lv, p["PRODUCT"]), 0.0)
+                        for _, p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].iterrows())
+            l_dia_s = f'{l_dia:+.0f}' if abs(l_dia) > 0.05 else "—"
+            l_dia_c = "var(--down)" if l_dia < 0 else "var(--up)" if l_dia > 0 else "var(--muted)"
+
+            l_var_sort = _dv(l_var) if l_var else ""
+            body += (
+                f'<tr class="uexpo-row" data-expo-lvl="1" data-expo-parent="{strat_path}" '
+                f'data-expo-path="{livro_path}" onclick="uexpoToggle(this)" '
+                f'style="cursor:pointer; display:none; background:rgba(96,165,250,0.04)" '
+                f'data-sort-name="{lv}" '
+                f'data-sort-net="{-abs(l_pct):.6f}" '
+                f'data-sort-dexp="{_dv(l_dexp)}" '
+                f'data-sort-sigma="{_dv(l_sig)}" '
+                f'data-sort-var="{l_var_sort}" '
+                f'data-sort-dvar="{_dv(l_dvar)}" '
+                f'data-sort-dia="{_dv(l_dia if abs(l_dia) > 0.05 else None)}">'
+                f'<td style="padding-left:24px; font-weight:600; color:var(--text)">'
+                f'<span class="uexpo-caret">▶</span> {lv}</td>'
+                + _cell(f'{l_net_s}%', l_net_c)
+                + _cell(f'{l_dexp_s}%' if l_dexp_s != '—' else '—', l_dexp_c)
+                + _cell(l_sig_s, "var(--muted)")
+                + _cell(l_var_s, l_var_c)
+                + _cell(f'{l_dvar_s}' if l_dvar_s != '—' else '—', l_dvar_c)
+                + _cell(l_dia_s, l_dia_c)
+                + '</tr>'
+            )
+
+            # Level 2: Instruments within (strategy, livro)
+            inst_rows = prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].copy()
+            inst_rows["_abs"] = inst_rows["pct_nav"].abs()
+            inst_rows = inst_rows.sort_values("_abs", ascending=False)
+            for _, p in inst_rows.iterrows():
+                p_net = float(p["pct_nav"])
+                p_var = float(p["prod_var_pct"])
+                p_sig = float(p["sigma"]) if pd.notna(p["sigma"]) else None
+                key = (strat, lv, p["factor"], p["PRODUCT"], p["PRODUCT_CLASS"])
+                p_d1 = d1_prod.get(key)
+                if df_d1 is not None and not df_d1.empty:
+                    p_dexp = p_net - (p_d1 if p_d1 is not None else 0.0)
+                else:
+                    p_dexp = None
+                p_dvar = None
+                if df_var_d1 is not None and not df_var_d1.empty:
+                    p_dvar = p_var - d1_prod_var.get(key, 0.0)
+                p_dia = dia_lookup.get((lv, p["PRODUCT"]))
+
+                p_net_s, p_net_c = _num(p_net, 2)
+                p_dexp_s, p_dexp_c = _num(p_dexp, 2)
+                p_var_s = f'{p_var:.1f}' if abs(p_var) > 0.05 else "—"
+                p_var_c = "var(--down)" if p_var > 0 else "var(--muted)"
+                p_dvar_s, p_dvar_c = _num(p_dvar, 1)
+                p_sig_s = _abs_num(p_sig, 1, unit="")
+                p_dia_s = f'{p_dia:+.0f}' if (p_dia is not None and abs(p_dia) > 0.05) else "—"
+                p_dia_c = "var(--down)" if (p_dia is not None and p_dia < 0) else "var(--up)" if (p_dia is not None and p_dia > 0) else "var(--muted)"
+                p_var_sort = _dv(p_var) if abs(p_var) > 0.05 else ""
+                p_dia_sort = _dv(p_dia) if (p_dia is not None and abs(p_dia) > 0.05) else ""
+                p_product = p["PRODUCT"]
+                body += (
+                    f'<tr class="uexpo-row" data-expo-lvl="2" data-expo-parent="{livro_path}" '
+                    f'style="display:none; background:rgba(0,0,0,0.18)" '
+                    f'data-sort-name="{p_product}" '
+                    f'data-sort-net="{-abs(p_net):.6f}" '
+                    f'data-sort-dexp="{_dv(p_dexp)}" '
+                    f'data-sort-sigma="{_dv(p_sig)}" '
+                    f'data-sort-var="{p_var_sort}" '
+                    f'data-sort-dvar="{_dv(p_dvar)}" '
+                    f'data-sort-dia="{p_dia_sort}">'
+                    f'<td style="padding-left:44px; font-size:11px; color:var(--muted)">'
+                    f'<span style="color:var(--text); font-weight:500">{p["PRODUCT"]}</span> '
+                    f'<span style="color:var(--muted); font-size:10px">({p["PRODUCT_CLASS"]} · {p["factor"]})</span>'
+                    f'</td>'
+                    + _cell(f'{p_net_s}%', p_net_c)
+                    + _cell(f'{p_dexp_s}%' if p_dexp_s != '—' else '—', p_dexp_c)
+                    + _cell(p_sig_s, "var(--muted)")
+                    + _cell(p_var_s, p_var_c)
+                    + _cell(f'{p_dvar_s}' if p_dvar_s != '—' else '—', p_dvar_c)
+                    + _cell(p_dia_s, p_dia_c)
+                    + '</tr>'
+                )
+
+    # Total row (pinned)
+    tot_gross = (prod_agg["delta"].abs().sum()) * 100 / nav
+    tot_var = sum(v for v in rf_var_map.values())
+    body += (
+        '<tr class="pa-total-row" data-pinned="1" '
+        'style="border-top:2px solid var(--border); font-weight:700">'
+        '<td class="sum-fund" style="font-weight:700">Total</td>'
+        + '<td></td><td></td>'
+        + '<td></td>'  # σ empty at total
+        + _cell(f'{tot_var:.1f}' if tot_var else '—',
+                "var(--down)" if tot_var > 0 else "var(--muted)",
+                "font-weight:700")
+        + '<td></td><td></td>'
+        + '</tr>'
+    )
+
+    def _th(label, sort_key, active=False, align="right"):
+        arrow = '↓' if active else ''
+        act_cls = ' uexpo-sort-active' if active else ''
+        return (f'<th class="uexpo-sort-th{act_cls}" data-expo-sort="{sort_key}" '
+                f'style="text-align:{align}; cursor:pointer; user-select:none" '
+                f'onclick="evoExpoSort(this,\'{sort_key}\')">'
+                f'{label} <span class="uexpo-arrow" '
+                f'style="font-size:9px;opacity:{0.9 if active else 0}">{arrow}</span></th>')
+
+    header = (
+        _th("Strategy / LIVRO / Instrumento", "name",  active=False, align="left")
+        + _th("Net %NAV",   "net",   active=True)
+        + _th("Δ Expo",     "dexp",  active=False)
+        + _th("σ (bps)",    "sigma", active=False)
+        + _th("VaR (bps)",  "var",   active=False)
+        + _th("Δ VaR",      "dvar",  active=False)
+        + _th("DIA (bps)",  "dia",   active=False)
+    )
+
+    strategy_table = (
+        f'<table id="tbl-uexpo-evolution-strat" class="summary-table" data-no-sort="1">'
+        f'<thead><tr>{header}</tr></thead>'
+        f'<tbody>{body}</tbody>'
+        f'</table>'
+    )
+
+    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+    view_toggle_js = r"""<script>
+if (!window.__evoExpoJSLoaded) {
+  window.__evoExpoJSLoaded = true;
+  window.selectEvoExpoView = function(btn, view) {
+    var head = btn.closest('.card-head');
+    if (!head) return;
+    head.querySelectorAll('.pa-tgl').forEach(function(b) {
+      b.classList.toggle('active', b === btn);
+    });
+    var card = btn.closest('section.card');
+    if (!card) return;
+    card.querySelectorAll('.evo-expo-view').forEach(function(div) {
+      div.style.display = div.getAttribute('data-evo-view') === view ? '' : 'none';
+    });
+  };
+
+  // Cascading sort — sorts strategies, then LIVROs within each strategy,
+  // then instruments within each LIVRO, by the same column + direction.
+  window.evoExpoSort = function(th, sortKey) {
+    var table = th.closest('table'); if (!table) return;
+    var tbody = table.tBodies[0];    if (!tbody) return;
+    if (!window.__uexpoSortState) window.__uexpoSortState = {};
+    var key = (table.id || '') + ':' + sortKey;
+    var prev = window.__uexpoSortState[key];
+    var state;
+    if (sortKey === 'name') {
+      state = (prev === 'asc') ? 'desc' : (prev === 'desc') ? 'default' : 'asc';
+    } else {
+      state = (prev === 'asc') ? 'desc' : 'asc';
+    }
+    window.__uexpoSortState = {}; window.__uexpoSortState[key] = state;
+
+    // Build nested tree: strategies → livros → instruments
+    var strategies = [];
+    var totalRow = null;
+    var curStrat = null, curLivro = null;
+    Array.from(tbody.rows).forEach(function(r){
+      if (r.classList.contains('pa-total-row')) { totalRow = r; return; }
+      var lvl = r.getAttribute('data-expo-lvl');
+      if (lvl === '0') {
+        curStrat = { head: r, livros: [] };
+        strategies.push(curStrat);
+        curLivro = null;
+      } else if (lvl === '1' && curStrat) {
+        curLivro = { head: r, instruments: [] };
+        curStrat.livros.push(curLivro);
+      } else if (lvl === '2' && curLivro) {
+        curLivro.instruments.push(r);
+      }
+    });
+
+    function val(r, k) {
+      if (k === 'name') return r.getAttribute('data-sort-name') || '';
+      var raw = r.getAttribute('data-sort-' + k);
+      if (raw === null || raw === '') return null;
+      var n = parseFloat(raw);
+      return isNaN(n) ? null : n;
+    }
+    var asc = (state === 'asc');
+    function cmp(a, b) {
+      if (sortKey === 'name') {
+        var sa = val(a, 'name'), sb = val(b, 'name');
+        return asc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      }
+      var va = val(a, sortKey), vb = val(b, sortKey);
+      var aN = (va === null), bN = (vb === null);
+      if (aN && bN) {
+        var na = val(a, 'name'), nb = val(b, 'name');
+        return asc ? na.localeCompare(nb) : nb.localeCompare(na);
+      }
+      if (aN) return 1;
+      if (bN) return -1;
+      return asc ? va - vb : vb - va;
+    }
+
+    if (state === 'default') {
+      strategies.sort(function(a, b){
+        var va = parseInt(a.head.getAttribute('data-default-order')||'0', 10);
+        var vb = parseInt(b.head.getAttribute('data-default-order')||'0', 10);
+        return va - vb;
+      });
+    } else {
+      strategies.sort(function(a, b){ return cmp(a.head, b.head); });
+      strategies.forEach(function(s){
+        s.livros.sort(function(a, b){ return cmp(a.head, b.head); });
+        s.livros.forEach(function(l){
+          l.instruments.sort(function(a, b){ return cmp(a, b); });
+        });
+      });
+    }
+
+    strategies.forEach(function(s){
+      tbody.appendChild(s.head);
+      s.livros.forEach(function(l){
+        tbody.appendChild(l.head);
+        l.instruments.forEach(function(i){ tbody.appendChild(i); });
+      });
+    });
+    if (totalRow) tbody.appendChild(totalRow);
+
+    table.querySelectorAll('th[data-expo-sort]').forEach(function(h){
+      var arrow = h.querySelector('.uexpo-arrow');
+      if (!arrow) return;
+      var active = (h === th) && (state !== 'default');
+      var glyph  = state === 'asc' ? '↑' : state === 'desc' ? '↓' : '';
+      arrow.textContent = (h === th) ? glyph : '';
+      arrow.style.opacity = active ? '0.9' : '0';
+      h.classList.toggle('uexpo-sort-active', active);
+    });
+  };
+}
+</script>"""
+
+    return f"""
+    {_UEXPO_JS}
+    {view_toggle_js}
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposição — EVOLUTION</span>
+        <span class="card-sub">— NAV R$ {nav_fmt}M · look-through completo (MACRO + SIST + FRONTIER + CREDITO + EVO_STRAT)</span>
+        <div class="pa-view-toggle" style="margin-left:auto">
+          <button class="pa-tgl active" data-evo-view="strat"
+                  onclick="selectEvoExpoView(this,'strat')">Por Strategy</button>
+          <button class="pa-tgl" data-evo-view="factor"
+                  onclick="selectEvoExpoView(this,'factor')">Por Fator</button>
+        </div>
+      </div>
+
+      <div class="evo-expo-view" data-evo-view="strat">{strategy_table}</div>
+      <div class="evo-expo-view" data-evo-view="factor" style="display:none">{factor_table}</div>
+
+      <div class="bar-legend" style="margin-top:10px">
+        <b>Por Strategy</b>: Strategy → LIVRO → Instrumento (3 níveis, click ▶ para expandir).
+        VaR alocado proporcionalmente ao Δ do instrumento dentro do fator. DIA em bps via <code>REPORT_ALPHA_ATRIBUTION</code> (FUNDO='EVOLUTION').
+        <b>Por Fator</b>: taxonomia RF-* (idem MACRO) — fator × instrumento. Fonte: <code>LOTE_PRODUCT_EXPO</code>
+        (TRADING_DESK_SHARE_SOURCE = Evolution) + <code>LOTE_BOOK_STRESS_RPM</code> LEVEL=3.
+        <b>σ:</b> proxy via <code>STANDARD_DEVIATION_ASSETS</code> (BOOK='MACRO').
+      </div>
+    </section>"""
+
+
 def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
     """
     RF exposure snapshot for ALBATROZ — position-level from LOTE_PRODUCT_EXPO.
@@ -2618,6 +3160,198 @@ def fetch_evolution_single_names(date_str: str = DATA_STR) -> tuple:
     return _fetch_single_names_generic(
         date_str, desk=None, source="Galapagos Evolution FIC FIM CP"
     )
+
+
+# ── EVOLUTION Exposure (look-through, 3-level Strategy → LIVRO → Instr) ────
+_EVO_STRATEGY_ORDER = ["MACRO", "SIST", "FRONTIER", "CREDITO", "EVO_STRAT", "CAIXA", "OUTROS"]
+_EVO_STRATEGY_COLOR = {
+    "MACRO":     "#60a5fa",
+    "SIST":      "#a78bfa",
+    "FRONTIER":  "#34d399",
+    "CREDITO":   "#fbbf24",
+    "EVO_STRAT": "#fb923c",
+    "CAIXA":     "#64748b",
+    "OUTROS":    "#94a3b8",
+}
+
+def _load_evo_livros_map() -> dict[str, str]:
+    """Return {LIVRO: STRATEGY}. Cached at module scope on first call."""
+    global _EVO_LIVRO_TO_STRAT
+    try:
+        return _EVO_LIVRO_TO_STRAT  # type: ignore[name-defined]
+    except NameError:
+        pass
+    path = (Path(__file__).parent / ".claude" / "skills"
+            / "evolution-risk-concentration" / "assets" / "livros-map.json")
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    out: dict[str, str] = {}
+    for strat, livros in raw.items():
+        if strat.startswith("_"):
+            continue
+        key = "EVO_STRAT" if strat == "EVO_STRATEGY" else strat
+        for livro in livros:
+            out[livro] = key
+    _EVO_LIVRO_TO_STRAT = out  # type: ignore[name-defined]
+    return out
+
+# LIVROs that don't appear in the skill's livros-map.json — mapped here so
+# they roll up into the right strategy. Keeps the JSON canonical (extracted
+# from the skill) while still covering actual Evolution positions.
+_EVO_LIVRO_EXTRA_STRATEGY = {
+    "AÇÕES BR LONG":            "EVO_STRAT",
+    "RV BZ":                    "EVO_STRAT",
+    "Crédito":                  "CREDITO",
+    "GIS FI FUNDO IMOBILIÁRIO": "CREDITO",
+    "GIS CUSTOS E PROVISÕES":   "CAIXA",
+    "Caixa":                    "CAIXA",
+    "Caixa USD":                "CAIXA",
+    "Taxas e Custos":           "CAIXA",
+}
+
+def _evo_classify_livro(desk: str, book: str) -> str:
+    """Derive the EVOLUTION-level LIVRO from (TRADING_DESK, BOOK)."""
+    bu = (book or "").upper()
+    # Credit-flavored books (highest priority — before PM parse)
+    if "CRED" in bu or "FIDC" in bu:
+        return "Crédito"
+    if "FUNDO IMOBILI" in bu:
+        return "GIS FI FUNDO IMOBILIÁRIO"
+    if "CUSTOS E PROVIS" in bu:
+        return "GIS CUSTOS E PROVISÕES"
+    # Cash / structural buckets
+    if bu in ("CAIXA", "CAIXA BRL"):
+        return "Caixa"
+    if bu == "CAIXA USD":
+        return "Caixa USD"
+    if bu in ("", "MAIN", "DEFAULT", "TAXAS E CUSTOS"):
+        return "Taxas e Custos"
+    # Evolution direct equity (non-Frontier) — bucketed into EVO_STRAT
+    if book == "AÇÕES BR LONG":
+        return "AÇÕES BR LONG"
+    # FRONTIER sub-books
+    if book.startswith("FMN"):
+        return "FMN"
+    if book.startswith("FCO"):
+        return "FCO"
+    if book.startswith("FLO"):
+        return "FLO"
+    # MACRO PM prefix — works regardless of which desk the row came from.
+    pm = _parse_pm(book)
+    if pm in _PM_LIVRO:
+        return _PM_LIVRO[pm]
+    # Keep as-is (may match a LIVRO in livros-map.json directly — Giro_Master,
+    # LF_RV-BZ_SS, Bracco, SIST_*, etc.)
+    return book
+
+def _evo_classify_factor(book: str, primitive_class: str) -> str | None:
+    """Classify a position into the shared RF-* factor taxonomy used by MACRO
+       Exposure (so we can reuse `_build_expo_unified_table`).
+       Returns None for rows that should be excluded (Cash/Margin/Provisions)."""
+    # MACRO look-through rows have BOOK names like 'JD_RF-BZ_Direcional'
+    rf = _parse_rf(book)
+    if rf is not None:
+        return rf
+    # Otherwise infer from PRIMITIVE_CLASS
+    if primitive_class in _EXCL_PRIM:
+        return None
+    if primitive_class in ("BRL Rate Curve", "IPCA Coupon", "IPCA",
+                           "Brazil Sovereign Yield", "LFT Premium"):
+        return "RF-BZ"
+    if primitive_class == "BRD Rate Curve":
+        return "RF-DM"
+    if primitive_class == "FX":
+        return "FX-BRL"
+    if primitive_class in ("Equity", "Equity Receipts"):
+        return "RV-BZ"
+    if primitive_class == "Commodities":
+        return "COMMODITIES"
+    return None
+
+def fetch_evolution_exposure(date_str: str = DATA_STR) -> tuple:
+    """EVOLUTION full look-through exposure.
+       Returns (df, nav). df cols: TRADING_DESK, BOOK, PRODUCT, PRODUCT_CLASS,
+         PRIMITIVE_CLASS, delta, livro, strategy, factor, pct_nav, sigma.
+       Sources: LOTE_PRODUCT_EXPO (TRADING_DESK_SHARE_SOURCE = Evolution) +
+                STANDARD_DEVIATION_ASSETS (σ per instrument, BOOK='MACRO' as proxy).
+    """
+    nav = _latest_nav("Galapagos Evolution FIC FIM CP", date_str)
+    if nav is None:
+        return None, None
+    df = read_sql(f"""
+        SELECT "TRADING_DESK", "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT",
+               SUM("DELTA")    AS delta,
+               SUM("POSITION") AS position
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Evolution FIC FIM CP'
+          AND "VAL_DATE"                   = DATE '{date_str}'
+          AND "DELTA" <> 0
+        GROUP BY "TRADING_DESK", "BOOK", "PRODUCT_CLASS", "PRIMITIVE_CLASS", "PRODUCT"
+    """)
+    if df.empty:
+        return df, nav
+    for c in ("delta", "position"):
+        df[c] = df[c].astype(float).fillna(0.0)
+
+    livro_to_strat = {**_load_evo_livros_map(), **_EVO_LIVRO_EXTRA_STRATEGY}
+    df["livro"]    = df.apply(lambda r: _evo_classify_livro(r["TRADING_DESK"], r["BOOK"]), axis=1)
+    df["strategy"] = df["livro"].map(livro_to_strat).fillna("OUTROS")
+    df["factor"]   = df.apply(lambda r: _evo_classify_factor(r["BOOK"], r["PRIMITIVE_CLASS"]),
+                              axis=1)
+    # Drop excluded rows (Cash/Margin/Provisions) before computing pct_nav
+    df = df[df["factor"].notna()].copy()
+    df["pct_nav"] = df["delta"] * 100 / nav
+
+    # σ per instrument (same source as MACRO — proxy for Evolution positions)
+    sigma_df = read_sql(f"""
+        SELECT "INSTRUMENT" AS "PRODUCT", "STANDARD_DEVIATION" AS sigma
+        FROM q_models."STANDARD_DEVIATION_ASSETS"
+        WHERE "VAL_DATE" = DATE '{date_str}'
+          AND "BOOK"     = 'MACRO'
+    """)
+    if not sigma_df.empty:
+        df = df.merge(sigma_df, on="PRODUCT", how="left")
+    else:
+        df["sigma"] = float("nan")
+    return df, nav
+
+
+def fetch_evolution_var(date_str: str = DATA_STR) -> pd.DataFrame:
+    """EVOLUTION VaR per (factor=BOOK at LEVEL=3, PRODUCT, PRODUCT_CLASS).
+       Same shape as MACRO's var_df — column name `rf` used by _build_expo_unified_table
+       after rename. Returns df with BOOK, PRODUCT, PRODUCT_CLASS, var_brl, var_pct.
+    """
+    nav = _latest_nav("Galapagos Evolution FIC FIM CP", date_str) or 1.0
+    df = read_sql(f"""
+        SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS",
+               SUM("PARAMETRIC_VAR") AS var_brl
+        FROM "LOTE45"."LOTE_BOOK_STRESS_RPM"
+        WHERE "TRADING_DESK" = 'Galapagos Evolution FIC FIM CP'
+          AND "VAL_DATE"     = DATE '{date_str}'
+          AND "LEVEL"        = 3
+          AND "BOOK" IN ('RF-BZ','RF-DM','RF-EM','FX-BRL','FX-DM','FX-EM',
+                         'RV-BZ','RV-DM','RV-EM','COMMODITIES','P-Metals')
+        GROUP BY "BOOK", "PRODUCT", "PRODUCT_CLASS"
+    """)
+    if df.empty:
+        df["var_pct"] = []
+        return df
+    df["var_brl"] = df["var_brl"].astype(float).fillna(0.0)
+    df["var_pct"] = df["var_brl"] * -10000 / nav
+    df.rename(columns={"BOOK": "rf"}, inplace=True)
+    return df
+
+
+def fetch_evolution_pnl_products(date_str: str) -> pd.DataFrame:
+    """Daily PnL per (LIVRO, PRODUCT) for FUNDO='EVOLUTION', in bps of NAV."""
+    return read_sql(f"""
+        SELECT "LIVRO", "PRODUCT", SUM("DIA") * 10000 AS dia_bps
+        FROM q_models."REPORT_ALPHA_ATRIBUTION"
+        WHERE "FUNDO" = 'EVOLUTION'
+          AND "DATE"  = DATE '{date_str}'
+        GROUP BY "LIVRO", "PRODUCT"
+    """)
+
 
 def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: float,
                            df_expo_d1: pd.DataFrame = None, df_var_d1: pd.DataFrame = None,
@@ -3461,6 +4195,177 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
         Barra: <span style="color:var(--accent-2)">azul</span> = budget disponível · <span style="color:var(--up)">verde</span> = ganho MTD · <span style="color:var(--down)">vermelho</span> = consumo · Budget (bps) = base 63 + carrego
       </div>
     </section>"""
+
+
+# ── MACRO · PM Budget vs VaR (parametric + historic) ────────────────────────
+#
+# Compara, para cada PM do Macro:
+#   · Budget mensal base (63 bps, o mesmo valor que inicia todo mês — sem carry)
+#   · VaR paramétrico 1d do book (proporcional ao Δ do PM dentro do fator, em bps)
+#   · VaR histórico 1d 95% para janelas 21d / 63d / 252d
+#        VaR_hist_N = -quantile(pnl_diario_bps[-N:], 5%)
+#   · Pior dia observado nos últimos 252d
+#
+# Objetivo: visualizar a calibração do budget contra múltiplas estimativas
+# de risco do próprio PM. Se o VaR for maior que o budget, 1 dia ruim já
+# esgota o orçamento do mês — sinal de miscalibração.
+
+def fetch_macro_pm_book_var(date_str: str = DATA_STR) -> dict[str, float]:
+    """Book-report VaR por PM do MACRO — **não diversificado entre books**.
+       Fonte: LOTE_FUND_STRESS_RPM (TRADING_DESK=Macro FIM, TREE=Main_Macro_Ativos,
+       LEVEL=10). Cada BOOK é uma folha tipo CI_RF-BZ_Direcional, JD_COMMODITIES_*, etc.
+       Soma-se |PARAMETRIC_VAR| por prefixo de PM → magnitude de perda em bps de NAV.
+       Usa |·| por book para preservar o caráter conservador "não diversificado"
+       (não permite hedge natural entre books do mesmo PM)."""
+    nav = _latest_nav("Galapagos Macro FIM", date_str) or 1.0
+    df = read_sql(f"""
+        SELECT "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
+        FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
+        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+          AND "VAL_DATE"     = DATE '{date_str}'
+          AND "TREE"         = 'Main_Macro_Ativos'
+          AND "LEVEL"        = 10
+        GROUP BY "BOOK"
+    """)
+    if df.empty:
+        return {}
+    out: dict[str, float] = {}
+    for pm in ("CI", "LF", "JD", "RJ"):
+        mask = df["BOOK"].str.startswith(f"{pm}_") | (df["BOOK"] == pm)
+        # Sum SIGNED PARAMETRIC_VAR across the PM's books — within-PM offsets are
+        # preserved (a long bond book + short DI hedge book partially cancel).
+        # Magnitude afterwards converts to positive "loss in bps of NAV".
+        # This is diversified WITHIN the PM's books but NOT across PMs (we never
+        # mix books of different PMs).
+        var_brl_signed_sum = float(df.loc[mask, "var_brl"].sum())
+        out[pm] = float(abs(var_brl_signed_sum) * 10000 / nav) if nav else 0.0
+    return out
+
+
+def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
+                                    pm_hs_var: dict[str, dict],
+                                    pm_margem: dict[str, float]) -> str:
+    """Card: tabela PM × {Margem atual, VaR book-report, VaR paramétrico HS 21/63/252, pior dia}.
+       Thresholds de cor (por linha) relativos à Margem atual de cada PM:
+         · val ≥ 2σ (= Margem × 2/1.645)   → vermelho
+         · val ≥ Margem (= 1 VaR)          → laranja
+         · val ≥ 1σ (= Margem / 1.645)     → amarelo
+    """
+    pm_order = ["CI", "LF", "JD", "RJ"]
+    pm_label = {"CI": "CI (Comitê)", "LF": "Luiz Felipe",
+                "JD": "Joca Dib", "RJ": "Rodrigo Jafet"}
+
+    pm_param_var = pm_book_var or {}
+    pm_margem    = pm_margem or {}
+    pm_hs_var    = pm_hs_var or {}
+
+    def _bps(v, decimals=1):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        return f'<td class="mono" style="text-align:right">{v:,.{decimals}f}</td>'
+
+    def _var_cell(v, ref):
+        """Cell colored by vol-multiples of the PM's current Margem (ref).
+           ref = Margem atual do PM (interpreted as 1 VaR = 1.645σ).
+        """
+        if v is None or (isinstance(v, float) and pd.isna(v)) or ref is None or ref <= 0:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        sigma = ref / 1.645
+        two_s = 2 * sigma
+        if   v >= two_s: col = "var(--down)"    # > 2σ
+        elif v >= ref:   col = "#fb923c"        # > Margem (1 VaR)
+        elif v >= sigma: col = "var(--warn)"    # > 1σ
+        else:            col = "var(--text)"
+        return f'<td class="mono" style="text-align:right;color:{col}">{v:,.1f}</td>'
+
+    def _ratio_cell(v, ref):
+        """Dias até esgotar a Margem atual ao pace do maior VaR."""
+        if v is None or (isinstance(v, float) and pd.isna(v)) or v <= 0 or ref is None or ref <= 0:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        days = ref / v
+        if   days < 1:   col = "var(--down)"
+        elif days < 2:   col = "#fca5a5"
+        elif days < 4:   col = "var(--warn)"
+        else:            col = "var(--up)"
+        return f'<td class="mono" style="text-align:right;color:{col}">{days:,.1f}d</td>'
+
+    rows = ""
+    for pm in pm_order:
+        if pm not in pm_param_var and pm not in pm_hs_var:
+            continue
+        margem  = pm_margem.get(pm)
+        v_param = pm_param_var.get(pm)
+        h = pm_hs_var.get(pm, {})
+        v_21, v_63, v_252 = h.get("v21"), h.get("v63"), h.get("v252")
+        worst  = h.get("worst")
+        n_obs  = h.get("n", 0)
+        # Max estimate — conservative risk pacer for "days to exhaust"
+        _vals = [x for x in (v_param, v_21, v_63, v_252) if x is not None and not pd.isna(x)]
+        v_max = max(_vals) if _vals else None
+        # Margem cell color — standalone styling (just blue accent like stop monitor)
+        marg_s = f'{margem:,.0f}' if margem is not None else '—'
+        marg_html = f'<td class="mono" style="text-align:right;color:var(--accent-2);font-weight:700">{marg_s}</td>'
+        rows += (
+            f'<tr>'
+            f'<td style="padding:5px 6px"><b>{pm}</b> '
+            f'<span style="color:var(--muted);font-size:11px">· {pm_label[pm]}</span></td>'
+            + marg_html
+            + _var_cell(v_param, margem)
+            + _var_cell(v_21,    margem)
+            + _var_cell(v_63,    margem)
+            + _var_cell(v_252,   margem)
+            + _var_cell(worst,   margem)
+            + _ratio_cell(v_max, margem)
+            + f'<td class="mono" style="text-align:right;color:var(--muted);font-size:11px">{n_obs}</td>'
+            + '</tr>'
+        )
+
+    if not rows:
+        return ""
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Budget vs VaR por PM — MACRO</span>
+        <span class="card-sub">Margem atual × VaR paramétrico (Lote) × VaR hist 1d 95% (σ × 1.645)
+        sobre posição atual × 21d/63d/252d · cor: múltiplos de vol vs Margem de cada PM</span>
+      </div>
+
+      <table class="summary-table">
+        <thead>
+          <tr>
+            <th style="text-align:left">PM</th>
+            <th style="text-align:right">Margem atual</th>
+            <th style="text-align:right">VaR paramétrico</th>
+            <th style="text-align:right">VaR hist 21d</th>
+            <th style="text-align:right">VaR hist 63d</th>
+            <th style="text-align:right">VaR hist 252d</th>
+            <th style="text-align:right">Worst day pos.</th>
+            <th style="text-align:right">Dias p/ esgotar</th>
+            <th style="text-align:right">obs</th>
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+
+      <div class="bar-legend" style="margin-top:10px">
+        <b>Margem atual</b>: orçamento remanescente do PM no mês (base + carry − PnL MTD) — mesmo valor do Risk Budget Monitor.
+        <b>VaR paramétrico</b>: valor da tabela Lote (<code>LOTE_FUND_STRESS_RPM</code> PARAMETRIC_VAR, TREE
+        <code>Main_Macro_Ativos</code>, LEVEL=10) somado signed across os books do PM, magnitude final.
+        Diversificado entre books do mesmo PM (hedges internos se cancelam) mas não diversificado entre PMs distintos.
+        <b>VaR hist 21/63/252d</b>: <code>1.645 × σ</code> dos retornos da <b>posição atual</b> aplicada a
+        21/63/252d de retornos históricos dos fatores (fonte: <code>PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code>, mesma
+        engine da Distribuição 252d).
+        <b>Worst day posição</b>: pior dia simulado na janela 252d (posição atual × piores fatores históricos).
+        <b>Dias p/ esgotar</b>: Margem atual ÷ maior das 4 estimativas de VaR.
+        <b>Cores por linha</b>: referência = Margem atual do PM (1 VaR = 1.645σ). <br>
+        <span style="color:var(--text)">&lt; 1σ</span> ·
+        <span style="color:var(--warn)">≥ 1σ</span> ·
+        <span style="color:#fb923c">≥ VaR (Margem)</span> ·
+        <span style="color:var(--down)">≥ 2σ</span>.
+      </div>
+    </section>"""
+
 
 # ── Alert commentary ─────────────────────────────────────────────────────────
 ALERT_COMMENTS = {
@@ -5458,7 +6363,7 @@ def _evo_render_camada2(d: dict) -> str:
     </section>"""
 
 
-def _evo_render_camada3(c3: dict) -> str:
+def _evo_render_camada3(c3: dict, c1_rows: list | None = None) -> str:
     if c3["corr_63d"] is None or not c3["pairs"]:
         return """
         <section class="card">
@@ -5467,6 +6372,14 @@ def _evo_render_camada3(c3: dict) -> str:
             <span class="card-sub">dados insuficientes de PnL por LIVRO</span>
           </div>
         </section>"""
+
+    # Significance filter: a pair only counts as "aligned" when BOTH strategies
+    # are simultaneously ≥ P70 in Camada 1 *and* the pair's 63d correlation is
+    # ≥ P85. This filters out high correlation between strategies that happen
+    # to be small/idle (where correlation is mathematically unstable and
+    # economically meaningless).
+    c1_pct = {r["strat"]: r["pct"] for r in (c1_rows or [])
+              if r.get("pct") is not None and not pd.isna(r.get("pct"))}
 
     corr = c3["corr_63d"]
     cols = list(corr.columns)
@@ -5516,16 +6429,40 @@ def _evo_render_camada3(c3: dict) -> str:
             f"</tr>"
         )
 
-    flagged = [p for p in c3["pairs"]
-               if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
+    # Raw flagged = any pair with c63_pct ≥ 85
+    # Significant flagged = raw AND both strategies ≥ P70 in Camada 1
+    flagged_raw = [p for p in c3["pairs"]
+                   if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
+    def _both_loaded(p):
+        pa, pb = c1_pct.get(p["a"]), c1_pct.get(p["b"])
+        return (pa is not None and pa >= 70 and pb is not None and pb >= 70)
+    flagged_sig = [p for p in flagged_raw if _both_loaded(p)]
+    flagged_quiet = [p for p in flagged_raw if not _both_loaded(p)]
+
+    def _pair_str_with_c1(p):
+        pa, pb = c1_pct.get(p["a"]), c1_pct.get(p["b"])
+        sa = f"P{pa:.0f}" if pa is not None else "—"
+        sb = f"P{pb:.0f}" if pb is not None else "—"
+        return f"{p['a']}×{p['b']} (corr P{p['c63_pct']:.0f} · {p['a']} C1 {sa}, {p['b']} C1 {sb})"
+
     alert = ""
-    if flagged:
-        names = ", ".join(f"{p['a']}×{p['b']} (P{p['c63_pct']:.0f})"
-                          for p in flagged)
-        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
-                 f"background:rgba(255,90,106,0.12);border-left:3px solid var(--down);"
-                 f"border-radius:4px;font-size:13px;color:var(--text)'>"
-                 f"⚠️ Pares em alinhamento atípico (P ≥ 85): {names}</div>")
+    if flagged_sig:
+        names = ", ".join(_pair_str_with_c1(p) for p in flagged_sig)
+        alert += (f"<div style='margin-top:10px;padding:8px 12px;"
+                  f"background:rgba(255,90,106,0.12);border-left:3px solid var(--down);"
+                  f"border-radius:4px;font-size:13px;color:var(--text)'>"
+                  f"🚨 Alinhamento relevante (corr ≥ P85 · ambas estratégias C1 ≥ P70): {names}</div>")
+    if flagged_quiet:
+        names = ", ".join(_pair_str_with_c1(p) for p in flagged_quiet)
+        alert += (f"<div style='margin-top:8px;padding:8px 12px;"
+                  f"background:rgba(184,135,0,0.10);border-left:3px solid var(--warn);"
+                  f"border-radius:4px;font-size:13px;color:var(--muted)'>"
+                  f"🟡 Correlação alta mas estratégia(s) abaixo de C1 P70 (sinal desconsiderado): {names}</div>")
+    if not flagged_raw:
+        alert = ("<div style='margin-top:10px;padding:8px 12px;"
+                 "background:rgba(74,222,128,0.08);border-left:3px solid var(--up);"
+                 "border-radius:4px;font-size:13px;color:var(--muted)'>"
+                 "✓ Nenhum par em alinhamento atípico (corr 63d &lt; P85).</div>")
 
     return f"""
     <section class="card">
@@ -5564,27 +6501,214 @@ def _evo_render_camada3(c3: dict) -> str:
       <div class="bar-legend" style="margin-top:16px">
         correlação positiva entre direcionais reduz diversificação ·
         P &gt; 85 = alinhamento atípico ·
-        21d sensível · 63d baseline
+        21d sensível · 63d baseline ·
+        <b>filtro de significância</b>: par só conta como alinhamento relevante se <u>ambas</u>
+        estratégias estão ≥ P70 na Camada 1 (caso contrário a correlação alta pode ser
+        artefato de uma estratégia ociosa)
       </div>
     </section>"""
 
 
-def build_evolution_diversification_section(date_str: str) -> str:
-    """Retorna o fragmento HTML com as 3 camadas do Evolution Risk Concentration.
-       Tema dark nativo do relatório. Só deve ser chamado para EVOLUTION."""
+def _evo_render_camada_direcional(c_dir: dict) -> str:
+    """Render da Camada Direcional — DELTA_SIST × DELTA_DISC por CATEGORIA.
+       Mostra tabela com sinal de cada perna + badge do estado."""
+    rows = c_dir.get("rows", [])
+    if not rows:
+        return ""
+
+    state_badge = {
+        "same-sign":  ("🟥 mesmo sinal",    "var(--down)"),
+        "opposite":   ("🟩 sinais opostos", "var(--up)"),
+        "only-sist":  ("⚪ só sistemático", "var(--muted)"),
+        "only-disc":  ("⚪ só discricion.", "var(--muted)"),
+        "dust":       ("— irrelevante",     "var(--line-2)"),
+    }
+
+    def _cell_bps(v, material=True):
+        if abs(v) < 0.1:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        col = "var(--up)" if v >= 0 else "var(--down)"
+        sign = "+" if v >= 0 else ""
+        opacity = "" if material else "opacity:0.6;"
+        return f'<td class="mono" style="text-align:right;color:{col};{opacity}">{sign}{v:.0f}</td>'
+
+    def _cell_pct(v, material=True):
+        vp = v * 100  # fraction → %
+        col = "var(--up)" if vp >= 0 else "var(--down)"
+        sign = "+" if vp >= 0 else ""
+        weight = "font-weight:700;" if material else ""
+        return f'<td class="mono" style="text-align:right;color:{col};{weight}">{sign}{vp:.1f}%</td>'
+
+    body = ""
+    for r in rows:
+        label, color = state_badge.get(r["state"], ("—", "var(--muted)"))
+        dim = "" if r["material"] else " (abaixo de 1% PL)"
+        cat_style = "color:var(--text)" if r["material"] else "color:var(--muted)"
+        body += (
+            f'<tr>'
+            f'<td style="{cat_style};padding:5px 4px"><b>{r["categoria"]}</b> '
+            f'<span style="color:var(--muted);font-size:11px">· {r["tipo"]}{dim}</span></td>'
+            + _cell_bps(r["sist_bps"], r["material"])
+            + _cell_bps(r["disc_bps"], r["material"])
+            + _cell_pct(r["pct_pl"],  r["material"])
+            + f'<td style="text-align:center;padding:5px 4px;color:{color};font-size:12px">{label}</td>'
+            + '</tr>'
+        )
+
+    same_cnt = c_dir.get("same_sign_count", 0)
+    same_cats = c_dir.get("same_sign_categorias", [])
+    th = c_dir.get("thresholds", {})
+
+    if same_cnt >= 3:
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:rgba(255,90,106,0.12);border-left:3px solid var(--down);"
+                 f"border-radius:4px;font-size:13px;color:var(--text)'>"
+                 f"🚨 <b>{same_cnt} categorias</b> com sistemática e discricionária "
+                 f"alinhadas no mesmo sinal: {', '.join(same_cats)}</div>")
+    elif same_cnt >= 1:
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:rgba(184,135,0,0.10);border-left:3px solid var(--warn);"
+                 f"border-radius:4px;font-size:13px;color:var(--text)'>"
+                 f"🟡 {same_cnt} categoria(s) com mesmo sinal: {', '.join(same_cats)} "
+                 f"(abaixo do gatilho de ≥3 da Camada 4)</div>")
+    else:
+        alert = ("<div style='margin-top:10px;padding:8px 12px;"
+                 "background:rgba(74,222,128,0.08);border-left:3px solid var(--up);"
+                 "border-radius:4px;font-size:13px;color:var(--muted)'>"
+                 "✓ Nenhuma categoria com sistemática e discricionária no mesmo sinal.</div>")
+
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Matriz Direcional — SIST × DISC por categoria</span>
+        <span class="card-sub">DELTA_SIST × DELTA_DISC · fonte <code>RISK_DIRECTION_REPORT</code> ·
+        filtros: cada perna ≥ {th.get('min_leg_bps', 5):.0f} bps, categoria ≥ {th.get('min_cat_pct', 1):.0f}% PL</span>
+      </div>
+
+      <table class="summary-table">
+        <thead><tr>
+          <th style="text-align:left">Categoria</th>
+          <th style="text-align:right">Sist (bps)</th>
+          <th style="text-align:right">Disc (bps)</th>
+          <th style="text-align:right">% PL</th>
+          <th style="text-align:center">Estado</th>
+        </tr></thead>
+        <tbody>{body}</tbody>
+      </table>
+
+      {alert}
+
+      <div class="bar-legend" style="margin-top:14px">
+        a <b>smoking gun</b> do alinhamento: se sistemática e discricionária estão long/short
+        na mesma classe de ativo, a descorrelação esperada entre as duas metades do fundo desaparece.
+        ≥3 categorias com mesmo sinal → condição 5 da Camada 4 (bull market alignment).
+        "Sinais opostos" (🟩) é o estado saudável — as duas metades se hedgeiam.
+      </div>
+    </section>"""
+
+
+def _evo_render_camada4_alert(c4: dict) -> str:
+    """Caixa de alerta Camada 4 — exibida no TOPO do tab Diversificação do Evolution.
+       Mostra quantas condições acenderam e detalhe de cada uma."""
+    if not c4:
+        return ""
+    n_lit = c4.get("n_lit", 0)
+    alert_fired = c4.get("alert", False)
+    buckets = c4.get("buckets_pct", {})
+
+    # Bucket summary bar
+    bucket_html = " · ".join(
+        f'<b>{k}</b> P{v:.0f}' for k, v in buckets.items()
+    )
+
+    cond_rows = ""
+    for c in c4.get("conditions", []):
+        mark  = "🔴" if c["lit"] else "⚪"
+        label = f"<b>{c['name']}</b>"
+        if c["id"] == 1 and c["detail"]:
+            det = ", ".join(f"{k} P{v:.0f}" for k, v in c["detail"].items())
+            det_html = f" · {det}" if det else ""
+        elif c["id"] == 2 and c["detail"]:
+            det = ", ".join(f"{k} P{v:.0f}" for k, v in c["detail"].items())
+            det_html = f" · {det}" if det else ""
+        elif c["id"] == 3 and c["detail"] is not None and not pd.isna(c["detail"]):
+            det_html = f" · ratio em P{c['detail']:.0f}"
+        elif c["id"] == 4 and c["detail"]:
+            det = ", ".join(f"{p['a']}×{p['b']} P{p['c63_pct']:.0f}" for p in c["detail"])
+            det_html = f" · {det}"
+        elif c["id"] == 5 and c["detail"]:
+            det_html = f" · {', '.join(c['detail'])}"
+        else:
+            det_html = ""
+        cond_rows += (
+            f'<li style="margin:4px 0;color:'
+            f'{"var(--text)" if c["lit"] else "var(--muted)"}">{mark} {label}{det_html}</li>'
+        )
+
+    if alert_fired:
+        title = "🚨 BULL MARKET ALIGNMENT — alerta disparado"
+        subtitle = f"{n_lit} de 5 condições acesas (gatilho ≥ 3)"
+        bg = "rgba(255,90,106,0.14)"; border = "var(--down)"
+    elif n_lit >= 1:
+        title = "🟡 Alinhamento parcial"
+        subtitle = f"{n_lit} de 5 condições acesas (gatilho em 3)"
+        bg = "rgba(184,135,0,0.10)"; border = "var(--warn)"
+    else:
+        title = "✓ Sem sinais de bull market alignment"
+        subtitle = "0 de 5 condições acesas"
+        bg = "rgba(74,222,128,0.06)"; border = "var(--up)"
+
+    return f"""
+    <section class="card" style="background:{bg};border-left:4px solid {border}">
+      <div class="card-head">
+        <span class="card-title">Camada 4 — {title}</span>
+        <span class="card-sub">{subtitle}</span>
+      </div>
+      <div style="padding:4px 8px 8px;font-size:12px;color:var(--muted)">
+        <b>Buckets direcionais:</b> {bucket_html or '—'}
+      </div>
+      <ul style="margin:0;padding:8px 24px 14px;font-size:13px;line-height:1.7;list-style:none">
+        {cond_rows}
+      </ul>
+      <div class="bar-legend" style="margin-top:4px;padding:0 14px 12px">
+        "Bull market alignment" = cenário onde as estratégias do Evolution ficam direcionais
+        na mesma direção, a diversificação esperada desaparece, e o risco efetivo do fundo
+        fica maior que o VaR linear sugere. Buckets unidos: FRONTIER+EVO_STRAT (pacote tático).
+      </div>
+    </section>"""
+
+
+def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
+    """Retorna (fragmento HTML, c4_state).
+       c4_state é usado pelo Summary pra headline quando o alerta acende."""
     try:
         d       = _evo_build_ratio_series(date_str)
         c1_rows = _evo_compute_camada1(d["strat_pivot"], d["effective_date"])
         c3      = _evo_compute_camada3(date_str, d["effective_date"])
+        # Matriz direcional (nova)
+        try:
+            df_dir = _evo_fetch_direction_report(date_str)
+            c_dir  = _evo_compute_camada_direcional(df_dir, d["nav"])
+        except Exception as ee:
+            print(f"  [Evolution] direction report fetch failed: {ee}")
+            c_dir = {"rows": [], "same_sign_count": 0, "same_sign_categorias": [],
+                     "thresholds": {"min_leg_bps": 5, "min_cat_pct": 1}}
+        # Camada 4 (agregada)
+        c4 = _evo_compute_camada4(c1_rows, d, c3, c_dir,
+                                  d["strat_pivot"], d["effective_date"])
     except Exception as e:
-        return (f"<section class='card'><div class='card-head'>"
-                f"<span class='card-title'>Diversificação</span></div>"
-                f"<div style='color:var(--muted);padding:12px'>"
-                f"Sem dados para {date_str}: {e}</div></section>")
+        err_html = (f"<section class='card'><div class='card-head'>"
+                    f"<span class='card-title'>Diversificação</span></div>"
+                    f"<div style='color:var(--muted);padding:12px'>"
+                    f"Sem dados para {date_str}: {e}</div></section>")
+        return err_html, {}
 
-    return (_evo_render_camada2(d)
+    html = (_evo_render_camada4_alert(c4)
+            + _evo_render_camada2(d)
             + _evo_render_camada1(c1_rows)
-            + _evo_render_camada3(c3))
+            + _evo_render_camada3(c3, c1_rows)
+            + _evo_render_camada_direcional(c_dir))
+    return html, c4
 
 
 REPORTS = [
@@ -5722,6 +6846,12 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
             if not ok:
                 return dict(status="missing", date="—", detail="Exposição QUANT não disponível")
             return dict(status="ok", date=DATA_STR_, detail=f"{rows} posições")
+        if short == "EVOLUTION":
+            ok = manifest.get("evo_expo_ok", False)
+            rows = manifest.get("evo_expo_rows", 0)
+            if not ok:
+                return dict(status="missing", date="—", detail="Exposição EVOLUTION não disponível")
+            return dict(status="ok", date=DATA_STR_, detail=f"{rows} posições")
         ok = manifest.get("expo_ok", False)
         rows = manifest.get("expo_rows", 0)
         stale = expo_date != DATA_STR_
@@ -5768,7 +6898,7 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
     _SRC_DEFS = [
         ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _pa_item),
         ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _var_item),
-        ("Exposição",         ["MACRO","QUANT","ALBATROZ"],                       _expo_item),
+        ("Exposição",         ["MACRO","QUANT","EVOLUTION","ALBATROZ"],           _expo_item),
         ("Single-Name",       ["QUANT","EVOLUTION"],                              _sn_item),
         ("Distribuição 252d", ["MACRO","EVOLUTION"],                              _dist_item),
         ("Stop / Budget",     ["MACRO","ALBATROZ"],                               _stop_item),
@@ -6719,16 +7849,22 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                df_quant_expo=None, quant_expo_nav=None,
                df_quant_expo_d1=None,
                df_quant_var=None, df_quant_var_d1=None,
+               df_evo_expo=None, evo_expo_nav=None,
+               df_evo_expo_d1=None,
+               df_evo_var=None, df_evo_var_d1=None,
+               df_evo_pnl_prod=None,
                rf_expo_maps=None,
                df_frontier=None, frontier_bvar=None,
                df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
                position_changes=None,
                dist_map=None, dist_map_prev=None, dist_actuals=None,
                vol_regime_map=None,
+               pm_book_var=None,
                expo_date_label=None, data_manifest=None) -> str:
     alerts = []
     td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
     sections = []  # list of (fund_short, report_id, html)
+    evolution_c4_state = {}  # Camada 4 state — populated when EVOLUTION diversificação renders
 
     def util_color(u):
         return "var(--up)" if u < 70 else "var(--warn)" if u < 100 else "var(--down)"
@@ -6838,14 +7974,17 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         # Diversificação — só para EVOLUTION, imediatamente após Risk Monitor
         if short == "EVOLUTION":
             try:
-                div_html = build_evolution_diversification_section(DATA_STR)
+                div_html, _c4_state = build_evolution_diversification_section(DATA_STR)
                 sections.append(("EVOLUTION", "diversification", div_html))
+                # stash C4 state on the local closure for Summary to pick up
+                evolution_c4_state = _c4_state
             except Exception as _e:
                 sections.append(("EVOLUTION", "diversification",
                     f"<section class='card'><div class='card-head'>"
                     f"<span class='card-title'>Diversificação</span></div>"
                     f"<div style='color:var(--muted);padding:12px'>"
                     f"Falha ao montar: {_e}</div></section>"))
+                evolution_c4_state = {}
 
     # Build alerts section
     # ── PA contribution alerts — filter by |dia_bps|, sorted by contribution ──
@@ -6979,9 +8118,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         </div>"""
 
     # MACRO-specific sections
+    # Risk Budget tab = stop monitor (PnL × carry) + Budget vs VaR card combined
+    # into a single section wrapper (avoids duplicate DOM ids for the same tab).
     if stop_hist and df_today is not None:
-        sections.append(("MACRO", "stop-monitor",
-                         build_stop_section(stop_hist, df_today)))
+        _stop_html = build_stop_section(stop_hist, df_today)
+        _bvv_html  = ""
+        # Derive hybrid HS-based VaR per PM from today's dist_map (same source as
+        # Distribuição 252d card: PORTIFOLIO_DAILY_HISTORICAL_SIMULATION).
+        _pm_hs_var = compute_pm_hs_var(dist_map) if dist_map else {}
+        if _pm_hs_var or pm_book_var:
+            _bvv_html = build_pm_budget_vs_var_section(
+                pm_book_var or {}, _pm_hs_var, pm_margem or {}
+            ) or ""
+        sections.append(("MACRO", "stop-monitor", _stop_html + _bvv_html))
     if df_expo is not None:
         _expo_html = build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem)
         if expo_date_label:
@@ -7068,6 +8217,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         )
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
+
+    # EVOLUTION — exposure card (Strategy → LIVRO → Instrumento + Por Fator)
+    if df_evo_expo is not None and not df_evo_expo.empty and evo_expo_nav:
+        e_expo_html = build_evolution_exposure_section(
+            df_evo_expo, evo_expo_nav,
+            df_d1=df_evo_expo_d1,
+            df_var=df_evo_var,
+            df_var_d1=df_evo_var_d1,
+            df_pnl_prod=df_evo_pnl_prod,
+        )
+        if e_expo_html:
+            sections.append(("EVOLUTION", "exposure", e_expo_html))
 
     # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz, MACRO, EVOLUTION)
     # MACRO/EVOLUTION use bench_dur=0 ("—" label) since they have no fixed-duration mandate.
@@ -8344,8 +9505,35 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         ibov=ibov, cdi=cdi,
     )
 
+    # Camada 4 — headline no topo do Summary quando o alerta do Evolution está aceso
+    # ou parcialmente aceso (≥1 condição). Link direto pro tab "Diversificação" do EVOLUTION.
+    evo_c4_headline_html = ""
+    if evolution_c4_state:
+        n_lit = evolution_c4_state.get("n_lit", 0)
+        alert_on = evolution_c4_state.get("alert", False)
+        if n_lit >= 1:
+            if alert_on:
+                bg = "rgba(255,90,106,0.14)"; border = "var(--down)"
+                icon = "🚨"; title = "EVOLUTION · Bull Market Alignment — alerta disparado"
+            else:
+                bg = "rgba(184,135,0,0.10)"; border = "var(--warn)"
+                icon = "🟡"; title = "EVOLUTION · Alinhamento parcial de estratégias"
+            lit_names = ", ".join(c["name"] for c in evolution_c4_state.get("conditions", []) if c["lit"])
+            evo_c4_headline_html = f"""
+    <section class="card" style="background:{bg};border-left:4px solid {border};margin-bottom:14px">
+      <div style="padding:10px 16px;font-size:13px;color:var(--text)">
+        <div style="font-weight:700;margin-bottom:4px">{icon} {title}</div>
+        <div style="color:var(--muted);font-size:12px">
+          {n_lit} de 5 condições acesas{' (gatilho ≥3)' if not alert_on else ''} · {lit_names}
+          · <a href="#" onclick="if(typeof selectFund==='function'){{selectFund('EVOLUTION');setTimeout(function(){{var el=document.querySelector('[data-fund=\\'EVOLUTION\\'][data-report=\\'diversification\\']');if(el)el.scrollIntoView({{behavior:'smooth'}});}},100);}}return false;"
+               style="color:var(--accent-blue);text-decoration:underline">ver detalhe →</a>
+        </div>
+      </div>
+    </section>"""
+
     summary_html = f"""
     <div class="section-wrap" data-view="summary">
+      {evo_c4_headline_html}
       {briefing_html}
       {fund_grid_html}
       {house_html}
@@ -8404,6 +9592,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8"/>
+<meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Risk Monitor — {DATA_STR}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -8644,6 +9834,33 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   /* Main */
   main {{ max-width:1280px; margin:0 auto; padding:18px 22px 40px; }}
   .section-wrap {{ display:block; }}
+
+  /* ── Mobile responsive — viewport ≤ 768px ────────────────────────────── */
+  @media (max-width: 768px) {{
+    main {{ padding: 12px 10px 28px; }}
+    .card {{ padding: 10px 12px; }}
+    /* Wide tables: horizontal scroll instead of page overflow */
+    .card table, .summary-table {{
+      display: block; overflow-x: auto; white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }}
+    .card-head {{ flex-wrap: wrap; gap: 6px; }}
+    .card-title {{ font-size: 14px; }}
+    .card-sub {{ font-size: 11px; }}
+    /* Chip bars wrap to multiple lines */
+    .fund-nav-chips, .mode-switcher, .sub-tabs {{ flex-wrap: wrap; }}
+    /* Smaller monospace for dense tables */
+    .mono {{ font-size: 11px; }}
+    /* Hide decorative elements in header */
+    header .brand p {{ display: none; }}
+    header h1 {{ font-size: 14px; }}
+  }}
+  @media (max-width: 480px) {{
+    main {{ padding: 8px 6px 24px; }}
+    .card {{ padding: 8px 8px; border-radius: 6px; }}
+    .card-title {{ font-size: 13px; }}
+    .mono {{ font-size: 10px; }}
+  }}
   .empty-view {{ padding:28px; text-align:center; color:var(--muted); font-size:12px; }}
   #empty-state {{
     padding:40px 16px; text-align:center; color:var(--muted); font-size:13px;
@@ -9978,6 +11195,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 </script>
 </head>
 <body>
+<noscript>
+  <div style="background:#7c2d12;color:#fca5a5;border-bottom:1px solid #a16207;
+              padding:10px 16px;font:13px/1.5 system-ui,sans-serif">
+    <b>⚠ JavaScript desativado</b> — a navegação por abas e os toggles de cada card
+    não vão funcionar. Se baixou este arquivo de um email no Windows e está vendo isto,
+    provavelmente o sistema bloqueou os scripts por segurança. Para desbloquear:
+    <b>clique com o botão direito no arquivo → Propriedades → marque "Desbloquear" → OK</b>,
+    e abra de novo. Alternativamente, abra o arquivo no Chrome ou Edge.
+    Todo o conteúdo abaixo continua legível como um relatório linear, mas as abas
+    ficam todas expandidas.
+  </div>
+</noscript>
 <header>
   <div class="hwrap">
     <div class="brand">
@@ -10037,7 +11266,8 @@ if __name__ == "__main__":
         fut_risk_raw   = ex.submit(fetch_risk_history_raw)
         fut_risk_idka  = ex.submit(fetch_risk_history_idka)
         fut_aum        = ex.submit(fetch_aum_history)
-        fut_pm_pnl     = ex.submit(fetch_pm_pnl_history)
+        fut_pm_pnl       = ex.submit(fetch_pm_pnl_history)
+        fut_pm_book_var  = ex.submit(fetch_macro_pm_book_var,  DATA_STR)
         fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
         fut_expo_d1    = ex.submit(fetch_macro_exposure, d1_str)
         fut_expo_d2    = ex.submit(fetch_macro_exposure, d2_str)
@@ -10068,6 +11298,11 @@ if __name__ == "__main__":
         fut_quant_expo_d1 = ex.submit(fetch_quant_exposure, d1_str)
         fut_quant_var     = ex.submit(fetch_quant_var,      DATA_STR)
         fut_quant_var_d1  = ex.submit(fetch_quant_var,      d1_str)
+        fut_evo_expo      = ex.submit(fetch_evolution_exposure, DATA_STR)
+        fut_evo_expo_d1   = ex.submit(fetch_evolution_exposure, d1_str)
+        fut_evo_var       = ex.submit(fetch_evolution_var,      DATA_STR)
+        fut_evo_var_d1    = ex.submit(fetch_evolution_var,      d1_str)
+        fut_evo_pnl_prod  = ex.submit(fetch_evolution_pnl_products, DATA_STR)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
         fut_rf_expo = {
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
@@ -10097,6 +11332,11 @@ if __name__ == "__main__":
         df_risk_idka = None
     df_aum      = fut_aum.result()
     df_pm_pnl   = fut_pm_pnl.result()
+    try:
+        pm_book_var = fut_pm_book_var.result()
+    except Exception as e:
+        print(f"  PM book-report VaR failed ({e})")
+        pm_book_var = {}
     series      = build_series(df_risk, df_aum, df_risk_raw, df_risk_idka)
     stop_hist = build_stop_history(df_pm_pnl)
 
@@ -10260,6 +11500,33 @@ if __name__ == "__main__":
         print(f"  QUANT D-1 VaR fetch failed ({e})")
         df_quant_var_d1 = None
 
+    # EVOLUTION exposure (look-through, 3-level card)
+    try:
+        df_evo_expo, evo_expo_nav = fut_evo_expo.result()
+    except Exception as e:
+        print(f"  EVOLUTION exposure fetch failed ({e})")
+        df_evo_expo, evo_expo_nav = None, None
+    try:
+        df_evo_expo_d1, _ = fut_evo_expo_d1.result()
+    except Exception as e:
+        print(f"  EVOLUTION D-1 exposure fetch failed ({e})")
+        df_evo_expo_d1 = None
+    try:
+        df_evo_var = fut_evo_var.result()
+    except Exception as e:
+        print(f"  EVOLUTION VaR fetch failed ({e})")
+        df_evo_var = None
+    try:
+        df_evo_var_d1 = fut_evo_var_d1.result()
+    except Exception as e:
+        print(f"  EVOLUTION D-1 VaR fetch failed ({e})")
+        df_evo_var_d1 = None
+    try:
+        df_evo_pnl_prod = fut_evo_pnl_prod.result()
+    except Exception as e:
+        print(f"  EVOLUTION PnL per product fetch failed ({e})")
+        df_evo_pnl_prod = None
+
     try:
         df_evo_direct, _evo_direct_nav, _ = fut_evo_direct.result()
     except Exception as e:
@@ -10336,6 +11603,7 @@ if __name__ == "__main__":
         # ALBATROZ
         "alb_expo_ok":    df_alb_expo is not None and not df_alb_expo.empty,
         "quant_expo_ok":  df_quant_expo is not None and not df_quant_expo.empty,
+        "evo_expo_ok":    df_evo_expo is not None and not df_evo_expo.empty,
         # Stop monitor
         "stop_ok":        bool(pm_margem),
         "stop_has_pnl":   any(abs(pm_margem.get(pm, STOP_BASE) - STOP_BASE) > 1 for pm in pm_margem),
@@ -10345,6 +11613,7 @@ if __name__ == "__main__":
         "evo_sn_rows":    len(df_evo_sn)   if df_evo_sn   is not None else 0,
         "alb_expo_rows":  len(df_alb_expo) if df_alb_expo is not None and not df_alb_expo.empty else 0,
         "quant_expo_rows": len(df_quant_expo) if df_quant_expo is not None and not df_quant_expo.empty else 0,
+        "evo_expo_rows":  len(df_evo_expo) if df_evo_expo is not None and not df_evo_expo.empty else 0,
         "stop_pms":       sorted(pm_margem.keys()) if pm_margem else [],
         "stop_pms_pnl":   [pm for pm, v in (pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
     }
@@ -10360,6 +11629,10 @@ if __name__ == "__main__":
                       df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
                       df_quant_expo_d1=df_quant_expo_d1,
                       df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
+                      df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav,
+                      df_evo_expo_d1=df_evo_expo_d1,
+                      df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1,
+                      df_evo_pnl_prod=df_evo_pnl_prod,
                       rf_expo_maps=rf_expo_maps,
                       df_frontier=df_frontier,
                       frontier_bvar=frontier_bvar,
@@ -10369,6 +11642,7 @@ if __name__ == "__main__":
                       position_changes=position_changes,
                       dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
                       vol_regime_map=vol_regime_map,
+                      pm_book_var=pm_book_var,
                       expo_date_label=expo_date_label, data_manifest=data_manifest)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")
