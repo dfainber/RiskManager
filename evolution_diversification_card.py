@@ -101,6 +101,19 @@ def fetch_direction_report(date_str: str) -> pd.DataFrame:
     """)
 
 
+def fetch_direction_report_history(date_str: str, lookback_days: int = 400) -> pd.DataFrame:
+    """Histórico de RISK_DIRECTION_REPORT p/ computar P60 da magnitude
+       combinada (|sist|+|disc|) por CATEGORIA na Camada Direcional."""
+    return read_sql(f"""
+        SELECT "VAL_DATE", "CATEGORIA", "NOME",
+               "DELTA_SISTEMATICO", "DELTA_DISCRICIONARIO", "PCT_PL_TOTAL"
+        FROM q_models."RISK_DIRECTION_REPORT"
+        WHERE "FUNDO"    = '{DESK}'
+          AND "VAL_DATE" >= DATE '{date_str}' - INTERVAL '{lookback_days} days'
+          AND "VAL_DATE" <= DATE '{date_str}'
+    """)
+
+
 def fetch_pnl_by_livro(date_str: str) -> pd.DataFrame:
     """PnL diário por LIVRO em até 400 dias antes de `date_str`."""
     return read_sql(f"""
@@ -420,16 +433,61 @@ def compute_camada3(date_str: str,
 # Output: contagem de categorias onde sist/disc têm mesmo sinal, cada perna
 # acima do threshold. ≥3 → condição 5 do "bull market alignment" (Camada 4).
 
+def _compute_magnitude_p60_per_cat(df_hist: pd.DataFrame, pct_threshold: float = 60.0,
+                                     lookback: int = 252) -> dict[str, float]:
+    """P{pct_threshold} da magnitude combinada (|sist|+|disc| em BRL) por CATEGORIA,
+       usando últimos `lookback` dias. Usado pra filtrar categorias com alinhamento
+       nominal mas tamanho conjunto historicamente pequeno."""
+    if df_hist is None or df_hist.empty:
+        return {}
+    # For each (VAL_DATE, CATEGORIA), pick Net if present else sum non-Gross
+    def _agg_one(sub):
+        net = sub[sub["NOME"] == "Net"]
+        if not net.empty:
+            s = float(net["DELTA_SISTEMATICO"].iloc[0])
+            d = float(net["DELTA_DISCRICIONARIO"].iloc[0])
+        else:
+            ng = sub[sub["NOME"] != "Gross"]
+            s = float(ng["DELTA_SISTEMATICO"].sum())
+            d = float(ng["DELTA_DISCRICIONARIO"].sum())
+        return abs(s) + abs(d)   # combined magnitude in BRL
+    mag_by_day = (df_hist.groupby(["VAL_DATE", "CATEGORIA"])
+                          .apply(_agg_one, include_groups=False)
+                          .reset_index(name="mag"))
+    mag_by_day["VAL_DATE"] = pd.to_datetime(mag_by_day["VAL_DATE"])
+    # Last `lookback` dates
+    last_date = mag_by_day["VAL_DATE"].max()
+    cutoff = last_date - pd.Timedelta(days=lookback + 30)  # small buffer
+    mag_by_day = mag_by_day[mag_by_day["VAL_DATE"] >= cutoff]
+    # Percentil por categoria
+    out = {}
+    for cat, g in mag_by_day.groupby("CATEGORIA"):
+        if len(g) >= 20:  # min obs for stable percentile
+            out[cat] = float(g["mag"].quantile(pct_threshold / 100.0))
+    return out
+
+
 def compute_camada_direcional(df: pd.DataFrame, nav: float,
                                min_leg_bps: float = 5.0,
-                               min_cat_pct: float = 1.0) -> dict:
+                               min_cat_pct: float = 1.0,
+                               mag_p60_by_cat: dict | None = None) -> dict:
     """Agrega por CATEGORIA e conta categorias com DELTA_SIST e DELTA_DISC
-       no mesmo sinal (filtro de magnitude em cada perna + filtro de material)."""
+       no mesmo sinal (filtros em cada perna + material + P60 histórico).
+
+       Filtros pra contar como same-sign relevante:
+         1. sinal(sist) == sinal(disc)           ← critério de alinhamento
+         2. |sist_bps|  ≥ min_leg_bps (5)        ← cada perna mínima
+         3. |disc_bps|  ≥ min_leg_bps (5)
+         4. |pct_pl|    ≥ min_cat_pct (1%)       ← categoria material
+         5. |sist_brl|+|disc_brl| ≥ P60 histórico da CATEGORIA (se fornecido)
+            ← exclui alinhamento nominal com tamanho conjunto historicamente baixo
+    """
     if df is None or df.empty or not nav:
         return {"rows": [], "same_sign_count": 0, "same_sign_categorias": [],
-                "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct}}
+                "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct,
+                                "mag_pct": 60.0}}
 
-    # For each CATEGORIA, pick the 'Net' NOME if present; else sum non-Gross rows.
+    mag_p60_by_cat = mag_p60_by_cat or {}
     rows = []
     for cat, sub in df.groupby("CATEGORIA", sort=False):
         net_row = sub[sub["NOME"] == "Net"]
@@ -445,8 +503,8 @@ def compute_camada_direcional(df: pd.DataFrame, nav: float,
 
         sist_bps = sist_brl * 10000 / nav
         disc_bps = disc_brl * 10000 / nav
+        combined_mag_brl = abs(sist_brl) + abs(disc_brl)
 
-        # Classify sign-state
         leg_sist_material = abs(sist_bps) >= min_leg_bps
         leg_disc_material = abs(disc_bps) >= min_leg_bps
         if not leg_sist_material and not leg_disc_material:
@@ -460,7 +518,12 @@ def compute_camada_direcional(df: pd.DataFrame, nav: float,
         else:
             state = "opposite"
 
-        material = abs(pct_pl) * 100 >= min_cat_pct  # |pct_pl| is fraction
+        material = abs(pct_pl) * 100 >= min_cat_pct
+
+        # New filter: P60 historical magnitude. If no historical data for the
+        # category, mag_passes = True (don't penalize missing history).
+        p60 = mag_p60_by_cat.get(cat)
+        mag_passes = True if p60 is None else (combined_mag_brl >= p60)
 
         rows.append(dict(
             categoria=cat,
@@ -468,11 +531,17 @@ def compute_camada_direcional(df: pd.DataFrame, nav: float,
             sist_brl=sist_brl, disc_brl=disc_brl,
             sist_bps=sist_bps, disc_bps=disc_bps,
             pct_pl=pct_pl, material=material, state=state,
+            combined_mag_brl=combined_mag_brl,
+            p60_threshold_brl=p60,
+            mag_passes=mag_passes,
         ))
 
     same_sign_cats = [r["categoria"] for r in rows
-                      if r["state"] == "same-sign" and r["material"]]
-    # Sort: same-sign material first, then by |pct_pl| desc
+                      if r["state"] == "same-sign" and r["material"] and r["mag_passes"]]
+    # Reconhecidas-mas-filtradas (pra auditar o novo filtro)
+    same_sign_nominal_only = [r["categoria"] for r in rows
+                              if r["state"] == "same-sign" and r["material"]
+                              and not r["mag_passes"]]
     state_order = {"same-sign": 0, "opposite": 1, "only-sist": 2, "only-disc": 3, "dust": 4}
     rows.sort(key=lambda r: (0 if r["material"] else 1,
                               state_order.get(r["state"], 9),
@@ -482,7 +551,9 @@ def compute_camada_direcional(df: pd.DataFrame, nav: float,
         "rows": rows,
         "same_sign_count": len(same_sign_cats),
         "same_sign_categorias": same_sign_cats,
-        "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct},
+        "same_sign_nominal_only": same_sign_nominal_only,
+        "thresholds": {"min_leg_bps": min_leg_bps, "min_cat_pct": min_cat_pct,
+                        "mag_pct": 60.0},
     }
 
 

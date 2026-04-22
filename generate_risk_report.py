@@ -27,6 +27,8 @@ from evolution_diversification_card import (
     compute_camada1             as _evo_compute_camada1,
     compute_camada3             as _evo_compute_camada3,
     fetch_direction_report      as _evo_fetch_direction_report,
+    fetch_direction_report_history as _evo_fetch_direction_report_history,
+    _compute_magnitude_p60_per_cat as _evo_compute_magnitude_p60,
     compute_camada_direcional   as _evo_compute_camada_direcional,
     compute_camada4             as _evo_compute_camada4,
 )
@@ -4366,17 +4368,6 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
         else:            col = "var(--text)"
         return f'<td class="mono" style="text-align:right;color:{col}">{v:,.1f}</td>'
 
-    def _ratio_cell(v, ref):
-        """Dias até esgotar a Margem atual ao pace do maior VaR."""
-        if v is None or (isinstance(v, float) and pd.isna(v)) or v <= 0 or ref is None or ref <= 0:
-            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
-        days = ref / v
-        if   days < 1:   col = "var(--down)"
-        elif days < 2:   col = "#fca5a5"
-        elif days < 4:   col = "var(--warn)"
-        else:            col = "var(--up)"
-        return f'<td class="mono" style="text-align:right;color:{col}">{days:,.1f}d</td>'
-
     rows = ""
     for pm in pm_order:
         if pm not in pm_param_var and pm not in pm_hs_var:
@@ -4387,10 +4378,6 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
         v_21, v_63, v_252 = h.get("v21"), h.get("v63"), h.get("v252")
         worst  = h.get("worst")
         n_obs  = h.get("n", 0)
-        # Max estimate — conservative risk pacer for "days to exhaust"
-        _vals = [x for x in (v_param, v_21, v_63, v_252) if x is not None and not pd.isna(x)]
-        v_max = max(_vals) if _vals else None
-        # Margem cell color — standalone styling (just blue accent like stop monitor)
         marg_s = f'{margem:,.0f}' if margem is not None else '—'
         marg_html = f'<td class="mono" style="text-align:right;color:var(--accent-2);font-weight:700">{marg_s}</td>'
         rows += (
@@ -4403,7 +4390,6 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
             + _var_cell(v_63,    margem)
             + _var_cell(v_252,   margem)
             + _var_cell(worst,   margem)
-            + _ratio_cell(v_max, margem)
             + f'<td class="mono" style="text-align:right;color:var(--muted);font-size:11px">{n_obs}</td>'
             + '</tr>'
         )
@@ -4429,7 +4415,6 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
             <th style="text-align:right">VaR hist 63d</th>
             <th style="text-align:right">VaR hist 252d</th>
             <th style="text-align:right">Worst day pos.</th>
-            <th style="text-align:right">Dias p/ esgotar</th>
             <th style="text-align:right">obs</th>
           </tr>
         </thead>
@@ -6630,8 +6615,17 @@ def _evo_render_camada_direcional(c_dir: dict) -> str:
     body = ""
     for r in rows:
         label, color = state_badge.get(r["state"], ("—", "var(--muted)"))
-        dim = "" if r["material"] else " (abaixo de 1% PL)"
-        cat_style = "color:var(--text)" if r["material"] else "color:var(--muted)"
+        dim_parts = []
+        if not r["material"]:
+            dim_parts.append("abaixo de 1% PL")
+        if r["state"] == "same-sign" and not r.get("mag_passes", True):
+            dim_parts.append("magnitude < P60 hist")
+        dim = f" ({'; '.join(dim_parts)})" if dim_parts else ""
+        cat_style = "color:var(--text)" if r["material"] and r.get("mag_passes", True) else "color:var(--muted)"
+        # State label: degrade same-sign display if mag_passes fails
+        if r["state"] == "same-sign" and not r.get("mag_passes", True):
+            label = "🟡 nominal (mag. baixa)"
+            color = "var(--warn)"
         body += (
             f'<tr>'
             f'<td style="{cat_style};padding:5px 4px"><b>{r["categoria"]}</b> '
@@ -6645,6 +6639,7 @@ def _evo_render_camada_direcional(c_dir: dict) -> str:
 
     same_cnt = c_dir.get("same_sign_count", 0)
     same_cats = c_dir.get("same_sign_categorias", [])
+    nominal_cats = c_dir.get("same_sign_nominal_only", [])
     th = c_dir.get("thresholds", {})
 
     if same_cnt >= 3:
@@ -6652,25 +6647,33 @@ def _evo_render_camada_direcional(c_dir: dict) -> str:
                  f"background:rgba(255,90,106,0.12);border-left:3px solid var(--down);"
                  f"border-radius:4px;font-size:13px;color:var(--text)'>"
                  f"🚨 <b>{same_cnt} categorias</b> com sistemática e discricionária "
-                 f"alinhadas no mesmo sinal: {', '.join(same_cats)}</div>")
+                 f"alinhadas no mesmo sinal (e magnitude conjunta ≥ P60 hist): {', '.join(same_cats)}</div>")
     elif same_cnt >= 1:
         alert = (f"<div style='margin-top:10px;padding:8px 12px;"
                  f"background:rgba(184,135,0,0.10);border-left:3px solid var(--warn);"
                  f"border-radius:4px;font-size:13px;color:var(--text)'>"
-                 f"🟡 {same_cnt} categoria(s) com mesmo sinal: {', '.join(same_cats)} "
+                 f"🟡 {same_cnt} categoria(s) com mesmo sinal relevante: {', '.join(same_cats)} "
                  f"(abaixo do gatilho de ≥3 da Camada 4)</div>")
     else:
         alert = ("<div style='margin-top:10px;padding:8px 12px;"
                  "background:rgba(74,222,128,0.08);border-left:3px solid var(--up);"
                  "border-radius:4px;font-size:13px;color:var(--muted)'>"
-                 "✓ Nenhuma categoria com sistemática e discricionária no mesmo sinal.</div>")
+                 "✓ Nenhuma categoria com alinhamento relevante (same-sign + magnitude ≥ P60 hist).</div>")
+    # Aux info: nominal-only alignments (sinal bate mas mag < P60)
+    if nominal_cats:
+        alert += (f"<div style='margin-top:6px;padding:6px 12px;"
+                  f"background:rgba(184,135,0,0.06);border-left:2px solid var(--line-2);"
+                  f"border-radius:4px;font-size:12px;color:var(--muted)'>"
+                  f"Alinhamento nominal (desconsiderado por magnitude &lt; P60 histórico): "
+                  f"{', '.join(nominal_cats)}</div>")
 
     return f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Matriz Direcional — SIST × DISC por categoria</span>
         <span class="card-sub">DELTA_SIST × DELTA_DISC · fonte <code>RISK_DIRECTION_REPORT</code> ·
-        filtros: cada perna ≥ {th.get('min_leg_bps', 5):.0f} bps, categoria ≥ {th.get('min_cat_pct', 1):.0f}% PL</span>
+        filtros: cada perna ≥ {th.get('min_leg_bps', 5):.0f} bps, categoria ≥ {th.get('min_cat_pct', 1):.0f}% PL,
+        magnitude conjunta (|sist|+|disc|) ≥ P{th.get('mag_pct', 60):.0f} histórico 252d</span>
       </div>
 
       <table class="summary-table">
@@ -6689,8 +6692,11 @@ def _evo_render_camada_direcional(c_dir: dict) -> str:
       <div class="bar-legend" style="margin-top:14px">
         a <b>smoking gun</b> do alinhamento: se sistemática e discricionária estão long/short
         na mesma classe de ativo, a descorrelação esperada entre as duas metades do fundo desaparece.
-        ≥3 categorias com mesmo sinal → condição 5 da Camada 4 (bull market alignment).
-        "Sinais opostos" (🟩) é o estado saudável — as duas metades se hedgeiam.
+        ≥3 categorias com mesmo sinal <b>E magnitude conjunta historicamente relevante (≥ P60)</b>
+        → condição 5 da Camada 4 (bull market alignment). "Sinais opostos" (🟩) é o estado saudável.
+        <b>Por que o filtro P60:</b> antes, uma categoria contava como same-sign mesmo com SIST tiny
+        (+3 bps) e DISC carregando tudo — alinhamento nominal, não real. Agora exige que o tamanho
+        conjunto esteja acima do seu próprio histórico recente.
       </div>
     </section>"""
 
@@ -6775,8 +6781,11 @@ def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
         c3      = _evo_compute_camada3(date_str, d["effective_date"])
         # Matriz direcional (nova)
         try:
-            df_dir = _evo_fetch_direction_report(date_str)
-            c_dir  = _evo_compute_camada_direcional(df_dir, d["nav"])
+            df_dir      = _evo_fetch_direction_report(date_str)
+            df_dir_hist = _evo_fetch_direction_report_history(date_str, lookback_days=400)
+            mag_p60     = _evo_compute_magnitude_p60(df_dir_hist, pct_threshold=60.0, lookback=252)
+            c_dir       = _evo_compute_camada_direcional(df_dir, d["nav"],
+                                                          mag_p60_by_cat=mag_p60)
         except Exception as ee:
             print(f"  [Evolution] direction report fetch failed: {ee}")
             c_dir = {"rows": [], "same_sign_count": 0, "same_sign_categorias": [],
