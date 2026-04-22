@@ -58,8 +58,12 @@ RAW_FUNDS = {
 # Shape mirrors FUNDS/RAW_FUNDS but maps: var_* -> BVaR limits, stress_* -> VaR (no hard limit).
 # Limits provisional — to be calibrated against the official mandate.
 IDKA_FUNDS = {
-    "IDKA IPCA 3Y FIRF":  {"short": "IDKA_3Y",  "primary": "bvar", "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 99.0, "stress_hard": 99.0},
-    "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 3.50, "var_hard": 5.00, "stress_soft": 99.0, "stress_hard": 99.0},
+    # Limites BVaR 95% 1-day (daily). Confirmados 2026-04-22 com mandato:
+    #   IDKA 3Y  soft = 0.40%
+    #   IDKA 10Y soft = 1.00%
+    # Hard = 1.5× soft (convenção). Stress sem limite explícito (→ 99 = informativo).
+    "IDKA IPCA 3Y FIRF":  {"short": "IDKA_3Y",  "primary": "bvar", "var_soft": 0.40, "var_hard": 0.60, "stress_soft": 99.0, "stress_hard": 99.0},
+    "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 1.00, "var_hard": 1.50, "stress_soft": 99.0, "stress_hard": 99.0},
 }
 ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
 OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
