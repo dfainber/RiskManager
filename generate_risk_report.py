@@ -467,29 +467,51 @@ STOP_SEM  = 128.0
 STOP_ANO  = 252.0
 
 def carry_step(budget_abs: float, pnl: float, ytd: float) -> tuple[float, bool]:
-    """Returns (next_budget_abs, gancho).  budget_abs is always positive."""
-    extra = max(0.0, budget_abs - STOP_BASE)
+    """Calcula budget do próximo mês e flag gancho.
+
+    Regras:
+      - pnl NEGATIVO: referência = budget atual. 50% até budget (dentro) +
+        100% acima (excedente). Novo budget = budget_atual − consumido.
+        Gancho se resultado ≤ 0.
+      - pnl POSITIVO: reset para STOP_BASE (63), perdendo qualquer carry
+        acumulado do mês anterior.
+      - YTD CROSSOVER (neg → pos dentro do mês): bonus = 50% × (YTD_após > 0).
+        Ex: YTD −10 + pnl +18 → YTD_após +8 → budget = 63 + 0.5·8 = 67.
+      - SEMESTRAL: se STOP_SEM − |YTD_após| < monthly budget, usa o semestral.
+
+    Args:
+        budget_abs: stop no início do mês (>= 0).
+        pnl: realizado do mês (signed, bps).
+        ytd: YTD já incluindo o pnl do mês (convention de build_stop_history).
+    Returns:
+        (next_month_budget, gancho_flag)
+    """
+    ytd_before = ytd - pnl   # YTD no começo do mês (antes do pnl)
+
     if pnl >= 0:
-        next_abs = STOP_BASE + pnl * 0.5
-        gancho   = False
+        next_abs = STOP_BASE
+        # Bonus de crossover: só se YTD cruzou de negativo para positivo
+        if ytd_before < 0 and ytd > 0:
+            crossover = ytd          # quanto YTD ficou acima de zero
+            next_abs = STOP_BASE + 0.5 * crossover
+        gancho = False
     else:
         loss = abs(pnl)
-        if extra > 0:
-            li = min(loss, extra)
-            lb = max(0.0, min(loss - extra, STOP_BASE))
-            lx = max(0.0, loss - budget_abs)
-            consumed = li * 0.25 + lb * 0.50 + lx * 1.0
-        else:
-            lw = min(loss, budget_abs)
-            lx = max(0.0, loss - budget_abs)
-            consumed = lw * 0.5 + lx * 1.0
-        remaining = STOP_BASE - consumed
-        gancho    = remaining <= 0
-        next_abs  = 0.0 if gancho else remaining
-    # semestral cap (if ytd negative)
+        within = min(loss, budget_abs)            # dentro do budget — 50%
+        excess = max(0.0, loss - budget_abs)      # acima — 100%
+        consumed = within * 0.5 + excess * 1.0
+        next_abs = budget_abs - consumed
+        gancho = next_abs <= 0
+        if gancho:
+            next_abs = 0.0
+
+    # Semestral cap (usa YTD após o mês — o que resta permitido no semestre)
     if ytd < 0:
         sem_cap = STOP_SEM - abs(ytd)
-        next_abs = min(next_abs, max(sem_cap, 0.0))
+        if sem_cap < next_abs:
+            next_abs = max(0.0, sem_cap)
+            if next_abs <= 0:
+                gancho = True
     return next_abs, gancho
 
 _RISK_BUDGET_OVERRIDES_PATH = Path(__file__).parent / "data" / "mandatos" / "risk_budget_overrides.json"
@@ -4573,10 +4595,14 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
         <div class="stop-modal-body">{tables_html}{overrides_view}</div>
         <div class="bar-legend" style="margin-top:14px">
           <b>Base</b>: stop fixo por mandato (63 bps p/ PMs · 233 bps CI hard stop).
-          <b>Δ Carry</b>: ajuste do mês em cima da base — positivo = carry de ganho prévio; negativo = base erodida por perda/override.
-          <b>Budget total</b> = Base + Δ Carry = stop efetivo desse mês.
-          Regra de carry: ganhou → +50% do ganho vira carry no próximo mês;
-          perdeu → consome 50% do carry e, se exceder, penaliza base.
+          <b>Δ Carry</b>: ajuste em cima da base — negativo = base erodida por perda anterior; positivo só quando YTD cruza de negativo pra positivo (bonus).
+          <b>Budget total</b> = Base + Δ Carry.<br>
+          <b>Regras de carry (novo, em vigor):</b>
+          (1) <b>pnl negativo</b> → consome 50% do budget atual (até o valor do budget) + 100% do excedente;
+              novo budget = budget atual − consumido.
+          (2) <b>pnl positivo</b> → reseta a 63 (carry acumulado do mês anterior é perdido).
+          (3) <b>YTD cruza 0 neg→pos</b> → bonus = 50% × (YTD_após que ficou positivo). Ex: YTD −10 + ganho 18 → budget = 63 + 0.5·8 = 67.
+          (4) <b>Cap semestral</b>: se STOP_SEM − |YTD| &lt; budget monthly, usa o semestral (mais apertado).
           YTD reseta em janeiro. CI não tem carry (hard stop fixo 233 bps).
         </div>
       </div>
