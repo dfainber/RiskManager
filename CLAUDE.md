@@ -322,6 +322,14 @@ dashboards originais.
   - `setDistBench` JS + `.dist-bench-btn` CSS; botões desabilitados quando dado indisponível
   - `setDistMode` corrigido para `[data-mode]` selector (não conflita com bench buttons)
 
+**Fase 4 — entregues (sessão 2026-04-22 noite: code quality):**
+- **Auditoria de código** (eficiência, segurança, qualidade, memória) — 22 issues identificados em 4 arquivos (generate_risk_report.py, pm_vol_card.py, evolution_diversification_card.py, glpg_fetch.py)
+- **SQL injection fix** — `_parse_date_arg(s)` em `generate_risk_report.py` e `pm_vol_card.py`. Valida `sys.argv[1]` como `YYYY-MM-DD` antes de qualquer SQL. Cobre 80+ interpolações no generator e 10 no vol card.
+- **Rolling std O(N²) → O(N)** — `pm_vol_card.py`: loop manual `for i in range(len(pnl))` substituído por `pd.Series.rolling(w, min_periods=w).std()`
+- **Quick wins:** iterrows→itertuples no loop quintil, double null-check (`is not None and not pd.isna` → `pd.notna`) em 3 lugares no evolution card, `UTIL_WARN=70.0`/`UTIL_HARD=100.0` como constantes substituindo 5 magic numbers, erros Unicode no console (`→`, `σ`, emoji) corrigidos para ASCII
+- **smoke_test.py** — script de regressão novo (11 assertions, ~35s): verifica exit code, tamanho de arquivo, ausência de NaN/None em células, nomes de fundos, seções presentes, VaR em range plausível. **Capturou 2 regressões durante o sweep de iterrows.**
+- **iterrows sweep em generate_risk_report.py** — 29 conversões para `itertuples(index=False)`. 13 intencionalmente puladas com comentário inline explicando o motivo.
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
@@ -372,6 +380,13 @@ dashboards originais.
 - Stress column validation guard (sanity query no DQ check)
 
 Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) para o backlog detalhado.
+
+**Code quality — parkado (ver `project_todo_code_quality_2026_04_22.md`):**
+- **BRL locale formatter** — `_fmt_brl` helper substituindo `f"{v:,.1f}".replace(...)` em ~L2181 (20 min, LOW risk)
+- **Return type hints** em funções `fetch_*` principais (45 min, LOW risk)
+- **13 `iterrows` restantes** — requerem refactor das funções render (`make_row`, `_tr`, `fmt_row`) que recebem `r` como Series. Outros motivos: index como chave (L2179, L2357, L2361), `r.get()` (L3561, L4253, L8778), coluna dinâmica (L9527), `"% Cash"` (L10222)
+- **`apply()` row-by-row** em `evolution_diversification_card.py` ~L455 (~8k chamadas Python puras)
+- **Quebrar funções monolíticas** — `build_macro_exposure_section` (~450 linhas) e `build_evolution_exposure_section` (~250 linhas) — HIGH risk, só tocar com smoke_test expandido
 
 ---
 

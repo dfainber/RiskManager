@@ -4,6 +4,7 @@ Gera o HTML diário de risco MM com barras de range 12m e sparklines 60d.
 Usage: python generate_risk_report.py [YYYY-MM-DD]
 """
 import sys
+import re
 import base64
 import io
 import json
@@ -34,7 +35,18 @@ from evolution_diversification_card import (
 )
 
 # ── Config ──────────────────────────────────────────────────────────────────
-DATA_STR  = sys.argv[1] if len(sys.argv) > 1 else (
+def _parse_date_arg(s: str) -> str:
+    """Validate a CLI date string. Must be YYYY-MM-DD and a real calendar date."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        sys.exit(f"Error: date must be YYYY-MM-DD, got {s!r}")
+    try:
+        pd.Timestamp(s)
+    except ValueError:
+        sys.exit(f"Error: invalid date {s!r}")
+    return s
+
+
+DATA_STR  = _parse_date_arg(sys.argv[1]) if len(sys.argv) > 1 else (
     (pd.Timestamp("today") - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
 )
 DATA      = pd.Timestamp(DATA_STR)
@@ -471,6 +483,8 @@ def make_sparkline(series: pd.Series, color: str, width=160, height=50) -> str:
     return base64.b64encode(buf.read()).decode()
 
 ALERT_THRESHOLD = 80.0   # % no range 12m acima do qual gera alerta
+UTIL_WARN       = 70.0   # util % abaixo do qual = verde
+UTIL_HARD       = 100.0  # util % acima do qual = vermelho (limite atingido)
 
 # ── Carry formula ─────────────────────────────────────────────────────────────
 STOP_BASE = 63.0
@@ -580,9 +594,9 @@ def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
         budget = CI_HARD if pm == "CI" else STOP_BASE
         ytd    = 0.0
         prev_year = None
-        for _, r in sub.iterrows():
-            mes = r["mes"]
-            pnl = r["pnl_mes_bps"]
+        for r in sub.itertuples(index=False):
+            mes = r.mes
+            pnl = r.pnl_mes_bps
             # new calendar year → reset
             if prev_year is not None and mes.year != prev_year:
                 budget = CI_HARD if pm == "CI" else STOP_BASE
@@ -619,7 +633,7 @@ def range_bar_svg(val, vmin, vmax, soft, hard, width=220, height=48) -> str:
     dot_x  = pct / 100 * width
 
     util = val / soft * 100 if soft else 0
-    bar_color = "#4ade80" if util < 70 else "#facc15" if util < 100 else "#f87171"
+    bar_color = "#4ade80" if util < UTIL_WARN else "#facc15" if util < UTIL_HARD else "#f87171"
     above_alert = pct >= ALERT_THRESHOLD
 
     # Dot: pulsing ring if above alert threshold
@@ -1181,7 +1195,7 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
         WHERE "DATE" = DATE '{date_str}'
         GROUP BY "FUNDO"
     """)
-    actuals = {f'fund:{r["FUNDO"]}': float(r["dia_bps"]) for _, r in fund_df.iterrows()}
+    actuals = {f'fund:{r.FUNDO}': float(r.dia_bps) for r in fund_df.itertuples(index=False)}
 
     # LIVRO-level (PMs within MACRO, sub-books within QUANT)
     livro_df = read_sql(f"""
@@ -1190,8 +1204,8 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
         WHERE "DATE" = DATE '{date_str}' AND "FUNDO" IN ('MACRO','QUANT')
         GROUP BY "LIVRO"
     """)
-    for _, r in livro_df.iterrows():
-        actuals[f'livro:{r["LIVRO"]}'] = float(r["dia_bps"])
+    for r in livro_df.itertuples(index=False):
+        actuals[f'livro:{r.LIVRO}'] = float(r.dia_bps)
 
     # RF-level (factor, via BOOK parse) — sum DIA of MACRO rows grouping by parsed RF
     book_df = read_sql(f"""
@@ -1400,10 +1414,10 @@ def fetch_all_latest_navs(date_str: str) -> dict:
         ORDER BY "TRADING_DESK", "VAL_DATE" DESC
     """)
     out = {}
-    for _, r in df.iterrows():
-        v = float(r["NAV"]) if pd.notna(r["NAV"]) else None
-        _NAV_CACHE[(r["TRADING_DESK"], date_str)] = v
-        out[r["TRADING_DESK"]] = v
+    for r in df.itertuples(index=False):
+        v = float(r.NAV) if pd.notna(r.NAV) else None
+        _NAV_CACHE[(r.TRADING_DESK, date_str)] = v
+        out[r.TRADING_DESK] = v
     # Ensure every requested desk has a sentinel entry (avoids re-querying on misses)
     for d in desks:
         _NAV_CACHE.setdefault((d, date_str), None)
@@ -1848,23 +1862,23 @@ def _build_expo_unified_table(
                     .groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
                     .agg(delta=("delta", "sum")))
         p1["net_pct"] = p1["delta"] * 100 / nav
-        for _, r in p1.iterrows():
-            d1_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["net_pct"]
+        for r in p1.itertuples(index=False):
+            d1_prod[(r.factor, r.PRODUCT, r.PRODUCT_CLASS)] = r.net_pct
 
     # VaR at product level
     v_prod = {}
     if df_var is not None and not df_var.empty:
         vp = (df_var.groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
                     .agg(var_pct=("var_pct", "sum")))
-        for _, r in vp.iterrows():
-            v_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = float(r["var_pct"])
+        for r in vp.itertuples(index=False):
+            v_prod[(r.factor, r.PRODUCT, r.PRODUCT_CLASS)] = float(r.var_pct)
 
     v1_prod = {}
     if df_var_d1 is not None and not df_var_d1.empty:
         vp1 = (df_var_d1.groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
                          .agg(var_pct=("var_pct", "sum")))
-        for _, r in vp1.iterrows():
-            v1_prod[(r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])] = float(r["var_pct"])
+        for r in vp1.itertuples(index=False):
+            v1_prod[(r.factor, r.PRODUCT, r.PRODUCT_CLASS)] = float(r.var_pct)
 
     # ── Factor-level aggregates ───────────────────────────────────────────────
     def _sigma_weighted(sub: pd.DataFrame) -> float | None:
@@ -1885,8 +1899,8 @@ def _build_expo_unified_table(
         sig       = _sigma_weighted(sub)
         var_pct   = None
         if v_prod:
-            var_pct = sum(v_prod.get((f, r["PRODUCT"], r["PRODUCT_CLASS"]), 0.0)
-                          for _, r in sub.iterrows())
+            var_pct = sum(v_prod.get((f, r.PRODUCT, r.PRODUCT_CLASS), 0.0)
+                          for r in sub.itertuples(index=False))
         # D-1 factor-level
         d1_net_pct = None
         if df_d1 is not None and not df_d1.empty:
@@ -1895,8 +1909,8 @@ def _build_expo_unified_table(
                 d1_net_pct = float(sub1["delta"].sum()) * 100 / nav
         d1_var_pct = None
         if v1_prod:
-            d1_var_pct = sum(v1_prod.get((f, r["PRODUCT"], r["PRODUCT_CLASS"]), 0.0)
-                             for _, r in sub.iterrows())
+            d1_var_pct = sum(v1_prod.get((f, r.PRODUCT, r.PRODUCT_CLASS), 0.0)
+                             for r in sub.itertuples(index=False))
         factors.append(dict(
             factor=f, net_pct=net_pct, net_brl=net_brl,
             gross_pct=gross_pct, gross_brl=gross_brl,
@@ -1991,13 +2005,13 @@ def _build_expo_unified_table(
         sub_prods = prod[prod["factor"] == f].copy()
         sub_prods["_abs"] = sub_prods["net_pct"].abs()
         sub_prods = sub_prods.sort_values("_abs", ascending=False)
-        for _, p in sub_prods.iterrows():
-            key = (f, p["PRODUCT"], p["PRODUCT_CLASS"])
-            p_net = float(p["net_pct"])
-            p_net_brl = float(p["delta"])
-            p_gross = float(p["gross_pct"])
-            p_gross_brl = float(p["gross_brl"])
-            p_sig = float(p["sigma"]) if pd.notna(p["sigma"]) else None
+        for p in sub_prods.itertuples(index=False):
+            key = (f, p.PRODUCT, p.PRODUCT_CLASS)
+            p_net = float(p.net_pct)
+            p_net_brl = float(p.delta)
+            p_gross = float(p.gross_pct)
+            p_gross_brl = float(p.gross_brl)
+            p_sig = float(p.sigma) if pd.notna(p.sigma) else None
             p_var = v_prod.get(key)
             p_d1 = d1_prod.get(key)
             # Δ Expo: if D-1 data exists globally, a missing product key means a
@@ -2026,8 +2040,8 @@ def _build_expo_unified_table(
                 f'<tr class="uexpo-row" data-expo-lvl="1" data-expo-parent="{path}" '
                 f'style="display:none; background:var(--bg-alt, rgba(0,0,0,0.12))">'
                 f'<td style="padding-left:28px; font-size:11px; color:var(--muted)">'
-                f'  <span style="color:var(--text); font-weight:600">{p["PRODUCT"]}</span> '
-                f'<span style="color:var(--muted); font-size:10px">({p["PRODUCT_CLASS"]})</span>'
+                f'  <span style="color:var(--text); font-weight:600">{p.PRODUCT}</span> '
+                f'<span style="color:var(--muted); font-size:10px">({p.PRODUCT_CLASS})</span>'
                 f'</td>'
                 + _cell(f'{p_net:+.2f}%', net_col)
                 + _cell(f'{pdexp_s}%' if pdexp_s != '—' else '—', pdexp_c)
@@ -2275,16 +2289,16 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                       if r["rf_delta"] else 0.0,
             axis=1,
         )
-        for _, r in p1.iterrows():
-            k = (r["strategy"], r["livro"], r["factor"], r["PRODUCT"], r["PRODUCT_CLASS"])
-            d1_prod[k] = r["pct_nav"]
-            d1_prod_var[k] = r["prod_var_pct"]
+        for r in p1.itertuples(index=False):
+            k = (r.strategy, r.livro, r.factor, r.PRODUCT, r.PRODUCT_CLASS)
+            d1_prod[k] = r.pct_nav
+            d1_prod_var[k] = r.prod_var_pct
 
     # DIA lookup per (LIVRO, PRODUCT)
     dia_lookup = {}
     if df_pnl_prod is not None and not df_pnl_prod.empty:
-        for _, r in df_pnl_prod.iterrows():
-            dia_lookup[(r["LIVRO"], r["PRODUCT"])] = float(r["dia_bps"])
+        for r in df_pnl_prod.itertuples(index=False):
+            dia_lookup[(r.LIVRO, r.PRODUCT)] = float(r.dia_bps)
 
     def _num(v, n=1):
         if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -2321,10 +2335,10 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         if tot <= 0:
             return None
         return float((w * s["sigma"]).sum() / tot)
-    livro_sigma = {(r["strategy"], r["livro"]): _sigma_w(prod_agg[(prod_agg["strategy"] == r["strategy"]) & (prod_agg["livro"] == r["livro"])])
-                   for _, r in livro_sum.iterrows()}
-    strat_sigma = {r["strategy"]: _sigma_w(prod_agg[prod_agg["strategy"] == r["strategy"]])
-                   for _, r in strat_sum.iterrows()}
+    livro_sigma = {(r.strategy, r.livro): _sigma_w(prod_agg[(prod_agg["strategy"] == r.strategy) & (prod_agg["livro"] == r.livro)])
+                   for r in livro_sum.itertuples(index=False)}
+    strat_sigma = {r.strategy: _sigma_w(prod_agg[prod_agg["strategy"] == r.strategy])
+                   for r in strat_sum.itertuples(index=False)}
 
     # D-1 rollups
     d1_livro = {}
@@ -2340,11 +2354,11 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         if not p1_tmp.empty:
             _l = p1_tmp.groupby(["strategy", "livro"]).agg(pct_nav=("pct_nav", "sum"),
                                                           prod_var_pct=("prod_var_pct", "sum"))
-            for k, r in _l.iterrows():
+            for k, r in _l.iterrows():  # k = (strategy, livro) multi-index — index needed
                 d1_livro[k] = r["pct_nav"]; d1_livro_var[k] = r["prod_var_pct"]
             _s = p1_tmp.groupby("strategy").agg(pct_nav=("pct_nav", "sum"),
                                                prod_var_pct=("prod_var_pct", "sum"))
-            for k, r in _s.iterrows():
+            for k, r in _s.iterrows():  # k = strategy index — index needed
                 d1_strat[k] = r["pct_nav"]; d1_strat_var[k] = r["prod_var_pct"]
 
     # ── Render rows ──────────────────────────────────────────────────────────
@@ -2375,8 +2389,8 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         # DIA at strategy level: sum across all livros in the strategy
         s_dia = 0.0
         for lv in prod_agg[prod_agg["strategy"] == strat]["livro"].unique():
-            for _, p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].iterrows():
-                s_dia += dia_lookup.get((lv, p["PRODUCT"]), 0.0)
+            for p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].itertuples(index=False):
+                s_dia += dia_lookup.get((lv, p.PRODUCT), 0.0)
         s_dia_s = f'{s_dia:+.0f}' if abs(s_dia) > 0.05 else "—"
         s_dia_c = "var(--down)" if s_dia < 0 else "var(--up)" if s_dia > 0 else "var(--muted)"
 
@@ -2406,11 +2420,11 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         livros_here = livro_sum[livro_sum["strategy"] == strat].sort_values(
             "pct_nav", key=lambda s: s.abs(), ascending=False
         )
-        for _, lrow in livros_here.iterrows():
-            lv = lrow["livro"]
-            l_pct = float(lrow["pct_nav"])
-            l_var = float(lrow["prod_var_pct"])
-            l_gross = float(lrow["gross_brl"]) * 100 / nav
+        for lrow in livros_here.itertuples(index=False):
+            lv = lrow.livro
+            l_pct = float(lrow.pct_nav)
+            l_var = float(lrow.prod_var_pct)
+            l_gross = float(lrow.gross_brl) * 100 / nav
             l_sig = livro_sigma.get((strat, lv))
             k_l = (strat, lv)
             l_dexp = (l_pct - d1_livro[k_l]) if k_l in d1_livro else None
@@ -2425,8 +2439,8 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
             livro_path = f'{strat_path}-{lv}'
 
             # DIA for LIVRO: sum dia_bps across instruments
-            l_dia = sum(dia_lookup.get((lv, p["PRODUCT"]), 0.0)
-                        for _, p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].iterrows())
+            l_dia = sum(dia_lookup.get((lv, p.PRODUCT), 0.0)
+                        for p in prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].itertuples(index=False))
             l_dia_s = f'{l_dia:+.0f}' if abs(l_dia) > 0.05 else "—"
             l_dia_c = "var(--down)" if l_dia < 0 else "var(--up)" if l_dia > 0 else "var(--muted)"
 
@@ -2457,11 +2471,11 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
             inst_rows = prod_agg[(prod_agg["strategy"] == strat) & (prod_agg["livro"] == lv)].copy()
             inst_rows["_abs"] = inst_rows["pct_nav"].abs()
             inst_rows = inst_rows.sort_values("_abs", ascending=False)
-            for _, p in inst_rows.iterrows():
-                p_net = float(p["pct_nav"])
-                p_var = float(p["prod_var_pct"])
-                p_sig = float(p["sigma"]) if pd.notna(p["sigma"]) else None
-                key = (strat, lv, p["factor"], p["PRODUCT"], p["PRODUCT_CLASS"])
+            for p in inst_rows.itertuples(index=False):
+                p_net = float(p.pct_nav)
+                p_var = float(p.prod_var_pct)
+                p_sig = float(p.sigma) if pd.notna(p.sigma) else None
+                key = (strat, lv, p.factor, p.PRODUCT, p.PRODUCT_CLASS)
                 p_d1 = d1_prod.get(key)
                 if df_d1 is not None and not df_d1.empty:
                     p_dexp = p_net - (p_d1 if p_d1 is not None else 0.0)
@@ -2470,7 +2484,7 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                 p_dvar = None
                 if df_var_d1 is not None and not df_var_d1.empty:
                     p_dvar = p_var - d1_prod_var.get(key, 0.0)
-                p_dia = dia_lookup.get((lv, p["PRODUCT"]))
+                p_dia = dia_lookup.get((lv, p.PRODUCT))
 
                 p_net_s, p_net_c = _num(p_net, 2)
                 p_dexp_s, p_dexp_c = _num(p_dexp, 2)
@@ -2482,11 +2496,10 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                 p_dia_c = "var(--down)" if (p_dia is not None and p_dia < 0) else "var(--up)" if (p_dia is not None and p_dia > 0) else "var(--muted)"
                 p_var_sort = _dv(p_var) if abs(p_var) > 0.05 else ""
                 p_dia_sort = _dv(p_dia) if (p_dia is not None and abs(p_dia) > 0.05) else ""
-                p_product = p["PRODUCT"]
                 body += (
                     f'<tr class="uexpo-row" data-expo-lvl="2" data-expo-parent="{livro_path}" '
                     f'style="display:none; background:rgba(0,0,0,0.18)" '
-                    f'data-sort-name="{p_product}" '
+                    f'data-sort-name="{p.PRODUCT}" '
                     f'data-sort-net="{-abs(p_net):.6f}" '
                     f'data-sort-dexp="{_dv(p_dexp)}" '
                     f'data-sort-sigma="{_dv(p_sig)}" '
@@ -2494,8 +2507,8 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                     f'data-sort-dvar="{_dv(p_dvar)}" '
                     f'data-sort-dia="{p_dia_sort}">'
                     f'<td style="padding-left:44px; font-size:11px; color:var(--muted)">'
-                    f'<span style="color:var(--text); font-weight:500">{p["PRODUCT"]}</span> '
-                    f'<span style="color:var(--muted); font-size:10px">({p["PRODUCT_CLASS"]} · {p["factor"]})</span>'
+                    f'<span style="color:var(--text); font-weight:500">{p.PRODUCT}</span> '
+                    f'<span style="color:var(--muted); font-size:10px">({p.PRODUCT_CLASS} · {p.factor})</span>'
                     f'</td>'
                     + _cell(f'{p_net_s}%', p_net_c)
                     + _cell(f'{p_dexp_s}%' if p_dexp_s != '—' else '—', p_dexp_c)
@@ -3130,13 +3143,13 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
             + f'<td></td>'
             + '</tr>'
         )
-        for _, r in sub.iterrows():
-            via_tag = "direct" if r["via"] == "direct" else ("via Albatroz" if r["via"] == "via_albatroz" else r["via"])
+        for r in sub.itertuples(index=False):
+            via_tag = "direct" if r.via == "direct" else ("via Albatroz" if r.via == "via_albatroz" else r.via)
             # Per-row: yrs for duration factors, %NAV (notional face) for others
             if is_dur:
-                ae_cell = _yrs_cell(r["ano_eq_brl"] / nav)
+                ae_cell = _yrs_cell(r.ano_eq_brl / nav)
             else:
-                p = r["ano_eq_brl"] * 100 / nav
+                p = r.ano_eq_brl * 100 / nav
                 if abs(p) < 0.05:
                     ae_cell = '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
                 else:
@@ -3144,12 +3157,12 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
                     ae_cell = f'<td class="mono" style="text-align:right;color:{col}">{p:+.1f}%</td>'
             body += (
                 f'<tr class="idka-pos-row" data-idka-child="{f}" style="font-size:11.5px">'
-                f'<td style="padding:4px 20px;color:var(--muted)">{r["PRODUCT"]}</td>'
-                f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r["PRODUCT_CLASS"]}</td>'
-                + _dur_cell(r["mod_dur"], r["yrs_to_mat"])
-                + (_dv01_cell(r["dv01_brl"]) if is_dur else '<td class="mono" style="text-align:right;color:var(--muted)">—</td>')
+                f'<td style="padding:4px 20px;color:var(--muted)">{r.PRODUCT}</td>'
+                f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r.PRODUCT_CLASS}</td>'
+                + _dur_cell(r.mod_dur, r.yrs_to_mat)
+                + (_dv01_cell(r.dv01_brl) if is_dur else '<td class="mono" style="text-align:right;color:var(--muted)">—</td>')
                 + ae_cell
-                + _pct_cell(r["position_brl"])
+                + _pct_cell(r.position_brl)
                 + f'<td class="mono" style="color:var(--muted);font-size:10.5px">{via_tag}</td>'
                 + '</tr>'
             )
@@ -3201,8 +3214,8 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     # Replication row (liq-replication mode only) — uma única linha de subtração, sem legs
     if not bench_replication.empty:
         legs_detail = " · ".join(
-            f'{r["INSTRUMENT"]} w={float(r["W"])*100:.0f}% MD={float(r["MD"]):.2f}y'
-            for _, r in bench_replication.iterrows()
+            f'{r.INSTRUMENT} w={float(r.W)*100:.0f}% MD={float(r.MD):.2f}y'
+            for r in bench_replication.itertuples(index=False)
         )
         replication_rows = (
             f'<tr class="idka-bench-repl-head" data-idka-view="liq-replication" '
@@ -4126,14 +4139,14 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
     # ── D-1 lookup tables (for PM VaR view) ──────────────────────────────────
     d1_prod_expo = {}
     if df_expo_d1 is not None and not df_expo_d1.empty:
-        for _, r in (df_expo_d1.groupby(["rf","PRODUCT","PRODUCT_CLASS"])
-                                .agg(pct_nav=("pct_nav","sum")).reset_index()).iterrows():
-            d1_prod_expo[(r["rf"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["pct_nav"]
+        for r in (df_expo_d1.groupby(["rf","PRODUCT","PRODUCT_CLASS"])
+                             .agg(pct_nav=("pct_nav","sum")).reset_index()).itertuples(index=False):
+            d1_prod_expo[(r.rf, r.PRODUCT, r.PRODUCT_CLASS)] = r.pct_nav
 
     dia_lookup = {}
     if df_pnl_prod is not None and not df_pnl_prod.empty:
-        for _, r in df_pnl_prod.iterrows():
-            dia_lookup[(r["LIVRO"], r["PRODUCT"])] = float(r["dia_bps"])
+        for r in df_pnl_prod.itertuples(index=False):
+            dia_lookup[(r.LIVRO, r.PRODUCT)] = float(r.dia_bps)
 
     rf_var  = df_var.groupby("rf").agg(var_pct=("var_pct","sum")).reset_index()
 
@@ -4185,8 +4198,8 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
             _pm_var_d1 = _pmrf_d1.groupby("pm").agg(pv=("pv","sum")).reset_index()
             d1_pm_var_tot = dict(zip(_pm_var_d1["pm"], _pm_var_d1["pv"]))
             # product-level VaR D-1
-            for _, r in _pmrf_d1.iterrows():
-                d1_pm_prod_var[(r["pm"], r["rf"], r["PRODUCT"], r["PRODUCT_CLASS"])] = r["pv"]
+            for r in _pmrf_d1.itertuples(index=False):
+                d1_pm_prod_var[(r.pm, r.rf, r.PRODUCT, r.PRODUCT_CLASS)] = r.pv
 
     # ── PM total VaR today (sum of prod_var_pct across all RF) ───────────────
     pm_var_today = pm_prod.groupby("pm").agg(var_tot=("prod_var_pct","sum")).reset_index()
@@ -4227,8 +4240,8 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
         # DIA: sum of PnL DIA (bps) for all products of this PM
         livro_key = _PM_LIVRO.get(pm_name, pm_name)
         pm_dia = sum(
-            dia_lookup.get((livro_key, p["PRODUCT"]), 0.0)
-            for _, p in prod_sub.iterrows()
+            dia_lookup.get((livro_key, p.PRODUCT), 0.0)
+            for p in prod_sub.itertuples(index=False)
         )
         pm_dia_s = f'{pm_dia:+.0f}' if pm_dia != 0 else "—"
         pm_dia_c = "#f87171" if pm_dia < 0 else "#4ade80" if pm_dia > 0 else "#475569"
@@ -4946,12 +4959,12 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
         )
         # Build rows — month-by-month
         rows_html = ""
-        for _, r in hist.iterrows():
-            mes_lbl  = r["mes"].strftime("%b/%y")
-            pnl      = float(r["pnl"])
-            ytd      = float(r["ytd"]) + pnl   # pnl already added AFTER building row in build_stop_history;
-                                                # ytd stored here is BEFORE the month's pnl → adjust for display
-            budget   = float(r["budget_abs"])
+        for r in hist.itertuples(index=False):
+            mes_lbl  = r.mes.strftime("%b/%y")
+            pnl      = float(r.pnl)
+            ytd      = float(r.ytd) + pnl   # pnl already added AFTER building row in build_stop_history;
+                                             # ytd stored here is BEFORE the month's pnl → adjust for display
+            budget   = float(r.budget_abs)
             base     = STOP_BASE if pm != "CI" else 233.0
             delta_c  = budget - base
             pnl_c = "var(--up)" if pnl >= 0 else "var(--down)"
@@ -8351,8 +8364,8 @@ def _build_fund_mini_briefing(
         _chip("NAV", f"R$ {_mm(house_row['nav'])}") +
         _chip(var_label, f"{var_val:.2f}%") +
         (_chip("Util", f"{util:.0f}%",
-               "var(--down)" if util and util >= 100
-               else "var(--warn)" if util and util >= 70 else "var(--up)")
+               "var(--down)" if util and util >= UTIL_HARD
+               else "var(--warn)" if util and util >= UTIL_WARN else "var(--up)")
          if util is not None else "") +
         (_chip("Δ VaR D-1", f"{dvar_bps:+.0f} bps",
                "var(--down)" if dvar_bps and dvar_bps > 0 else "var(--up)")
@@ -8380,8 +8393,8 @@ def _build_fund_mini_briefing(
         _chip("NAV", f"R$ {_mm(house_row['nav'])}") +
         _chip(var_label, f"{var_val:.2f}%") +
         (_chip("Util", f"{util:.0f}%",
-               "var(--down)" if util >= 100
-               else "var(--warn)" if util >= 70 else "var(--up)")
+               "var(--down)" if util >= UTIL_HARD
+               else "var(--warn)" if util >= UTIL_WARN else "var(--up)")
          if util is not None else "") +
         (_chip("Δ D-1",
                f"{dvar_bps:+.0f} bps",
@@ -8582,7 +8595,7 @@ def _build_fund_mini_briefing(
     if util is not None:
         if util >= 85:
             pos_notes.append(f"util VaR em <b>{util:.0f}%</b> do soft — próximo do limite")
-        elif util >= 70:
+        elif util >= UTIL_WARN:
             pos_notes.append(f"util VaR em {util:.0f}% — vigilância")
     # FRONTIER — report gross equity allocation + weighted beta (not net vs IBOV).
     if short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
@@ -8798,17 +8811,17 @@ def _build_executive_briefing(
         _pa = _pa[_pa["brl_dia"].abs() > 50_000]
         contribs = _pa.sort_values("brl_dia", ascending=False).head(2)
         detract  = _pa.sort_values("brl_dia").head(2)
-        for _, r in contribs.iterrows():
-            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
+        for r in contribs.itertuples(index=False):
+            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r.FUNDO, r.FUNDO), r.FUNDO)
             parts_alpha.append(
-                f'<li><span class="mono up">{r["dia_bps"]:+.1f} bps</span> · '
-                f'<b>{r["PRODUCT"]}</b> ({fund_lbl})</li>'
+                f'<li><span class="mono up">{r.dia_bps:+.1f} bps</span> · '
+                f'<b>{r.PRODUCT}</b> ({fund_lbl})</li>'
             )
-        for _, r in detract.iterrows():
-            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r["FUNDO"], r["FUNDO"]), r["FUNDO"])
+        for r in detract.itertuples(index=False):
+            fund_lbl = FUND_LABELS.get(_PA_TO_SHORT.get(r.FUNDO, r.FUNDO), r.FUNDO)
             parts_alpha.append(
-                f'<li><span class="mono down">{r["dia_bps"]:+.1f} bps</span> · '
-                f'<b>{r["PRODUCT"]}</b> ({fund_lbl})</li>'
+                f'<li><span class="mono down">{r.dia_bps:+.1f} bps</span> · '
+                f'<b>{r.PRODUCT}</b> ({fund_lbl})</li>'
             )
 
     # ── LEITURA DO DIA (non-obvious insights) ─────────────────────────────────
@@ -9715,7 +9728,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     def _sum_util_cell(util):
         if util is None:
             return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-        color = "var(--up)" if util < 70 else "var(--warn)" if util < 100 else "var(--down)"
+        color = "var(--up)" if util < UTIL_WARN else "var(--warn)" if util < UTIL_HARD else "var(--down)"
         return f'<td class="mono" style="color:{color}; text-align:right; font-weight:600">{util:.0f}%</td>'
 
     def _sum_var_cell(v):
@@ -10190,13 +10203,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if d.empty:
                 continue
             # ANO_EQ ×  NAV not needed — ano_eq_brl is already signed BRL-years
-            for _, r in d.iterrows():
-                brl = float(r["ano_eq_brl"])
+            for r in d.itertuples(index=False):
+                brl = float(r.ano_eq_brl)
                 if abs(brl) < 1_000: continue
                 agg_rows.append({
                     "fund":    FUND_LABELS.get(short_k, short_k),
-                    "factor":  "Juros Reais (IPCA)" if r["factor"] == "real" else "Juros Nominais",
-                    "product": r["PRODUCT"],
+                    "factor":  "Juros Reais (IPCA)" if r.factor == "real" else "Juros Nominais",
+                    "product": r.PRODUCT,
                     "brl":     brl,
                     "unit":    "BRL-yr",
                 })
@@ -10216,24 +10229,24 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_direct)]:
         if df_sn is None or df_sn.empty:
             continue
-        for _, r in df_sn.iterrows():
-            brl = float(r["net"])
+        for r in df_sn.itertuples(index=False):
+            brl = float(r.net)
             if abs(brl) < 10_000: continue
             agg_rows.append({
                 "fund": FUND_LABELS.get(short_k, short_k), "factor": "Equity BR",
-                "product": r["ticker"], "brl": brl, "unit": "BRL",
+                "product": r.ticker, "brl": brl, "unit": "BRL",
             })
     # MACRO equity (RV-DM / RV-EM) and commodities, aggregated by PRODUCT
     if df_expo is not None and not df_expo.empty:
         macro_focus = df_expo[df_expo["rf"].isin(["RV-BZ", "RV-DM", "RV-EM", "COMMODITIES", "P-Metals"])]
         grp = macro_focus.groupby(["rf", "PRODUCT"], as_index=False).agg(delta=("delta", "sum"))
-        for _, r in grp.iterrows():
-            brl = float(r["delta"])
+        for r in grp.itertuples(index=False):
+            brl = float(r.delta)
             if abs(brl) < 10_000: continue
             factor_label = {"RV-BZ": "Equity BR", "RV-DM": "Equity DM", "RV-EM": "Equity EM",
-                            "COMMODITIES": "Commodities", "P-Metals": "Commodities"}[r["rf"]]
+                            "COMMODITIES": "Commodities", "P-Metals": "Commodities"}[r.rf]
             agg_rows.append({
-                "fund": "Macro", "factor": factor_label, "product": r["PRODUCT"],
+                "fund": "Macro", "factor": factor_label, "product": r.PRODUCT,
                 "brl": brl, "unit": "BRL",
             })
 

@@ -12,7 +12,7 @@ Output: data/morning-calls/pm_vol_card_<DATA>.html
 """
 
 from __future__ import annotations
-import sys, math
+import sys, math, re
 from pathlib import Path
 from datetime import datetime
 
@@ -23,7 +23,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
 
 # ── Config ──────────────────────────────────────────────────────────────────
-DATA_STR   = sys.argv[1] if len(sys.argv) > 1 else datetime.today().strftime("%Y-%m-%d")
+def _parse_date_arg(s: str) -> str:
+    """Validate a CLI date string. Must be YYYY-MM-DD and a real calendar date."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        sys.exit(f"Error: date must be YYYY-MM-DD, got {s!r}")
+    try:
+        pd.Timestamp(s)
+    except ValueError:
+        sys.exit(f"Error: invalid date {s!r}")
+    return s
+
+
+DATA_STR   = _parse_date_arg(sys.argv[1]) if len(sys.argv) > 1 else datetime.today().strftime("%Y-%m-%d")
 STOP_BASE  = 63.0   # bps/month (base hard stop)
 CI_HARD    = 233.0  # CI hard stop
 CI_SOFT    = 150.0  # CI soft mark
@@ -187,15 +198,10 @@ def compute_vol_series(df_daily: pd.DataFrame, windows: tuple = (21, 30, 60),
         pnl   = sub["pnl_bps"].values
         dates = [d.strftime("%Y-%m-%d") for d in sub["val_date"]]
         series: dict = {"dates": dates}
+        pnl_s = pd.Series(pnl)
         for w in windows:
-            vals = []
-            for i in range(len(pnl)):
-                if i + 1 >= w:
-                    v = float(np.std(pnl[i + 1 - w : i + 1], ddof=1)) * math.sqrt(252)
-                    vals.append(round(v, 1))
-                else:
-                    vals.append(None)
-            series[f"vol_{w}d"] = vals
+            rolled = pnl_s.rolling(w, min_periods=w).std() * math.sqrt(252)
+            series[f"vol_{w}d"] = [round(v, 1) if pd.notna(v) else None for v in rolled]
         result[pm] = series
 
     # Merge lote vol_estimada, aligned to PnL dates via forward fill (lote may lag 1d)
@@ -267,11 +273,11 @@ def compute_quintile_analysis(df_daily: pd.DataFrame, window: int = 21) -> dict:
 
         # Raw observations: include date + pnl_fwd for aggregate chart + matrix
         obs_clean = obs.dropna(subset=["vol_q", "pnl_q"])
-        raw = [{"vol_q":   int(r["vol_q"]),
-                "pnl_q":   int(r["pnl_q"]),
-                "date":    r["date"],
-                "pnl_fwd": round(float(r["pnl_fwd"]), 1)}
-               for _, r in obs_clean.iterrows()]
+        raw = [{"vol_q":   int(r.vol_q),
+                "pnl_q":   int(r.pnl_q),
+                "date":    r.date,
+                "pnl_fwd": round(float(r.pnl_fwd), 1)}
+               for r in obs_clean.itertuples(index=False)]
 
         result[pm] = {"summary": summary, "raw": raw}
     return result
@@ -1092,10 +1098,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"pm_vol_card_{DATA_STR}.html"
     out_path.write_text(html, encoding="utf-8")
-    print(f"  → {out_path}")
+    print(f"  -> {out_path}")
 
     # Console summary
-    print(f"\n  {'PM':<6} {'VOL21':>6} {'VOL30':>6} {'Trend':>6} {'Sh21d':>6} {'σMTD':>6} {'Margem':>7}  Regime")
+    print(f"\n  {'PM':<6} {'VOL21':>6} {'VOL30':>6} {'Trend':>6} {'Sh21d':>6} {'sMTD':>6} {'Margem':>7}  Regime")
     for pm in ("CI", "LF", "JD", "RJ"):
         vol = vol_map.get(pm, {})
         bud = budget_map.get(pm, {})
@@ -1108,8 +1114,8 @@ def main():
         sig      = vol.get("pnl_sigma_mtd",float("nan"))
         vol_budget = budget / (Z95 * math.sqrt(21.0))
         vol_ratio  = v21 / vol_budget if (not math.isnan(v21) and vol_budget > 0) else float("nan")
-        _, label = classify_pm(vol_ratio, sig)
-        print(f"  {pm:<6} {v21:6.2f} {v30:6.2f} {vt:6.2f} {sh21:+6.2f} {sig:+6.2f} {margem:7.1f}  {label}")
+        code, _ = classify_pm(vol_ratio, sig)
+        print(f"  {pm:<6} {v21:6.2f} {v30:6.2f} {vt:6.2f} {sh21:+6.2f} {sig:+6.2f} {margem:7.1f}  {code}")
 
 
 if __name__ == "__main__":

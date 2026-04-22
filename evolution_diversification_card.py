@@ -589,7 +589,7 @@ def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
                      effective_date: pd.Timestamp) -> dict:
     """Avalia as 5 condições e decide se o alerta dispara (≥3 lit)."""
     c1_pct = {r["strat"]: r["pct"] for r in (c1_rows or [])
-              if r.get("pct") is not None and not pd.isna(r.get("pct"))}
+              if pd.notna(r.get("pct"))}
 
     fr_evo_pct = _fronti_evo_pct(strat_pivot, effective_date)
     buckets_pct = {
@@ -611,7 +611,7 @@ def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
 
     # Condition 3: Diversification Ratio (winsorized) ≥ P80
     ratio_pct = d.get("ratio_wins_pct")
-    cond3 = (ratio_pct is not None and not pd.isna(ratio_pct) and ratio_pct >= 80)
+    cond3 = (pd.notna(ratio_pct) and ratio_pct >= 80)
 
     # Condition 4: ≥1 pair corr ≥ P85 AND both C1 ≥ P70 (significance filter)
     pairs = c3.get("pairs") or []
@@ -1062,7 +1062,7 @@ def render_camada3(c3: dict, c1_rows: list | None = None) -> str:
     # Significance filter: pair only counts as aligned if BOTH strategies are
     # simultaneously ≥ P70 in Camada 1 AND the pair's 63d correlation is ≥ P85.
     c1_pct = {r["strat"]: r["pct"] for r in (c1_rows or [])
-              if r.get("pct") is not None and not pd.isna(r.get("pct"))}
+              if pd.notna(r.get("pct"))}
     flagged_raw = [p for p in c3["pairs"]
                    if not pd.isna(p["c63_pct"]) and p["c63_pct"] >= 85]
     def _both_loaded(p):
