@@ -7034,11 +7034,39 @@ def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
                     f"Sem dados para {date_str}: {e}</div></section>")
         return err_html, {}
 
-    html = (_evo_render_camada4_alert(c4)
-            + _evo_render_camada2(d)
-            + _evo_render_camada1(c1_rows)
-            + _evo_render_camada3(c3, c1_rows)
-            + _evo_render_camada_direcional(c_dir))
+    # Unified diversification card: Camada 4 alert (summary) no topo,
+    # depois 1 card com sub-tabs pra C1 / C2 / C3 / Matriz Direcional.
+    c1_html  = _evo_render_camada1(c1_rows)
+    c2_html  = _evo_render_camada2(d)
+    c3_html  = _evo_render_camada3(c3, c1_rows)
+    dir_html = _evo_render_camada_direcional(c_dir)
+
+    unified = f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Diversificação — camadas detalhadas</span>
+        <span class="card-sub">Evolution · 4 camadas complementares por sub-tab</span>
+        <div class="pa-view-toggle evo-div-toggle" style="margin-left:auto;flex-wrap:wrap">
+          <button class="pa-tgl active" data-evo-div="camada1"
+                  onclick="selectEvoDivView(this,'camada1')">Camada 1 · Utilização</button>
+          <button class="pa-tgl" data-evo-div="camada2"
+                  onclick="selectEvoDivView(this,'camada2')">Camada 2 · Ratio</button>
+          <button class="pa-tgl" data-evo-div="camada3"
+                  onclick="selectEvoDivView(this,'camada3')">Camada 3 · Correlação</button>
+          <button class="pa-tgl" data-evo-div="direcional"
+                  onclick="selectEvoDivView(this,'direcional')">Matriz Direcional</button>
+        </div>
+      </div>
+      <div class="evo-div-body">
+        <div class="evo-div-view" data-evo-div="camada1">{c1_html}</div>
+        <div class="evo-div-view" data-evo-div="camada2" style="display:none">{c2_html}</div>
+        <div class="evo-div-view" data-evo-div="camada3" style="display:none">{c3_html}</div>
+        <div class="evo-div-view" data-evo-div="direcional" style="display:none">{dir_html}</div>
+      </div>
+    </section>"""
+
+    # Camada 4 alert stays as standalone summary at the top
+    html = _evo_render_camada4_alert(c4) + unified
     return html, c4
 
 
@@ -10562,6 +10590,20 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   .pa-alert-view-hidden {{ display:none; }}
 
+  /* Evolution Diversification — nested layer cards flattened inside unified card */
+  .evo-div-body section.card {{
+    border: 0 !important;
+    background: transparent !important;
+    padding: 4px 0 0 !important;
+    box-shadow: none !important;
+    margin-bottom: 0 !important;
+  }}
+  .evo-div-body .card-head {{
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+  }}
+
   /* Stop history modal — child window triggered from Risk Budget Monitor */
   .stop-modal {{
     position:fixed; inset:0; z-index:9999;
@@ -11242,6 +11284,18 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         body.classList.remove('print-full', 'print-current');
       }}, 500);
     }}, 120);
+  }};
+
+  // Evolution Diversification — sub-tab toggle (C1 / C2 / C3 / Matriz Direcional)
+  window.selectEvoDivView = function(btn, view) {{
+    var card = btn.closest('section.card');
+    if (!card) return;
+    card.querySelectorAll('.evo-div-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.evoDiv === view);
+    }});
+    card.querySelectorAll('.evo-div-view').forEach(function(v) {{
+      v.style.display = (v.dataset.evoDiv === view) ? '' : 'none';
+    }});
   }};
 
   // IDKA exposure — Bruto / Líquido toggle (shows/hides synthetic rows)
