@@ -8731,8 +8731,21 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         for short_k, df_k in rf_expo_maps.items():
             if df_k is None or df_k.empty:
                 continue
+            # Evita double-counting de Albatroz: cada fundo (IDKA, MACRO, etc.)
+            # tem via='via_albatroz' capturando sua fatia de Albatroz; ALBATROZ
+            # row já tem Albatroz inteiro via 'direct'. Filtrar via=='direct'
+            # garante que cada bond aparece em apenas uma linha.
+            # EVOLUTION (lookthrough_only=True) tem via='lookthrough' para TUDO
+            # (inclui Macro/Quant/Frontier slices que já estão em outras linhas)
+            # → pular por inteiro para rate factors (sua exposição de juros é
+            # indireta via filhos).
+            if short_k == "EVOLUTION":
+                continue
+            df_direct = df_k[df_k["via"] == "direct"]
+            if df_direct.empty:
+                continue
             for factor_key, factor_col in [("Juros Reais (IPCA)", "real"), ("Juros Nominais", "nominal"), ("IPCA Idx", "ipca_idx")]:
-                v = float(df_k[df_k["factor"] == factor_col]["ano_eq_brl"].sum())
+                v = float(df_direct[df_direct["factor"] == factor_col]["ano_eq_brl"].sum())
                 if _DV01_SIGN_FLIP.get(factor_col, False):
                     v = -v
                 if abs(v) >= 1_000:
@@ -8821,16 +8834,38 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         if td:
             nav_by_short[short] = _latest_nav(td, DATA_STR) or 0.0
     bench_matrix = {k: {} for k in factor_matrix}
-    if nav_by_short.get("IDKA_3Y"):
-        bench_matrix["Juros Reais (IPCA)"]["IDKA_3Y"] = 3.0  * nav_by_short["IDKA_3Y"]
-        bench_matrix["IPCA Idx"]["IDKA_3Y"]           = 1.0  * nav_by_short["IDKA_3Y"]
-    if nav_by_short.get("IDKA_10Y"):
-        bench_matrix["Juros Reais (IPCA)"]["IDKA_10Y"] = 10.0 * nav_by_short["IDKA_10Y"]
-        bench_matrix["IPCA Idx"]["IDKA_10Y"]           = 1.0  * nav_by_short["IDKA_10Y"]
-    if nav_by_short.get("FRONTIER"):
+    # Juros Reais/Nominais: factor_matrix está em convenção DV01 (long bond = negativo).
+    # Bench long IPCA duration do IDKA também é "long bond" → DV01 negativo.
+    # IPCA Idx / Equity: sem sign flip (face-value / notional raw), bench positivo.
+    # Só setar bench quando o fundo tem gross data — evita "-100%" fantasma
+    # em Líquido se o fetch do gross falhar.
+    if nav_by_short.get("IDKA_3Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_3Y"):
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_3Y"] = -3.0 * nav_by_short["IDKA_3Y"]
+    if nav_by_short.get("IDKA_3Y") and factor_matrix["IPCA Idx"].get("IDKA_3Y"):
+        bench_matrix["IPCA Idx"]["IDKA_3Y"]           =  1.0 * nav_by_short["IDKA_3Y"]
+    if nav_by_short.get("IDKA_10Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_10Y"):
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_10Y"] = -10.0 * nav_by_short["IDKA_10Y"]
+    if nav_by_short.get("IDKA_10Y") and factor_matrix["IPCA Idx"].get("IDKA_10Y"):
+        bench_matrix["IPCA Idx"]["IDKA_10Y"]           =   1.0 * nav_by_short["IDKA_10Y"]
+    if nav_by_short.get("FRONTIER") and factor_matrix["Equity BR"].get("FRONTIER"):
         bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
 
     factor_list = ["Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
+    # Unit per factor:
+    #   "yrs" → ano_eq_brl is duration-weighted BRL (BRL-years). Divide by NAV → anos.
+    #   "pct" → ano_eq_brl is BRL notional. Divide by NAV → %NAV.
+    # Duration factors (real/nominal rates) precisam de "yrs" pra não reportar
+    # "+376% NAV" quando o valor real é "+3.76 anos de duration".
+    _FACTOR_UNIT = {
+        "Juros Reais (IPCA)": "yrs",
+        "Juros Nominais":     "yrs",
+        "IPCA Idx":           "pct",
+        "Equity BR":          "pct",
+        "Equity DM":          "pct",
+        "Equity EM":          "pct",
+        "FX":                 "pct",
+        "Commodities":        "pct",
+    }
 
     house_nav_tot = sum(v for v in nav_by_short.values() if v)
     def _render_factor_rows(net_of_bench: bool) -> str:
@@ -8841,27 +8876,41 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             shorts_with_data = set(allocations.keys()) | set(benches.keys())
             if not shorts_with_data:
                 continue
+            unit = _FACTOR_UNIT.get(factor_key, "pct")
+            # For rate factors (yrs), factor/bench matrices are stored in DV01
+            # convention (long bond = negative). Flip sign for display so long
+            # duration reads as positive (intuitive for the reader).
+            sign_flip = -1 if unit == "yrs" else 1
             cells = ""
             total_brl = 0.0
             for short in FUND_ORDER:
                 gross = allocations.get(short, 0.0)
                 bench = benches.get(short, 0.0) if net_of_bench else 0.0
-                v_brl = gross - bench
+                v_brl = (gross - bench) * sign_flip
                 nav_k = nav_by_short.get(short, 0.0)
                 if abs(v_brl) < 1_000 or not nav_k:
                     cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
                 else:
                     total_brl += v_brl
-                    pct = v_brl / nav_k * 100
                     col = "var(--up)" if v_brl >= 0 else "var(--down)"
-                    cells += f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
+                    if unit == "yrs":
+                        yrs = v_brl / nav_k
+                        cells += f'<td class="mono" style="text-align:right; color:{col}">{yrs:+.2f} yrs</td>'
+                    else:
+                        pct = v_brl / nav_k * 100
+                        cells += f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
             tot_col = "var(--up)" if total_brl >= 0 else "var(--down)"
-            tot_pct = (total_brl / house_nav_tot * 100) if house_nav_tot else 0.0
+            if unit == "yrs":
+                tot_yrs = (total_brl / house_nav_tot) if house_nav_tot else 0.0
+                tot_cell = f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_yrs:+.2f} yrs</td>'
+            else:
+                tot_pct = (total_brl / house_nav_tot * 100) if house_nav_tot else 0.0
+                tot_cell = f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_pct:+.2f}%</td>'
             rows += (
                 "<tr>"
                 f'<td class="sum-fund">{factor_key}</td>'
                 + cells
-                + f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_pct:+.2f}%</td>'
+                + tot_cell
                 + "</tr>"
             )
         return rows
@@ -9099,7 +9148,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     <section class="card" id="breakdown-por-fator">
       <div class="card-head">
         <span class="card-title">Breakdown por Fator</span>
-        <span class="card-sub">— exposure (% NAV) por fator × fundo · Real/Nominal/IPCA em % NAV·ano (yr-eq); Equity/FX/Commodities em % NAV nocional</span>
+        <span class="card-sub">— exposure por fator × fundo · <b>Juros Reais/Nominais em anos de duration</b> (yrs); <b>IPCA Idx/Equity/FX/Commodities em %NAV nocional</b></span>
         <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
           <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
           <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
