@@ -302,6 +302,15 @@ dashboards originais.
   - Fase 2 (CSS-only refactor) **deliberadamente descartada** — ver `project_rule_mark_of_the_web.md`
 - **Bug fix — duplicate section IDs**: múltiplos `sections.append((fund, report, html))` com mesma chave criavam DOM duplicados. Consolidação: concatenar HTML em uma entry só (aplicado ao Risk Budget tab juntando stop monitor + Budget vs VaR).
 
+**Fase 4 — entregues (sessão 2026-04-22):**
+- **IDKA VaR/BVaR fix — bug de triplicação**: `LOTE_PARAMETRIC_VAR_TABLE` tem múltiplas views por primitivo filtradas por `BOOKS`. `fetch_risk_history_idka` somava todas e triplicava. Fix: `WHERE "BOOKS"::text='{*}'`. Ver [project_rule_lote_parametric_var_table.md](../../../C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_rule_lote_parametric_var_table.md).
+- **IDKA limites corrigidos como daily**: 3Y soft 0.40 / hard 0.60 · 10Y soft 1.00 / hard 1.50 (% daily, 95% 1d). Horizonte Lote confirmado via cross-check HS.
+- **IDKA Exposure toggle 3-vias** — `Bruto / Líquido vs Benchmark / Líquido vs Replication`. Replication = DV-match 2 NTN-Bs straddling target (`target_dm = target_anos / (1 + y/100)`), MD ANBIMA = `(DURATION/252) / (1+TIR/100)`. Default = Líquido vs Benchmark. DV01 convention unificada (long bond = negativo).
+- **IDKA Distribuição 252d vs Benchmark** — active return (NAV pct_change − IDKA index pct_change via `ECO_INDEX`), injetado em `_DIST_PORTFOLIOS` como `kind='idka_active'`.
+- **EVOLUTION Exposure — Por Strategy sem coloridinhos**: `_EVO_STRATEGY_COLOR` removido; 3 níveis (Strategy → LIVRO → Instrumento) com formatação uniforme.
+- **Evolution standalone card (`evolution_diversification_card.py`)** — ganhou Camada Direcional (`fetch_direction_report` + `compute_camada_direcional` com filtro P60 histórico de magnitude) + Camada 4 (`compute_camada4`) + filtro P70 na Camada 3. Para 2026-04-17: 1/5 acesas (SIST P96 → C2), sem alerta. Ainda standalone em `data/morning-calls/evolution_diversification_*.html`, não integrado ao principal.
+- **docs/IDKA_VAR_EXPLORATION.md** — auditoria do bug, decisão do horizonte (daily), comparativo Lote/HS (ratio 1.6-3× razoável), próximos passos parkeados.
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)

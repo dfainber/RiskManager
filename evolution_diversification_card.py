@@ -1151,10 +1151,235 @@ def render_camada3(c3: dict, c1_rows: list | None = None) -> str:
     """
 
 
-def render_html(d: dict, c1_rows: list[dict], c3: dict) -> str:
+def render_camada_direcional(c_dir: dict, nav: float) -> str:
+    """Matriz DELTA_SIST × DELTA_DISC por CATEGORIA — condição 5 da Camada 4."""
+    if not c_dir or not c_dir.get("rows"):
+        return """
+        <section class="card" style="max-width:760px;margin:24px auto;
+                                     padding:20px 24px;border:1px solid #ddd;
+                                     border-radius:10px;background:#fff;
+                                     color:#666;font-family:Inter">
+          <b>Camada Direcional — DELTA_SIST × DELTA_DISC</b>
+          <div style="margin-top:6px">Sem dados de RISK_DIRECTION_REPORT para o dia.</div>
+        </section>
+        """
+
+    thr = c_dir.get("thresholds", {})
+    min_leg = thr.get("min_leg_bps", 5.0)
+    min_cat = thr.get("min_cat_pct", 1.0)
+    mag_pct = thr.get("mag_pct", 60.0)
+
+    state_badge = {
+        "same-sign": ("<span style='color:#a8001a'>🔴 alinhadas</span>", "#a8001a"),
+        "opposite":  ("<span style='color:#0e7a32'>🟢 opostas</span>",   "#0e7a32"),
+        "only-sist": ("<span style='color:#888'>— só SIST</span>",       "#888"),
+        "only-disc": ("<span style='color:#888'>— só DISC</span>",       "#888"),
+        "dust":      ("<span style='color:#ccc'>· dust</span>",           "#ccc"),
+    }
+
+    rows_html = ""
+    for r in c_dir["rows"]:
+        badge_html, _ = state_badge.get(r["state"], ("—", "#888"))
+        if r["state"] == "same-sign" and not r.get("mag_passes", True):
+            badge_html = (f"<span style='color:#b88700'>🟡 nominal</span>"
+                          f"<br><span style='font-size:10px;color:#888'>"
+                          f"&lt;P{mag_pct:.0f} magnitude</span>")
+        elif r["state"] == "same-sign" and not r["material"]:
+            badge_html = (f"<span style='color:#b88700'>🟡 abaixo {min_cat:.0f}%PL</span>")
+
+        sist_color = ("#a8001a" if r["sist_bps"] > 0 else
+                      "#0e7a32" if r["sist_bps"] < 0 else "#888")
+        disc_color = ("#a8001a" if r["disc_bps"] > 0 else
+                      "#0e7a32" if r["disc_bps"] < 0 else "#888")
+        rows_html += (
+            f"<tr style='{'opacity:.45' if r['state'] == 'dust' else ''}'>"
+            f"<td style='padding:5px 4px'>"
+            f"<span style='color:#888;font-size:11px'>{r['tipo']}</span> "
+            f"<b>{r['categoria']}</b></td>"
+            f"<td style='text-align:right;font-family:monospace;padding:5px 4px;"
+            f"color:{sist_color}'>{r['sist_bps']:+,.1f}</td>"
+            f"<td style='text-align:right;font-family:monospace;padding:5px 4px;"
+            f"color:{disc_color}'>{r['disc_bps']:+,.1f}</td>"
+            f"<td style='text-align:right;font-family:monospace;padding:5px 4px;"
+            f"color:#888'>{r['pct_pl']*100:+.1f}%</td>"
+            f"<td style='text-align:center;padding:5px 4px;font-size:12px'>"
+            f"{badge_html}</td>"
+            f"</tr>"
+        )
+
+    ss_count  = c_dir["same_sign_count"]
+    ss_cats   = c_dir["same_sign_categorias"]
+    ss_quiet  = c_dir.get("same_sign_nominal_only", [])
+
+    if ss_count >= 3:
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:#ffe5e5;border-left:3px solid #a8001a;"
+                 f"border-radius:4px;font-size:13px;color:#5a0000'>"
+                 f"🚨 {ss_count} categorias com SIST e DISC no mesmo sinal "
+                 f"(magnitude ≥ P{mag_pct:.0f}): "
+                 f"{', '.join(ss_cats)} — condição 5 da Camada 4 acesa</div>")
+    elif ss_count >= 1:
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:#fff4e0;border-left:3px solid #b88700;"
+                 f"border-radius:4px;font-size:13px;color:#554200'>"
+                 f"🟡 {ss_count} categoria(s) alinhada(s): "
+                 f"{', '.join(ss_cats)} — insuficiente para disparar condição 5 (precisa ≥3)</div>")
+    else:
+        alert = ("<div style='margin-top:10px;padding:8px 12px;"
+                 "background:#e6f7ec;border-left:3px solid #0e7a32;"
+                 "border-radius:4px;font-size:13px;color:#1a5430'>"
+                 "✓ Nenhuma categoria material com SIST e DISC no mesmo sinal.</div>")
+
+    if ss_quiet:
+        alert += (f"<div style='margin-top:6px;padding:6px 10px;"
+                  f"background:#f6f6f6;border-left:3px solid #888;"
+                  f"border-radius:4px;font-size:12px;color:#555'>"
+                  f"ℹ️ Mesmo sinal mas magnitude &lt; P{mag_pct:.0f} histórico "
+                  f"(não conta): {', '.join(ss_quiet)}</div>")
+
+    return f"""
+    <section class="card" style="max-width:760px;margin:24px auto;
+                                 padding:20px 24px;border:1px solid #ddd;
+                                 border-radius:10px;font-family:Inter,system-ui,
+                                 sans-serif;color:#222;background:#fff">
+      <div class="card-head" style="margin-bottom:14px">
+        <span style="font-size:18px;font-weight:700">
+          Camada Direcional — DELTA_SIST × DELTA_DISC por categoria
+        </span>
+        <div style="color:#888;font-size:13px;margin-top:4px">
+          Fonte: RISK_DIRECTION_REPORT · filtros: cada perna ≥ {min_leg:.0f} bps,
+          |%PL| ≥ {min_cat:.0f}%, magnitude conjunta ≥ P{mag_pct:.0f} histórico (252d).
+          "same-sign" = as duas metades apontam na mesma direção.
+        </div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <thead>
+          <tr style="border-bottom:1px solid #ccc;color:#888">
+            <th style="text-align:left;padding:6px 4px">Categoria</th>
+            <th style="text-align:right;padding:6px 4px">Δ SIST (bps)</th>
+            <th style="text-align:right;padding:6px 4px">Δ DISC (bps)</th>
+            <th style="text-align:right;padding:6px 4px">%PL</th>
+            <th style="text-align:center;padding:6px 4px">Estado</th>
+          </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+
+      {alert}
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;
+                  font-size:12px;color:#666;line-height:1.6">
+        <b>Leitura:</b> quando as duas metades do fundo (sistemática + discricionária)
+        apontam no mesmo sinal em ≥3 categorias materiais, é o "smoking gun" de
+        bull-market alignment posição-a-posição. Filtro de magnitude histórica evita
+        falsos positivos (classes com peso momentâneo mas tamanho irrelevante no
+        histórico recente).
+      </div>
+    </section>
+    """
+
+
+def render_camada4(c4: dict) -> str:
+    """Alerta combinado 'bull market alignment' — ≥3 das 5 condições acesas."""
+    if not c4:
+        return ""
+
+    n_lit = c4.get("n_lit", 0)
+    alert = c4.get("alert", False)
+
+    if alert:
+        header_bg    = "#ffe5e5"
+        header_bd    = "#a8001a"
+        header_color = "#5a0000"
+        header_icon  = "🚨"
+        header_txt   = f"BULL MARKET ALIGNMENT — {n_lit} de 5 condições acesas"
+    elif n_lit >= 2:
+        header_bg    = "#fff4e0"
+        header_bd    = "#b88700"
+        header_color = "#554200"
+        header_icon  = "🟡"
+        header_txt   = f"Atenção — {n_lit} de 5 condições acesas (≥3 dispara alerta)"
+    else:
+        header_bg    = "#e6f7ec"
+        header_bd    = "#0e7a32"
+        header_color = "#1a5430"
+        header_icon  = "✓"
+        header_txt   = f"Sem alinhamento — {n_lit} de 5 condições acesas"
+
+    cond_rows = ""
+    for c in c4.get("conditions", []):
+        icon = "🔴" if c["lit"] else "⚪"
+        detail = c.get("detail")
+        if isinstance(detail, dict) and detail:
+            detail_txt = ", ".join(f"{k} P{v:.0f}" for k, v in detail.items())
+        elif isinstance(detail, list) and detail:
+            if detail and isinstance(detail[0], dict):
+                detail_txt = ", ".join(
+                    f"{p['a']}×{p['b']} P{p['c63_pct']:.0f}" for p in detail
+                )
+            else:
+                detail_txt = ", ".join(str(x) for x in detail)
+        elif isinstance(detail, (int, float)) and not pd.isna(detail):
+            detail_txt = f"P{detail:.0f}"
+        else:
+            detail_txt = "—"
+
+        row_bg = "#fff5f5" if c["lit"] else "transparent"
+        cond_rows += (
+            f"<tr style='background:{row_bg}'>"
+            f"<td style='padding:8px 6px;text-align:center;font-size:14px'>{icon}</td>"
+            f"<td style='padding:8px 6px'><b>Condição {c['id']}</b> · {c['name']}</td>"
+            f"<td style='padding:8px 6px;color:#666;font-size:12px'>{detail_txt}</td>"
+            f"</tr>"
+        )
+
+    return f"""
+    <section class="card" style="max-width:760px;margin:24px auto;
+                                 padding:20px 24px;border:1px solid #ddd;
+                                 border-radius:10px;font-family:Inter,system-ui,
+                                 sans-serif;color:#222;background:#fff">
+      <div style="padding:14px 16px;background:{header_bg};
+                  border-left:5px solid {header_bd};border-radius:6px;
+                  margin-bottom:14px">
+        <div style="font-size:17px;font-weight:700;color:{header_color}">
+          {header_icon} Camada 4 — {header_txt}
+        </div>
+        <div style="color:{header_color};opacity:.8;font-size:13px;margin-top:4px">
+          Alerta combinado: dispara quando ≥3 das 5 condições estruturais
+          ficam acesas simultaneamente.
+        </div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <thead>
+          <tr style="border-bottom:1px solid #ccc;color:#888">
+            <th style="width:30px;padding:6px 4px"></th>
+            <th style="text-align:left;padding:6px 4px">Condição</th>
+            <th style="text-align:left;padding:6px 4px">Detalhe</th>
+          </tr>
+        </thead>
+        <tbody>{cond_rows}</tbody>
+      </table>
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;
+                  font-size:12px;color:#666;line-height:1.6">
+        <b>Leitura:</b> este é o cartão de <i>sinalização</i>, não de breach.
+        Propósito: se 3+ condições estão acesas, levantar no Morning Call se
+        o alinhamento é intencional. Condição 4 incorpora filtro de significância
+        (corr ≥ P85 só conta se ambas estratégias do par estão ≥ P70 na Camada 1).
+      </div>
+    </section>
+    """
+
+
+def render_html(d: dict, c1_rows: list[dict], c3: dict,
+                c_dir: dict | None = None, c4: dict | None = None) -> str:
     card1 = render_camada1(c1_rows)
     card2 = render_card(d)
     card3 = render_camada3(c3, c1_rows)
+    card_dir = render_camada_direcional(c_dir, d.get("nav", 0.0)) if c_dir else ""
+    card4 = render_camada4(c4) if c4 else ""
     return f"""<!doctype html>
 <html lang="pt-br">
 <head>
@@ -1179,9 +1404,11 @@ def render_html(d: dict, c1_rows: list[dict], c3: dict) -> str:
     3 camadas (skill evolution-risk-concentration) em template isolado —
     sem integração com o relatório principal. Revisar antes de decidir onde encaixar.
   </div>
+  {card4}
   {card1}
   {card2}
   {card3}
+  {card_dir}
 </body>
 </html>
 """
@@ -1200,10 +1427,22 @@ if __name__ == "__main__":
     c1_rows = compute_camada1(d["strat_pivot"], d["effective_date"])
     c3 = compute_camada3(date_arg, d["effective_date"])
 
+    # Directional matrix + historical P60 magnitude filter
+    effective_date_str = d["effective_date"].strftime("%Y-%m-%d")
+    df_dir_today = fetch_direction_report(effective_date_str)
+    df_dir_hist  = fetch_direction_report_history(effective_date_str, lookback_days=365)
+    mag_p60_by_cat = _compute_magnitude_p60_per_cat(df_dir_hist, pct_threshold=60.0)
+    c_dir = compute_camada_direcional(df_dir_today, d["nav"],
+                                       mag_p60_by_cat=mag_p60_by_cat)
+
+    # Camada 4 — combined alert
+    c4 = compute_camada4(c1_rows, d, c3, c_dir,
+                          d["strat_pivot"], d["effective_date"])
+
     out_dir = Path(__file__).parent / "data" / "morning-calls"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"evolution_diversification_{d['date']}.html"
-    out_path.write_text(render_html(d, c1_rows, c3), encoding="utf-8")
+    out_path.write_text(render_html(d, c1_rows, c3, c_dir, c4), encoding="utf-8")
     print(f"Saved: {out_path}")
     print(f"Effective date: {d['date']}")
     print(f"Camada 1: " + " | ".join(
@@ -1216,3 +1455,10 @@ if __name__ == "__main__":
           f"CREDITO clipado em {len(d['credito_wins_dates'])} dias")
     print(f"Camada 3: {len(c3['pairs'])} pares, "
           f"{c3['n_obs']} obs de PnL")
+    print(f"Camada Direcional: same-sign {c_dir['same_sign_count']} "
+          f"({', '.join(c_dir['same_sign_categorias']) or '—'})")
+    print(f"Camada 4: {c4['n_lit']}/5 acesas | alert={c4['alert']}")
+    for cond in c4["conditions"]:
+        sym = "[X]" if cond["lit"] else "[ ]"
+        name_ascii = cond['name'].encode('ascii', 'replace').decode('ascii')
+        print(f"  {sym} C{cond['id']}: {name_ascii}")
