@@ -2629,10 +2629,104 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
     return df
 
 
+def _compute_idka_bench_replication(date_str: str, target_anos: int, tenour_du: int) -> pd.DataFrame:
+    """Replicação do bench IDKA via DV-match — melhor carteira NTN-B que replica o ponto.
+       (Metodologia igual IDKA_TABLES_GRAPHS.py, Pedro Igor.)
+
+       **Dois conceitos distintos:**
+       1. Benchmark no ponto = índice IDKA teórico (target_dm = anos / (1+y)).
+          É um ÚNICO ponto de duração, referência abstrata.
+       2. Bench replication (esta função) = 1-2 NTN-Bs que replicam o target_dm
+          via weighted modified-duration matching. É a carteira concreta
+          "best-fit" que o fundo teria de montar pra estar em cima do bench.
+
+       Ambos têm a MESMA ANO_EQ total (target_dm). O que muda é a composição:
+       a replicação distribui em tenors reais, o "ponto" não.
+       Útil pro historical spread: a replication dá uma série temporal
+       reconstruível via preços ANBIMA; o ponto vem do ECO_INDEX direto.
+       Retorna DataFrame com 1-2 NTN-Bs que replicam o índice, com:
+         INSTRUMENT, EXPIRATION_DATE, BDAYS, TIR (%), MD, W (peso 0-1), ANO_EQ_BENCH (= W × MD)
+
+       target_anos: 3 (IDKA 3A) ou 10 (IDKA 10A)
+       tenour_du:   756 (=3y) ou 2520 (=10y) — usado pra pegar TIR tenor do BR_YIELDS
+
+       Fórmula:
+         y = TIR NTN-B no tenor (from q_models.BR_YIELDS)
+         target_dm = target_anos / (1 + y/100)
+         MD(bond) = (DURATION_days / 252) / (1 + TIR/100)
+         Acha 2 NTN-Bs straddling target_dm (maior <= target <= menor)
+         Solve pesos: w_s*MD_s + w_l*MD_l = target_dm, w_s + w_l = 1
+         ANO_EQ_BENCH = W × MD (positivo; sum ≈ target_dm)
+       Retorna DataFrame vazio se qualquer fetch falhar."""
+    try:
+        y_df = read_sql(f"""
+            SELECT "YIELD" FROM q_models."BR_YIELDS"
+            WHERE "TYPE" = 'NTN-B' AND "TENOUR" = {tenour_du} AND "DATE" = DATE '{date_str}'
+        """)
+        if y_df.empty:
+            return pd.DataFrame()
+        y = float(y_df["YIELD"].iloc[0])
+        target_dm = target_anos / (1 + y / 100.0)
+
+        bonds = read_sql(f"""
+            SELECT m."INSTRUMENT", m."EXPIRATION_DATE",
+                   p."UNIT_PRICE", p."BUY_RATE" AS tir_pct, p."DURATION" AS dur_days
+            FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
+            JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
+              ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
+            WHERE p."REFERENCE_DATE" = DATE '{date_str}'
+              AND m."INDEXER" = 'IPCA'
+              AND m."EXPIRATION_DATE" > DATE '{date_str}'
+              AND p."BUY_RATE" IS NOT NULL
+              AND p."DURATION" IS NOT NULL
+        """)
+        if bonds.empty:
+            return pd.DataFrame()
+        bonds["EXPIRATION_DATE"] = pd.to_datetime(bonds["EXPIRATION_DATE"])
+        bonds["BDAYS"] = (bonds["dur_days"] / 1).astype(int)  # ANBIMA DURATION is already in days → Macaulay
+        # MD = Macaulay / (1+y) with Macaulay in years (= dur_days / 252)
+        bonds["MD"] = (bonds["dur_days"].astype(float) / 252.0) / (1 + bonds["tir_pct"].astype(float) / 100.0)
+        bonds = bonds[bonds["MD"] > 0].copy()
+        if bonds.empty:
+            return pd.DataFrame()
+
+        above = bonds[bonds["MD"] >= target_dm]
+        below = bonds[bonds["MD"] <= target_dm]
+        if above.empty or below.empty:
+            return pd.DataFrame()
+        long_row  = above.loc[above["MD"].idxmin()].copy()      # menor MD acima do target
+        short_row = below.loc[below["MD"].idxmax()].copy()      # maior MD abaixo do target
+
+        if long_row["INSTRUMENT"] == short_row["INSTRUMENT"]:
+            long_row["W"] = 1.0
+            selected = pd.DataFrame([long_row])
+        else:
+            dm_s, dm_l = float(short_row["MD"]), float(long_row["MD"])
+            w_s = (dm_l - target_dm) / (dm_l - dm_s)
+            w_l = (target_dm - dm_s) / (dm_l - dm_s)
+            long_row["W"]  = w_l
+            short_row["W"] = w_s
+            selected = pd.DataFrame([short_row, long_row])
+
+        selected["ANO_EQ_BENCH"] = selected["W"].astype(float) * selected["MD"].astype(float)
+        selected = selected[["INSTRUMENT", "EXPIRATION_DATE", "BDAYS", "tir_pct", "MD", "W", "ANO_EQ_BENCH"]].copy()
+        selected = selected.rename(columns={"tir_pct": "TIR"})
+        selected["TARGET_DM"] = target_dm
+        selected["YIELD_TEN"] = y
+        selected["TARGET_ANOS"] = target_anos
+        selected = selected.sort_values("BDAYS").reset_index(drop=True)
+        return selected
+    except Exception as e:
+        print(f"  [IDKA bench proxy] failed for {target_anos}y: {e}")
+        return pd.DataFrame()
+
+
 def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
-                                  bench_dur: float, bench_label: str) -> str:
+                                  bench_dur: float, bench_label: str,
+                                  date_str: str = None) -> str:
     """IDKA exposure table — positions por fator com toggle Bruto/Líquido.
-       Líquido = Bruto − bench sintético (bench_dur anos de IPCA Coupon + 1 NAV de IPCA carry).
+       Líquido = Bruto − bench teórico DV-matched (NTN-Bs que replicam IDKA index
+       via weighted modified-duration matching — metodologia IDKA_TABLES_GRAPHS.py).
        Dados vêm de rf_expo_maps[short] (fetch_rf_exposure_map)."""
     if df is None or df.empty or not nav:
         return ""
@@ -2762,10 +2856,10 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
                 + '</tr>'
             )
 
-    # Total BRUTO row — duration only (yrs = real + nominal factors)
+    # Total BRUTO row — só aparece no modo 'bruto'
     total_yrs_bruto = total_ano_eq / nav
     body_bruto_total = (
-        f'<tr class="pa-total-row" data-pinned="1" '
+        f'<tr class="pa-total-row" data-idka-view="bruto" '
         f'style="border-top:2px solid var(--border);font-weight:700;background:rgba(0,0,0,0.25)">'
         f'<td style="padding:6px 8px" colspan="2"><b>TOTAL BRUTO — Duration</b> '
         f'<span style="color:var(--muted);font-weight:400;font-size:11px">(só fatores real + nominal)</span></td>'
@@ -2775,53 +2869,136 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         f'</tr>'
     )
 
-    # Líquido view — three synthetic rows added on top of Bruto:
+    # Líquido view:
     #   1. Swap plug (via Albatroz → CDI): neutraliza duração da fatia via_albatroz
-    #      (IDKA paga duração via swap com Albatroz e recebe CDI, como no PA).
-    #   2. Benchmark IDKA Xy: −bench_dur yrs (duração real do índice).
-    #   3. TOTAL LÍQUIDO = direct duration − bench (via_albatroz zera via swap).
+    #   2. Benchmark NO PONTO: target_dm = anos / (1+y), referência abstrata do IDKA
+    #   3. Bench REPLICATION (DV-match): 1-2 NTN-Bs que replicam o ponto na prática
+    #   4. TOTAL LÍQUIDO = direct duration − bench (ponto ≡ replication em total)
+    # Os dois bench são importantes pra cálculo de historical spread (parkeado):
+    #   - ponto via ECO_INDEX IDKA_IPCA_Xa direto
+    #   - replication via prices ANBIMA das NTN-Bs × pesos atuais
+    tenour_du = {3: 756, 10: 2520}.get(int(bench_dur), 756)
+    bench_replication = _compute_idka_bench_replication(date_str, int(bench_dur), tenour_du) if date_str else pd.DataFrame()
+
     via_yrs_disp = total_ano_eq_via / nav
-    swap_row = (
-        f'<tr class="idka-swap" data-idka-view="liquido" '
-        f'style="display:none;background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
-        f'<td style="padding:6px 8px" colspan="2">⇄ <b>Swap plug (via Albatroz → CDI)</b> '
+
+    # 3 modos de view com data-idka-view:
+    #   'bruto'           — só positions + TOTAL BRUTO
+    #   'liq-benchmark'   — positions + swap + Benchmark point row + TOTAL LÍQUIDO
+    #   'liq-replication' — positions + swap + Replication legs + TOTAL LÍQUIDO
+    # Swap row e TOTAL LÍQUIDO aparecem em AMBOS os modos líquidos (duplicamos em HTML)
+    target_dm = float(bench_dur)
+    y_tenor   = None
+    bench_ano_eq_total = 0.0
+    if not bench_replication.empty:
+        target_dm = float(bench_replication["TARGET_DM"].iloc[0])
+        y_tenor   = float(bench_replication["YIELD_TEN"].iloc[0])
+        bench_ano_eq_total = float(bench_replication["ANO_EQ_BENCH"].sum())
+    else:
+        bench_ano_eq_total = target_dm   # fallback
+
+    # Swap plug — aparece em AMBAS as views líquidas (duplicamos)
+    def _swap_html(view_tag):
+        return (
+            f'<tr class="idka-swap" data-idka-view="{view_tag}" '
+            f'style="display:none;background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
+            f'<td style="padding:6px 8px" colspan="2">⇄ <b>Swap plug (via Albatroz → CDI)</b> '
+            f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+            f'· neutraliza duração da fatia Albatroz (como no PA)</span></td>'
+            f'<td></td><td></td>'
+            f'<td class="mono" style="text-align:right">{-via_yrs_disp:+.2f} yrs</td>'
+            f'<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+            f'<td class="mono" style="color:var(--muted);font-size:10.5px">swap</td>'
+            f'</tr>'
+        )
+    # Sobrescreve o swap_row anterior para virar dual
+    swap_row = _swap_html("liq-benchmark") + _swap_html("liq-replication")
+
+    # Benchmark point row (liq-benchmark mode only)
+    bench_point_row = (
+        f'<tr class="idka-bench-point" data-idka-view="liq-benchmark" '
+        f'style="display:none;background:rgba(184,135,0,0.10);color:var(--warn);font-weight:700">'
+        f'<td style="padding:6px 8px" colspan="2">− <b>Benchmark ({bench_label})</b> '
         f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-        f'· neutraliza duração da fatia Albatroz (como no PA)</span></td>'
-        f'<td></td><td></td>'
-        f'<td class="mono" style="text-align:right">{-via_yrs_disp:+.2f} yrs</td>'
-        f'<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
-        f'<td class="mono" style="color:var(--muted);font-size:10.5px">swap</td>'
-        f'</tr>'
-    )
-    bench_row = (
-        f'<tr class="idka-bench" data-idka-view="liquido" '
-        f'style="display:none;background:rgba(184,135,0,0.08);color:var(--warn);font-weight:600">'
-        f'<td style="padding:6px 8px" colspan="2">− <b>Benchmark {bench_label}</b> '
-        f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-        f'· {bench_dur:.0f}y duração real (+ 1× NAV IPCA carry)</span></td>'
-        f'<td class="mono" style="text-align:right;color:var(--muted)">{bench_dur:.2f}y</td>'
+        f'· target MD = {target_dm:.3f}y'
+        + (f' (TIR tenor {y_tenor:.2f}%)' if y_tenor is not None else f' (fallback: {int(bench_dur)}y nominal)')
+        + f'</span></td>'
+        f'<td class="mono" style="text-align:right;color:var(--muted)">{target_dm:.2f}y</td>'
         f'<td></td>'
-        f'<td class="mono" style="text-align:right">−{bench_dur:.2f} yrs</td>'
-        f'<td class="mono" style="text-align:right;color:var(--muted)">−100%</td>'
-        f'<td class="mono" style="color:var(--muted);font-size:10.5px">synthetic</td>'
+        f'<td class="mono" style="text-align:right">−{target_dm:.3f} yrs</td>'
+        f'<td class="mono" style="text-align:right;color:var(--muted)">100% NAV</td>'
+        f'<td class="mono" style="color:var(--muted);font-size:10.5px">índice</td>'
         f'</tr>'
     )
-    # DV01 conv: direct_dv01 (negative for long) − bench_dv01 (also negative for long bench)
-    # = direct_dv01 − (−bench_dur) = direct_dv01 + bench_dur
-    # Net negative = still long above bench ("dado"); net positive = under bench.
-    liq_real_yrs = total_ano_eq_direct / nav + bench_dur
+
+    # Replication rows (liq-replication mode only)
+    replication_rows = ""
+    if not bench_replication.empty:
+        replication_rows += (
+            f'<tr class="idka-bench-repl-head" data-idka-view="liq-replication" '
+            f'style="display:none;background:rgba(184,135,0,0.10);color:var(--warn);font-weight:700">'
+            f'<td style="padding:6px 8px" colspan="2">− <b>Replication</b> '
+            f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+            f'· melhor carteira NTN-B (DV-match) · soma ANO_EQ = {bench_ano_eq_total:.3f}y '
+            f'≈ target MD {target_dm:.3f}y</span></td>'
+            f'<td class="mono" style="text-align:right;color:var(--muted)">{target_dm:.2f}y</td>'
+            f'<td></td>'
+            f'<td class="mono" style="text-align:right">−{bench_ano_eq_total:.3f} yrs</td>'
+            f'<td></td><td></td>'
+            f'</tr>'
+        )
+        for _, r in bench_replication.iterrows():
+            exp = pd.Timestamp(r["EXPIRATION_DATE"]).strftime("%d/%m/%Y")
+            w_pct = float(r["W"]) * 100
+            md = float(r["MD"])
+            ano_eq = float(r["ANO_EQ_BENCH"])
+            replication_rows += (
+                f'<tr class="idka-bench-leg" data-idka-view="liq-replication" '
+                f'style="display:none;font-size:11.5px;color:var(--muted)">'
+                f'<td style="padding:4px 32px">{r["INSTRUMENT"]} '
+                f'<span style="color:var(--line-2);font-size:10.5px">· venc {exp} · TIR {float(r["TIR"]):.2f}%</span></td>'
+                f'<td class="mono" style="font-size:10.5px">NTN-B</td>'
+                f'<td class="mono" style="text-align:right">{md:.2f}y</td>'
+                f'<td class="mono" style="text-align:right">w={w_pct:.1f}%</td>'
+                f'<td class="mono" style="text-align:right">{ano_eq:.3f} yrs</td>'
+                f'<td class="mono" style="text-align:right">—</td>'
+                f'<td class="mono" style="font-size:10.5px">DV-match</td>'
+                f'</tr>'
+            )
+    else:
+        replication_rows = (
+            f'<tr class="idka-bench-repl-head" data-idka-view="liq-replication" '
+            f'style="display:none;background:rgba(184,135,0,0.10);color:var(--muted);font-weight:600">'
+            f'<td style="padding:6px 8px" colspan="7">⚠ Replication DV-match indisponível '
+            f'(fallback: usa target MD {target_dm:.2f}y como bench). '
+            f'Verifique q_models.BR_YIELDS e PRICES_ANBIMA_BR_PUBLIC_BONDS pra {date_str}.</td></tr>'
+        )
+
+    bench_rows_html = bench_point_row + replication_rows
+
+    # TOTAL LÍQUIDO em DV01 conv: direct_dv01 − bench_dv01 = direct_dv01 + bench (bench = long bond → DV01 negativo)
+    # vs Benchmark (point): usa target_dm
+    # vs Replication: usa bench_ano_eq_total (soma NTN-Bs DV-match — matematicamente ≈ target_dm)
+    liq_vs_bench_yrs = total_ano_eq_direct / nav + target_dm
+    liq_vs_repl_yrs  = total_ano_eq_direct / nav + bench_ano_eq_total
+
+    def _liq_row(view_tag, label, yrs):
+        col = "var(--up)" if yrs >= 0 else "var(--down)"
+        return (
+            f'<tr class="idka-liq-total" data-idka-view="{view_tag}" '
+            f'style="display:none;border-top:2px solid var(--border);font-weight:700;'
+            f'background:rgba(74,222,128,0.08)">'
+            f'<td style="padding:6px 8px" colspan="2"><b>{label}</b> '
+            f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+            f'· direct duration − bench, via Albatroz swapado</span></td>'
+            f'<td></td><td></td>'
+            f'<td class="mono" style="text-align:right;color:{col};font-weight:700">{yrs:+.2f} yrs</td>'
+            f'<td></td><td></td>'
+            f'</tr>'
+        )
     liq_row = (
-        f'<tr class="idka-liq-total" data-idka-view="liquido" '
-        f'style="display:none;border-top:2px solid var(--border);font-weight:700;'
-        f'background:rgba(74,222,128,0.08)">'
-        f'<td style="padding:6px 8px" colspan="2"><b>TOTAL LÍQUIDO</b> '
-        f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-        f'· direct duration − bench ({bench_dur:.0f}y), via Albatroz swapado pra CDI</span></td>'
-        f'<td></td><td></td>'
-        f'<td class="mono" style="text-align:right;color:{"var(--up)" if liq_real_yrs >=0 else "var(--down)"};font-weight:700">'
-        f'{liq_real_yrs:+.2f} yrs</td>'
-        f'<td></td><td></td>'
-        f'</tr>'
+        _liq_row("liq-benchmark",   "TOTAL LÍQUIDO vs Benchmark",   liq_vs_bench_yrs) +
+        _liq_row("liq-replication", "TOTAL LÍQUIDO vs Replication", liq_vs_repl_yrs)
     )
 
     nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
@@ -2831,11 +3008,13 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
       <div class="card-head">
         <span class="card-title">Exposição — {short_label}</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · posições por fator · bench = {bench_label} ({bench_dur:.0f}y real + IPCA carry)</span>
-        <div class="pa-view-toggle" style="margin-left:auto">
+        <div class="pa-view-toggle" style="margin-left:auto;flex-wrap:wrap">
           <button class="pa-tgl active" data-idka-view="bruto"
                   onclick="selectIdkaView(this,'bruto')">Bruto</button>
-          <button class="pa-tgl" data-idka-view="liquido"
-                  onclick="selectIdkaView(this,'liquido')">Líquido (ex bench)</button>
+          <button class="pa-tgl" data-idka-view="liq-benchmark"
+                  onclick="selectIdkaView(this,'liq-benchmark')">Líquido vs Benchmark</button>
+          <button class="pa-tgl" data-idka-view="liq-replication"
+                  onclick="selectIdkaView(this,'liq-replication')">Líquido vs Replication</button>
         </div>
       </div>
       <table class="summary-table" data-no-sort="1">
@@ -2848,7 +3027,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
           <th style="text-align:right">%NAV (face)</th>
           <th style="text-align:left">Via</th>
         </tr></thead>
-        <tbody>{body}{body_bruto_total}{swap_row}{bench_row}{liq_row}</tbody>
+        <tbody>{body}{body_bruto_total}{swap_row}{bench_rows_html}{liq_row}</tbody>
       </table>
       <div class="bar-legend" style="margin-top:10px">
         <b>Duration</b>: modified duration ou anos até o vencimento (proxy).
@@ -2856,8 +3035,13 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         <b>Ano-Eq</b>: exposição em <i>anos de duration × NAV</i> (BRL-yr) convertida em anos por NAV.
         <b>%NAV</b>: posição nominal ÷ NAV.
         <b>Bruto</b>: todas as posições como estão (direct + via Albatroz).
-        <b>Líquido</b>: adiciona linha de benchmark sintético ({bench_dur:.0f}y duração real) e mostra overweight/underweight vs índice.
-        Positivo = overweight duration (ganha com queda de yield real).
+        <b>Líquido vs Benchmark</b>: subtrai o <b>índice IDKA teórico no ponto</b> (target MD = anos / (1+y)),
+        referência abstrata.
+        <b>Líquido vs Replication</b>: subtrai a <b>melhor carteira NTN-B que replica o benchmark</b>
+        (DV-match — metodologia <code>IDKA_TABLES_GRAPHS.py</code>), composição concreta.
+        Os dois totais coincidem hoje (por construção, soma replication = target MD); a diferença
+        aparece em <b>historical spread</b> — bench point vs replication divergem ao longo do tempo
+        conforme os preços ANBIMA × target móvel. Overweight de duration = TOTAL LÍQUIDO &lt; 0 (DV01 conv).
       </div>
     </section>"""
 
@@ -8839,6 +9023,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if short_k in ("IDKA_3Y", "IDKA_10Y"):
                 idka_html = build_idka_exposure_section(
                     short_k, df_k, nav_k, cfg_k["bench_dur"], cfg_k["bench_label"],
+                    date_str=DATA_STR,
                 )
                 if idka_html:
                     sections.append((short_k, "exposure", idka_html))
