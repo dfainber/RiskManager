@@ -2856,11 +2856,11 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
                 + '</tr>'
             )
 
-    # Total BRUTO row — só aparece no modo 'bruto'
+    # Total BRUTO row — só aparece no modo 'bruto' (hidden por default)
     total_yrs_bruto = total_ano_eq / nav
     body_bruto_total = (
         f'<tr class="pa-total-row" data-idka-view="bruto" '
-        f'style="border-top:2px solid var(--border);font-weight:700;background:rgba(0,0,0,0.25)">'
+        f'style="display:none;border-top:2px solid var(--border);font-weight:700;background:rgba(0,0,0,0.25)">'
         f'<td style="padding:6px 8px" colspan="2"><b>TOTAL BRUTO — Duration</b> '
         f'<span style="color:var(--muted);font-weight:400;font-size:11px">(só fatores real + nominal)</span></td>'
         f'<td></td><td></td>'
@@ -2884,9 +2884,12 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
 
     # 3 modos de view com data-idka-view:
     #   'bruto'           — só positions + TOTAL BRUTO
-    #   'liq-benchmark'   — positions + swap + Benchmark point row + TOTAL LÍQUIDO
+    #   'liq-benchmark'   — positions + swap + Benchmark point row + TOTAL LÍQUIDO (DEFAULT)
     #   'liq-replication' — positions + swap + Replication legs + TOTAL LÍQUIDO
     # Swap row e TOTAL LÍQUIDO aparecem em AMBOS os modos líquidos (duplicamos em HTML)
+    _DEFAULT_VIEW = "liq-benchmark"
+    def _disp(view_tag):
+        return "" if view_tag == _DEFAULT_VIEW else "display:none;"
     target_dm = float(bench_dur)
     y_tenor   = None
     bench_ano_eq_total = 0.0
@@ -2901,7 +2904,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     def _swap_html(view_tag):
         return (
             f'<tr class="idka-swap" data-idka-view="{view_tag}" '
-            f'style="display:none;background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
+            f'style="{_disp(view_tag)}background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
             f'<td style="padding:6px 8px" colspan="2">⇄ <b>Swap plug (via Albatroz → CDI)</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
             f'· neutraliza duração da fatia Albatroz (como no PA)</span></td>'
@@ -2914,10 +2917,10 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     # Sobrescreve o swap_row anterior para virar dual
     swap_row = _swap_html("liq-benchmark") + _swap_html("liq-replication")
 
-    # Benchmark point row (liq-benchmark mode only)
+    # Benchmark point row (liq-benchmark mode only; default → visible)
     bench_point_row = (
         f'<tr class="idka-bench-point" data-idka-view="liq-benchmark" '
-        f'style="display:none;background:rgba(184,135,0,0.10);color:var(--warn);font-weight:700">'
+        f'style="{_disp("liq-benchmark")}background:rgba(184,135,0,0.10);color:var(--warn);font-weight:700">'
         f'<td style="padding:6px 8px" colspan="2">− <b>Benchmark ({bench_label})</b> '
         f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
         f'· target MD = {target_dm:.3f}y'
@@ -2986,7 +2989,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         col = "var(--up)" if yrs >= 0 else "var(--down)"
         return (
             f'<tr class="idka-liq-total" data-idka-view="{view_tag}" '
-            f'style="display:none;border-top:2px solid var(--border);font-weight:700;'
+            f'style="{_disp(view_tag)}border-top:2px solid var(--border);font-weight:700;'
             f'background:rgba(74,222,128,0.08)">'
             f'<td style="padding:6px 8px" colspan="2"><b>{label}</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
@@ -3009,9 +3012,9 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         <span class="card-title">Exposição — {short_label}</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · posições por fator · bench = {bench_label} ({bench_dur:.0f}y real + IPCA carry)</span>
         <div class="pa-view-toggle" style="margin-left:auto;flex-wrap:wrap">
-          <button class="pa-tgl active" data-idka-view="bruto"
+          <button class="pa-tgl" data-idka-view="bruto"
                   onclick="selectIdkaView(this,'bruto')">Bruto</button>
-          <button class="pa-tgl" data-idka-view="liq-benchmark"
+          <button class="pa-tgl active" data-idka-view="liq-benchmark"
                   onclick="selectIdkaView(this,'liq-benchmark')">Líquido vs Benchmark</button>
           <button class="pa-tgl" data-idka-view="liq-replication"
                   onclick="selectIdkaView(this,'liq-replication')">Líquido vs Replication</button>
