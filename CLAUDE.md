@@ -341,6 +341,7 @@ dashboards originais.
 - **Página de ETFs** — adicionar família ETF como view. Escopo a definir
 - **Navigation checklist** — guia de leitura dos relatórios na ordem certa
 - **IDKA HS BVaR — current-positions** — aplicar posições atuais (exploded) a 3y de yield moves (`PRICES_ANBIMA_BR_PUBLIC_BONDS` + DI1 yields + IPCA) − retorno do IDKA index. Stub realized-NAV em `76b1080`; wire depois de calibrar
+- **IDKA Distribuição 252d — toggle vs Replication** — hoje o card mostra só "α vs Benchmark" (fund − IDKA index, via ECO_INDEX). Adicionar série paralela "α vs Replication" que exige DV-match **diário**: iterar BR_YIELDS + prices ANBIMA para cada dia em 252d, solve 2 NTN-Bs straddling target_MD(t), compute weighted return. Ficaria ao lado de Benchmark num toggle (default = Benchmark). Importa p/ historical spread — divergência Benchmark vs Replication é o tracking error da réplica. Custo estimado: ~2h (fetch de preços em batch + loop diário em pandas). Ver `docs/IDKA_VAR_EXPLORATION.md` §4.2.
 - **Exposure Map — calibração ANO_EQ vs calculadora existente** — overshoot de ~1yr (IDKA 3Y 3.97 vs ref 2.8; IDKA 10Y 11.32 vs ref 10). Fórmula minha (`-DELTA` p/ IPCA Coupon) == `AMOUNT × DV01 × 10000 / AUM` da calculadora matematicamente. Precisa diff lado-a-lado p/ descobrir diferença (escopo? positions excluded? convention?)
 - **QUANT + EVOLUTION equity direct wiring** — Evolution-direct stub pronto; se FMN/FCO/FLO tiverem equity significativo, devem aparecer no Breakdown por Fator
 - **IDKA limites definitivos** — provisórios ~80% util; aguarda mandato

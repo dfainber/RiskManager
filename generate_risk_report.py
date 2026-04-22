@@ -2159,7 +2159,8 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         s_sig = strat_sigma.get(strat)
         s_dexp = (s_pct - d1_strat[strat]) if strat in d1_strat else None
         s_dvar = (s_var - d1_strat_var[strat]) if strat in d1_strat_var else None
-        s_color = _EVO_STRATEGY_COLOR.get(strat, "#94a3b8")
+        # Uniform styling (sem cor específica por strategy — consistente com Por Fator)
+        s_color = "var(--text)"
 
         s_net_s, s_net_c   = _num(s_pct, 2)
         s_dexp_s, s_dexp_c = _num(s_dexp, 2)
