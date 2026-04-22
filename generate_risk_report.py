@@ -492,11 +492,43 @@ def carry_step(budget_abs: float, pnl: float, ytd: float) -> tuple[float, bool]:
         next_abs = min(next_abs, max(sem_cap, 0.0))
     return next_abs, gancho
 
+_RISK_BUDGET_OVERRIDES_PATH = Path(__file__).parent / "data" / "mandatos" / "risk_budget_overrides.json"
+
+
+def _load_risk_budget_overrides() -> dict[tuple[str, pd.Timestamp], float]:
+    """Carrega overrides manuais de orçamento de {data/mandatos/risk_budget_overrides.json}.
+       Formato do arquivo:
+       {
+         "overrides": [
+           {"livro": "Macro_RJ", "month": "2026-04", "budget_bps": 63.0, "note": "..."}
+         ]
+       }
+       Se o arquivo não existir, usa o override hardcoded histórico como fallback."""
+    fallback = {("Macro_RJ", pd.Timestamp("2026-04-01")): 63.0}
+    try:
+        if not _RISK_BUDGET_OVERRIDES_PATH.exists():
+            return fallback
+        with open(_RISK_BUDGET_OVERRIDES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        out: dict[tuple[str, pd.Timestamp], float] = {}
+        for entry in data.get("overrides", []):
+            livro = entry.get("livro")
+            month_s = entry.get("month", "")
+            budget = entry.get("budget_bps")
+            if not livro or not month_s or budget is None:
+                continue
+            # Accept "YYYY-MM" or "YYYY-MM-DD"; normalize to first-of-month
+            ts = pd.Timestamp(month_s + ("-01" if len(month_s) == 7 else ""))
+            out[(livro, ts.normalize())] = float(budget)
+        return out or fallback
+    except Exception as e:
+        print(f"  risk_budget_overrides load failed ({e}) — using fallback")
+        return fallback
+
+
 def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Reconstruct monthly stop budget series per PM from PnL history."""
-    overrides = {
-        ("Macro_RJ", pd.Timestamp("2026-04-01")): 63.0,   # management override
-    }
+    overrides = _load_risk_budget_overrides()
     pm_map = {
         "CI":       "CI",
         "Macro_LF": "LF",
@@ -4318,11 +4350,36 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
       </div>"""
 
 def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
-    """Modal with month-by-month PnL + carry evolution per PM.
+    """Modal with month-by-month PnL + carry evolution per PM + overrides editor.
        Triggered by a button in the Risk Budget Monitor card head."""
     PM_ORDER  = ["CI", "LF", "JD", "RJ"]
     PM_LABELS = {"CI": "CI (Comitê)", "LF": "Luiz Felipe", "JD": "Joca Dib",
                  "RJ": "Rodrigo Jafet"}
+    LIVRO_OF  = {"CI": "CI", "LF": "Macro_LF", "JD": "Macro_JD", "RJ": "Macro_RJ"}
+
+    # Overrides ativos (para exibir no sub-tab Overrides)
+    active_overrides = _load_risk_budget_overrides()
+    ovr_rows_html = ""
+    for (livro, mes), budget in sorted(active_overrides.items(), key=lambda x: (x[0][1], x[0][0])):
+        ovr_rows_html += (
+            f'<tr>'
+            f'<td style="padding:5px 8px"><b>{livro}</b></td>'
+            f'<td style="padding:5px 8px">{pd.Timestamp(mes).strftime("%Y-%m")}</td>'
+            f'<td class="mono" style="text-align:right;padding:5px 8px;font-weight:700">{float(budget):.1f}</td>'
+            f'</tr>'
+        )
+    if not ovr_rows_html:
+        ovr_rows_html = '<tr><td colspan="3" style="padding:8px;color:var(--muted);text-align:center">— nenhum override ativo</td></tr>'
+
+    # Options de PM e mês (próximos 3 meses a partir do atual)
+    today = pd.Timestamp.today().normalize()
+    month_opts = []
+    for i in range(-1, 4):  # mês anterior + atual + próximos 3
+        m = (today.to_period("M") + i).to_timestamp()
+        month_opts.append(m.strftime("%Y-%m"))
+    pm_options = "".join(f'<option value="{LIVRO_OF[pm]}">{LIVRO_OF[pm]} ({PM_LABELS[pm]})</option>' for pm in PM_ORDER)
+    mes_options = "".join(f'<option value="{m}">{m}</option>' for m in month_opts)
+
     tabs_html   = ""
     tables_html = ""
     first_pm = None
@@ -4375,6 +4432,135 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
         )
     if not first_pm:
         return ""
+
+    # Overrides sub-tab — read existing, allow editing, generate JSON payload
+    overrides_tab = f'<button class="pa-tgl" data-stop-pm="__overrides__" onclick="selectStopPm(this,\'__overrides__\')" style="margin-left:12px">⚙ Overrides</button>'
+
+    overrides_view = f"""
+    <div class="stop-pm-view" data-stop-pm="__overrides__" style="display:none">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+        Orçamentos manuais lidos de <code>data/mandatos/risk_budget_overrides.json</code>.
+        Aplicam no INÍCIO do mês indicado (substitui o carry normal).
+      </div>
+
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+        Overrides ativos
+      </div>
+      <table class="summary-table" style="margin-bottom:14px">
+        <thead><tr>
+          <th style="text-align:left">LIVRO</th>
+          <th style="text-align:left">Mês</th>
+          <th style="text-align:right">Budget (bps)</th>
+        </tr></thead>
+        <tbody id="ovr-active-tbody">{ovr_rows_html}</tbody>
+      </table>
+
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+        Adicionar / editar override
+      </div>
+      <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1.5fr auto;gap:8px;align-items:center;margin-bottom:10px">
+        <select id="ovr-livro" class="mono" style="padding:6px 8px;background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:4px">
+          {pm_options}
+        </select>
+        <select id="ovr-mes" class="mono" style="padding:6px 8px;background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:4px">
+          {mes_options}
+        </select>
+        <input id="ovr-budget" type="number" step="0.1" placeholder="bps" class="mono"
+               style="padding:6px 8px;background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:4px;text-align:right"/>
+        <input id="ovr-note" type="text" placeholder="nota (ex: quem autorizou)"
+               style="padding:6px 8px;background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:4px;font-size:12px"/>
+        <button onclick="ovrAddEntry()" class="pa-tgl" style="padding:6px 14px">+ Adicionar</button>
+      </div>
+
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+        JSON gerado — copie e cole em <code>data/mandatos/risk_budget_overrides.json</code>
+      </div>
+      <textarea id="ovr-json-output" readonly rows="10" class="mono"
+        style="width:100%;padding:8px;background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:4px;font-size:11.5px;resize:vertical"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <button onclick="ovrCopyJson()" class="pa-tgl" style="padding:6px 14px">📋 Copiar JSON</button>
+        <button onclick="ovrResetEdit()" class="pa-tgl" style="padding:6px 14px">↺ Resetar edição</button>
+        <span id="ovr-status" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+
+      <div class="bar-legend" style="margin-top:14px">
+        <b>Fluxo:</b>
+        (1) Adiciona/edita entries no form acima →
+        (2) Copia o JSON →
+        (3) Cola em <code>data/mandatos/risk_budget_overrides.json</code> →
+        (4) Roda <code>run_report.bat</code> para regenerar.<br>
+        Sem backend — o relatório é estático, então a persistência precisa de edit manual do arquivo.
+      </div>
+    </div>"""
+
+    # Injetar o estado inicial de overrides no JS como JSON
+    initial_ovr_json = json.dumps({
+        "_description": "Overrides manuais de orçamento — editar via botão '⚙ Overrides' no modal.",
+        "overrides": [
+            {
+                "livro": livro,
+                "month": pd.Timestamp(mes).strftime("%Y-%m"),
+                "budget_bps": float(budget),
+                "note": ""
+            }
+            for (livro, mes), budget in sorted(active_overrides.items(), key=lambda x: (x[0][1], x[0][0]))
+        ]
+    }, indent=2, ensure_ascii=False)
+    # Escape pra embutir em string JS
+    initial_ovr_js = initial_ovr_json.replace("\\", "\\\\").replace("`", "\\`").replace("</", "<\\/")
+
+    ovr_script = f"""
+    <script>
+    (function() {{
+      window.__ovrInitial = {initial_ovr_json};
+      window.__ovrState = JSON.parse(JSON.stringify(window.__ovrInitial));
+      window.ovrRefresh = function() {{
+        var ta = document.getElementById('ovr-json-output');
+        if (ta) ta.value = JSON.stringify(window.__ovrState, null, 2);
+      }};
+      window.ovrAddEntry = function() {{
+        var livro = document.getElementById('ovr-livro').value;
+        var mes   = document.getElementById('ovr-mes').value;
+        var bps   = parseFloat(document.getElementById('ovr-budget').value);
+        var note  = (document.getElementById('ovr-note').value || '').trim();
+        if (!livro || !mes || isNaN(bps)) {{
+          document.getElementById('ovr-status').textContent = '⚠ Preencha LIVRO + Mês + Budget numérico';
+          return;
+        }}
+        // Replace existing entry for same (livro, month) or append
+        var arr = window.__ovrState.overrides || [];
+        var idx = arr.findIndex(function(e) {{ return e.livro === livro && e.month === mes; }});
+        var entry = {{livro: livro, month: mes, budget_bps: bps, note: note}};
+        if (idx >= 0) arr[idx] = entry; else arr.push(entry);
+        window.__ovrState.overrides = arr;
+        window.ovrRefresh();
+        document.getElementById('ovr-status').textContent = '✓ Adicionado (lembre de salvar e rodar o .bat)';
+        document.getElementById('ovr-budget').value = '';
+        document.getElementById('ovr-note').value = '';
+      }};
+      window.ovrResetEdit = function() {{
+        window.__ovrState = JSON.parse(JSON.stringify(window.__ovrInitial));
+        window.ovrRefresh();
+        document.getElementById('ovr-status').textContent = '↺ Reset para o estado atual do arquivo';
+      }};
+      window.ovrCopyJson = function() {{
+        var ta = document.getElementById('ovr-json-output');
+        if (!ta) return;
+        ta.select(); ta.setSelectionRange(0, 99999);
+        try {{
+          document.execCommand('copy');
+          document.getElementById('ovr-status').textContent = '📋 Copiado! Cole em data/mandatos/risk_budget_overrides.json';
+        }} catch(e) {{
+          document.getElementById('ovr-status').textContent = '⚠ Copia manual: Ctrl+A / Ctrl+C no textarea';
+        }}
+      }};
+      // Init on DOMContentLoaded (populates the textarea)
+      document.addEventListener('DOMContentLoaded', function() {{
+        if (document.getElementById('ovr-json-output')) window.ovrRefresh();
+      }});
+    }})();
+    </script>"""
+
     return f"""
     <div id="stop-history-modal" class="stop-modal" style="display:none">
       <div class="stop-modal-overlay" onclick="closeStopHistory()"></div>
@@ -4383,8 +4569,8 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
           <span class="modal-title">Histórico de Stop por PM — mês a mês</span>
           <button class="stop-modal-close" onclick="closeStopHistory()" title="Fechar">✕</button>
         </div>
-        <div class="stop-modal-tabs">{tabs_html}</div>
-        <div class="stop-modal-body">{tables_html}</div>
+        <div class="stop-modal-tabs">{tabs_html}{overrides_tab}</div>
+        <div class="stop-modal-body">{tables_html}{overrides_view}</div>
         <div class="bar-legend" style="margin-top:14px">
           <b>Base</b>: stop fixo por mandato (63 bps p/ PMs · 233 bps CI hard stop).
           <b>Δ Carry</b>: ajuste do mês em cima da base — positivo = carry de ganho prévio; negativo = base erodida por perda/override.
@@ -4394,6 +4580,7 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
           YTD reseta em janeiro. CI não tem carry (hard stop fixo 233 bps).
         </div>
       </div>
+      {ovr_script}
     </div>"""
 
 

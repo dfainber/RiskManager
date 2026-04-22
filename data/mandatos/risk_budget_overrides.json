@@ -1,0 +1,17 @@
+{
+  "_description": "Overrides manuais de orçamento mensal (stop budget) por PM. Editado via botão '⚙ Overrides' no modal do Risk Budget Monitor ou diretamente neste arquivo. Valores em bps de PL. Aplica-se no INÍCIO do mês indicado — o carry normal do mês anterior é substituído por esse valor.",
+  "_format": {
+    "livro":      "LIVRO exato no REPORT_ALPHA_ATRIBUTION (ex: 'Macro_RJ', 'Macro_JD', 'Macro_LF', 'CI')",
+    "month":      "'YYYY-MM' (início do mês em que o override vale)",
+    "budget_bps": "número em bps (ex: 63.0 = base; 93.4 = base + 30.4 de carry customizado)",
+    "note":       "texto livre para auditoria (ex: quem autorizou)"
+  },
+  "overrides": [
+    {
+      "livro":      "Macro_RJ",
+      "month":      "2026-04",
+      "budget_bps": 63.0,
+      "note":       "management override — reset para base"
+    }
+  ]
+}
