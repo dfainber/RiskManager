@@ -189,6 +189,12 @@ def fetch_risk_history_idka():
     """BVaR (RELATIVE_VAR_PCT) + VaR (ABSOLUTE_VAR_PCT) history for IDKA funds.
        Source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE. Values are decimal fractions
        (0.029 = 2.9% of NAV). Positions summed to fund level.
+
+       IMPORTANT: The engine stores multiple "views" per primitive (filtered by
+       different BOOKS subsets — {*} = wildcard, individual books, explicit
+       lists). Summing all views triplicates (or more) the true fund VaR.
+       Filter to BOOKS::text = '{*}' to get exactly the fund-level aggregate.
+       See docs/IDKA_VAR_EXPLORATION.md for the full investigation.
     """
     tds = ", ".join(f"'{td}'" for td in IDKA_FUNDS)
     q = f"""
@@ -198,6 +204,7 @@ def fetch_risk_history_idka():
     FROM "LOTE45"."LOTE_PARAMETRIC_VAR_TABLE"
     WHERE "VAL_DATE" >= DATE '{DATE_1Y.date()}'
       AND "TRADING_DESK" IN ({tds})
+      AND "BOOKS"::text = '{{*}}'
     GROUP BY "TRADING_DESK", "VAL_DATE"
     ORDER BY "TRADING_DESK", "VAL_DATE"
     """
