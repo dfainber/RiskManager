@@ -311,6 +311,17 @@ dashboards originais.
 - **Evolution standalone card (`evolution_diversification_card.py`)** — ganhou Camada Direcional (`fetch_direction_report` + `compute_camada_direcional` com filtro P60 histórico de magnitude) + Camada 4 (`compute_camada4`) + filtro P70 na Camada 3. Para 2026-04-17: 1/5 acesas (SIST P96 → C2), sem alerta. Ainda standalone em `data/morning-calls/evolution_diversification_*.html`, não integrado ao principal.
 - **docs/IDKA_VAR_EXPLORATION.md** — auditoria do bug, decisão do horizonte (daily), comparativo Lote/HS (ratio 1.6-3× razoável), próximos passos parkeados.
 
+**Fase 4 — entregues (sessão 2026-04-22 tarde):**
+- **PM Vol Card standalone** (`pm_vol_card.py` + `run_vol_card.bat`): série vol_30d (realizada) + `vol_estimada` (lote paramétrico VaR anualizado via `LOTE_FUND_STRESS_RPM` LEVEL=10, `|PARAMETRIC_VAR_BRL| / NAV / 1.645 × √252`). Toggles de período no gráfico (Tudo / YTD / 252d / 21d). Análise de quintil migrada de janela 21d cumulativa → próximo dia único (observações independentes, sem solapamento).
+- **Distribuição 252d — ALBATROZ onboarded (HS gross)**: confirmado PORTIFOLIO='ALBATROZ' em `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`. Wired como HS gross (retorno absoluto, sem benchmark). Sub-label "HS · bps de NAV".
+- **Distribuição 252d — IDKAs migrados para HS**: PORTIFOLIO keys 'IDKA3Y' / 'IDKA10Y' confirmados no DB. `fetch_idka_hs_active_series` substitui `fetch_idka_active_series` — usa W do motor HS (posição atual × cenários históricos) em vez de NAV pct_change realizado.
+- **Toggle 3-vias nas IDKAs (vs Benchmark / vs Replication / Comparação)**:
+  - `fetch_idka_hs_replication_series`: W − retorno ponderado das NTN-Bs DV-matched (pesos fixos na data atual, preços históricos ANBIMA)
+  - `fetch_idka_hs_spread_series`: `replication_return − benchmark_return` — erro de tracking da réplica vs índice IDKA real (independente do W do fundo)
+  - Comparação: tabela com 3 linhas (vs Benchmark · vs Replication · Repl − Bench spread) + footnote explicativo
+  - `setDistBench` JS + `.dist-bench-btn` CSS; botões desabilitados quando dado indisponível
+  - `setDistMode` corrigido para `[data-mode]` selector (não conflita com bench buttons)
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
@@ -326,14 +337,7 @@ dashboards originais.
   - Falta: matriz `RISK_DIRECTION_REPORT` (`DELTA_SISTEMATICO` × `DELTA_DISCRICIONARIO`) para smoking gun posição-a-posição
   - Falta: filtro "relevantes ≥ P70" na Camada 3 (matriz 3x3 já OK, mas sem filtro de significância)
   - Falta: exclusão opcional de CREDITO também da Σ da Camada 2 (hoje ratio usa Σ winsorizada; pode ter variante "ex-CREDITO" na Σ também)
-- **Distribuição 252d para os demais fundos** (user 2026-04-19, noite — prioridade ALBATROZ pra conversa com Pedro Igor):
-  - Hoje o card só cobre MACRO/QUANT/EVOLUTION (engine roda pros 3 em `q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
-  - ALBATROZ, MACRO_Q, FRONTIER, IDKA_3Y, IDKA_10Y não têm série HS no DB
-  - Proposta: computar **realized alpha daily (252d)** a partir de `LOTE_TRADING_DESKS_NAV_SHARE.SHARE` − benchmark
-  - Benchmarks: CDI (ALBATROZ, MACRO_Q) via `ECO_INDEX` FIELD='YIELD' (VALUE já é taxa diária); IBOV (FRONTIER) via `EQUITIES_PRICES.CLOSE` pct_change; IDKA index (IDKAs) via `ECO_INDEX` FIELD='INDEX' pct_change
-  - Exploração feita: CDI em `ECO_INDEX` é YIELD (daily rate), IBOV sem FIELD='INDEX' (só em EQUITIES_PRICES), IDKAs em ECO_INDEX com FIELD='INDEX'
-  - **ALBATROZ minimum viable** — Pedro Igor é o caso de uso
-  - Labelar como "alpha realizado (últimos 252d)" — metodologia diferente do HS forward (carteira × fatores) dos 3 MM, ser explícito
+- **Distribuição 252d — MACRO_Q**: único fundo ainda sem série HS. Proposta: realized alpha vs CDI via `LOTE_TRADING_DESKS_NAV_SHARE.SHARE` pct_change − ECO_INDEX YIELD.
 - **Briefings por fundo via LLM (Claude API)** (user 2026-04-19, noite):
   - Substituir os briefings rule-based atuais por prose gerada por LLM para os 8 fundos
   - Modelo sugerido: **Haiku 4.5** (`claude-haiku-4-5-20251001`) — briefings são descritivos, não precisam raciocínio pesado. ~$0.01–0.02 por rodada total (8 fundos)
@@ -350,7 +354,7 @@ dashboards originais.
 - **Página de ETFs** — adicionar família ETF como view. Escopo a definir
 - **Navigation checklist** — guia de leitura dos relatórios na ordem certa
 - **IDKA HS BVaR — current-positions** — aplicar posições atuais (exploded) a 3y de yield moves (`PRICES_ANBIMA_BR_PUBLIC_BONDS` + DI1 yields + IPCA) − retorno do IDKA index. Stub realized-NAV em `76b1080`; wire depois de calibrar
-- **IDKA Distribuição 252d — toggle vs Replication** — hoje o card mostra só "α vs Benchmark" (fund − IDKA index, via ECO_INDEX). Adicionar série paralela "α vs Replication" que exige DV-match **diário**: iterar BR_YIELDS + prices ANBIMA para cada dia em 252d, solve 2 NTN-Bs straddling target_MD(t), compute weighted return. Ficaria ao lado de Benchmark num toggle (default = Benchmark). Importa p/ historical spread — divergência Benchmark vs Replication é o tracking error da réplica. Custo estimado: ~2h (fetch de preços em batch + loop diário em pandas). Ver `docs/IDKA_VAR_EXPLORATION.md` §4.2.
+- **IDKA Distribuição 252d — Replication com pesos diários**: hoje os pesos NTN-B (DV-match) são fixos na data atual. Variante mais precisa: resolver DV-match diariamente ao longo dos 252d para capturar drift de duration do índice. Escopo estimado ~2h. Ver `docs/IDKA_VAR_EXPLORATION.md` §4.2.
 - **Exposure Map — calibração ANO_EQ vs calculadora existente** — overshoot de ~1yr (IDKA 3Y 3.97 vs ref 2.8; IDKA 10Y 11.32 vs ref 10). Fórmula minha (`-DELTA` p/ IPCA Coupon) == `AMOUNT × DV01 × 10000 / AUM` da calculadora matematicamente. Precisa diff lado-a-lado p/ descobrir diferença (escopo? positions excluded? convention?)
 - **QUANT + EVOLUTION equity direct wiring** — Evolution-direct stub pronto; se FMN/FCO/FLO tiverem equity significativo, devem aparecer no Breakdown por Fator
 - **IDKA limites definitivos** — provisórios ~80% util; aguarda mandato

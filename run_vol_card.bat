@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM run_report.bat — gera o Risk Monitor HTML para uma data (prompt interativo)
+REM run_vol_card.bat — gera o PM Vol Card HTML para uma data (prompt interativo)
 REM   - Enter direto => usa data de hoje (YYYY-MM-DD)
 REM   - Data em qualquer formato aceito por pd.Timestamp (ex: 2026-04-17)
 REM   - Abre o HTML gerado no browser padrao ao final
@@ -17,8 +17,8 @@ if "%TODAY%"=="" (
 )
 
 echo.
-echo Risk Monitor — Gerador de relatorio
-echo ========================================
+echo PM Vol Card — Utilizacao de Risco por PM
+echo ==========================================
 echo Data padrao: %TODAY%
 set /p DATA_INPUT=Data (YYYY-MM-DD) [Enter = %TODAY%]:
 
@@ -29,10 +29,10 @@ if "!DATA_INPUT!"=="" (
 )
 
 echo.
-echo ^> Gerando relatorio para %DATA%...
+echo ^> Gerando PM Vol Card para %DATA%...
 echo.
 
-C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe generate_risk_report.py %DATA%
+C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe pm_vol_card.py %DATA%
 if errorlevel 1 (
     echo.
     echo *** ERRO ao gerar o relatorio.
@@ -40,7 +40,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set HTML_PATH=data\morning-calls\%DATA%_risk_monitor.html
+set HTML_PATH=data\morning-calls\pm_vol_card_%DATA%.html
 set HTML_FULL=%~dp0%HTML_PATH%
 if not exist "%HTML_FULL%" (
     echo *** Arquivo nao encontrado: %HTML_FULL%
@@ -50,7 +50,6 @@ if not exist "%HTML_FULL%" (
 
 echo.
 echo ^> Abrindo %HTML_FULL% no browser...
-REM Fallback chain: default app -> explorer -> chrome/edge hardcoded
 start "" "%HTML_FULL%" || explorer.exe "%HTML_FULL%" || (
     if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" (
         start "" "%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%HTML_FULL%"

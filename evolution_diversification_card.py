@@ -600,9 +600,10 @@ def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
     }
     buckets_pct = {k: v for k, v in buckets_pct.items() if v is not None}
 
-    # Condition 1: ≥3 of 4 buckets ≥ P70
-    c1_hot = {k: v for k, v in buckets_pct.items() if v >= 70}
-    cond1 = len(c1_hot) >= 3
+    # Condition 1: score ≥ 3 where red (≥P70) = 1.0 pt, yellow (P60–69) = 0.5 pt
+    c1_hot = {k: v for k, v in buckets_pct.items() if v >= 60}
+    c1_score = sum(1.0 if v >= 70 else 0.5 for v in c1_hot.values())
+    cond1 = c1_score >= 3
 
     # Condition 2: ≥1 of 4 buckets ≥ P95
     c2_hot = {k: v for k, v in buckets_pct.items() if v >= 95}
@@ -628,7 +629,7 @@ def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
     cond5 = same_sign_count >= 3
 
     conditions = [
-        dict(id=1, name="≥3 de 4 buckets em ≥ P70",
+        dict(id=1, name=f"Score C1 ≥ 3 (🔴≥P70=1pt, 🟡P60–69=0.5pt) — atual {c1_score:.1f}",
              lit=cond1, detail=c1_hot),
         dict(id=2, name="≥1 bucket em ≥ P95",
              lit=cond2, detail=c2_hot),

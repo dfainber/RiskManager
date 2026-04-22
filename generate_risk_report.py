@@ -843,7 +843,18 @@ _DIST_PORTFOLIOS = [
     # Series fetched separately via fetch_idka_active_series.
     ("IDKA_3Y",     "IDKA 3Y α vs Bench",  "fund",  "IDKA_3Y",     "IDKA_3Y"),
     ("IDKA_10Y",    "IDKA 10Y α vs Bench", "fund",  "IDKA_10Y",    "IDKA_10Y"),
-    # ALBATROZ — parked (waiting for engine HS).
+    # IDKA replication benchmark — DV-matched NTN-B portfolio at current date × historical prices.
+    ("IDKA_3Y_REP",  "vs Replication", "fund", "IDKA_3Y",  "IDKA_3Y_REP"),
+    ("IDKA_10Y_REP", "vs Replication", "fund", "IDKA_10Y", "IDKA_10Y_REP"),
+    # IDKA comparison — benchmark, replication, and spread (bench − repl) in one table.
+    ("IDKA_3Y",        "vs Benchmark",        "fund", "IDKA_3Y",  "IDKA_3Y_CMP"),
+    ("IDKA_3Y_REP",    "vs Replication",      "fund", "IDKA_3Y",  "IDKA_3Y_CMP"),
+    ("IDKA_3Y_SPREAD", "Repl − Bench (spread)","fund", "IDKA_3Y",  "IDKA_3Y_CMP"),
+    ("IDKA_10Y",        "vs Benchmark",        "fund", "IDKA_10Y", "IDKA_10Y_CMP"),
+    ("IDKA_10Y_REP",    "vs Replication",      "fund", "IDKA_10Y", "IDKA_10Y_CMP"),
+    ("IDKA_10Y_SPREAD", "Repl − Bench (spread)","fund", "IDKA_10Y", "IDKA_10Y_CMP"),
+    # ALBATROZ — HS gross return (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION key 'ALBATROZ').
+    ("ALBATROZ", "ALBATROZ total", "fund", "ALBATROZ", "ALBATROZ"),
 ]
 
 def fetch_albatroz_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
@@ -914,6 +925,187 @@ def fetch_idka_active_series(desk: str, idka_idx_name: str,
     return (active.tail(window_days).to_numpy() * 10000).astype(float)
 
 
+def fetch_idka_hs_replication_series(portfolio_name: str, target_anos: int, tenour_du: int,
+                                      date_str: str = DATA_STR) -> np.ndarray:
+    """HS active return for IDKA vs DV-matched replication portfolio (current-date weights).
+
+    Replication: 1-2 NTN-Bs solved via _compute_idka_bench_replication at date_str,
+    weights applied to historical ANBIMA unit prices on each DATE_SYNTHETIC_POSITION.
+    Returns bps of NAV; empty array if replication or price data unavailable.
+    """
+    rep = _compute_idka_bench_replication(date_str, target_anos, tenour_du)
+    if rep.empty:
+        return np.array([])
+
+    q_hs = f"""
+    SELECT "DATE_SYNTHETIC_POSITION" AS dt, "W"
+    FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
+    WHERE "PORTIFOLIO_DATE" = DATE '{date_str}'
+      AND "PORTIFOLIO" = '{portfolio_name}'
+    ORDER BY dt
+    """
+    try:
+        df_hs = read_sql(q_hs)
+    except Exception:
+        return np.array([])
+    if df_hs.empty:
+        return np.array([])
+
+    df_hs["dt"] = pd.to_datetime(df_hs["dt"])
+    dt_min = df_hs["dt"].min().strftime("%Y-%m-%d")
+
+    inst_list = ", ".join(f"'{i}'" for i in rep["INSTRUMENT"].tolist())
+    q_prices = f"""
+    SELECT p."REFERENCE_DATE" AS dt, m."INSTRUMENT", p."UNIT_PRICE"
+    FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
+    JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
+      ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
+    WHERE m."INSTRUMENT" IN ({inst_list})
+      AND p."REFERENCE_DATE" >= DATE '{dt_min}'
+      AND p."REFERENCE_DATE" <= DATE '{date_str}'
+    ORDER BY p."REFERENCE_DATE", m."INSTRUMENT"
+    """
+    try:
+        df_p = read_sql(q_prices)
+    except Exception:
+        return np.array([])
+    if df_p.empty:
+        return np.array([])
+
+    df_p["dt"] = pd.to_datetime(df_p["dt"])
+    rep_weights = rep.set_index("INSTRUMENT")["W"].astype(float)
+    rep_ret = pd.Series(dtype=float)
+    for inst, w in rep_weights.items():
+        prices = (df_p[df_p["INSTRUMENT"] == inst]
+                  .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
+        ret = prices.pct_change().dropna() * 10_000 * w
+        rep_ret = rep_ret.add(ret, fill_value=0.0)
+
+    hs_s = df_hs.set_index("dt")["W"].astype(float).sort_index()
+    aligned = hs_s.to_frame("W").join(rep_ret.rename("rep"), how="inner")
+    if len(aligned) < 30:
+        return np.array([])
+    return (aligned["W"] - aligned["rep"]).to_numpy()
+
+
+def fetch_idka_hs_spread_series(portfolio_name: str, idx_name: str,
+                                 target_anos: int, tenour_du: int,
+                                 date_str: str = DATA_STR) -> np.ndarray:
+    """Spread = benchmark_return − replication_return (bps) over the HS window dates.
+
+    Positive = IDKA index outperformed the NTN-B DV-match replication.
+    Shows the tracking error of the replication vs the actual index — independent
+    of the fund's own positions (W cancels out).
+    Date grid = DATE_SYNTHETIC_POSITION for the given portfolio/date.
+    """
+    rep = _compute_idka_bench_replication(date_str, target_anos, tenour_du)
+    if rep.empty:
+        return np.array([])
+
+    q_dates = f"""
+    SELECT MIN("DATE_SYNTHETIC_POSITION") AS dt_min
+    FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
+    WHERE "PORTIFOLIO_DATE" = DATE '{date_str}' AND "PORTIFOLIO" = '{portfolio_name}'
+    """
+    try:
+        df_dates = read_sql(q_dates)
+    except Exception:
+        return np.array([])
+    if df_dates.empty or pd.isna(df_dates["dt_min"].iloc[0]):
+        return np.array([])
+    dt_min = pd.to_datetime(df_dates["dt_min"].iloc[0]).strftime("%Y-%m-%d")
+
+    q_bench = f"""
+    SELECT "DATE" AS dt, "VALUE" FROM public."ECO_INDEX"
+    WHERE "INSTRUMENT" = '{idx_name}' AND "FIELD" = 'INDEX'
+      AND "DATE" >= DATE '{dt_min}' AND "DATE" <= DATE '{date_str}'
+    ORDER BY dt
+    """
+    inst_list = ", ".join(f"'{i}'" for i in rep["INSTRUMENT"].tolist())
+    q_prices = f"""
+    SELECT p."REFERENCE_DATE" AS dt, m."INSTRUMENT", p."UNIT_PRICE"
+    FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
+    JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
+      ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
+    WHERE m."INSTRUMENT" IN ({inst_list})
+      AND p."REFERENCE_DATE" >= DATE '{dt_min}' AND p."REFERENCE_DATE" <= DATE '{date_str}'
+    ORDER BY p."REFERENCE_DATE", m."INSTRUMENT"
+    """
+    try:
+        df_b = read_sql(q_bench)
+        df_p = read_sql(q_prices)
+    except Exception:
+        return np.array([])
+    if df_b.empty or df_p.empty:
+        return np.array([])
+
+    df_b["dt"] = pd.to_datetime(df_b["dt"])
+    bench_bps = (df_b.set_index("dt")["VALUE"].astype(float)
+                 .sort_index().pct_change().dropna() * 10_000)
+
+    df_p["dt"] = pd.to_datetime(df_p["dt"])
+    rep_weights = rep.set_index("INSTRUMENT")["W"].astype(float)
+    rep_bps = pd.Series(dtype=float)
+    for inst, w in rep_weights.items():
+        prices = (df_p[df_p["INSTRUMENT"] == inst]
+                  .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
+        rep_bps = rep_bps.add(prices.pct_change().dropna() * 10_000 * w, fill_value=0.0)
+
+    aligned = bench_bps.to_frame("bench").join(rep_bps.rename("rep"), how="inner")
+    if len(aligned) < 30:
+        return np.array([])
+    return (aligned["rep"] - aligned["bench"]).to_numpy()
+
+
+def fetch_idka_hs_active_series(portfolio_name: str, idx_name: str,
+                                 date_str: str = DATA_STR) -> np.ndarray:
+    """HS active return for an IDKA fund: current-position W minus benchmark index
+    return on each historical scenario date (both in bps of NAV).
+
+    portfolio_name: 'IDKA3Y' or 'IDKA10Y' (PORTIFOLIO column in PORTIFOLIO_DAILY_HISTORICAL_SIMULATION).
+    idx_name:       'IDKA_IPCA_3A' or 'IDKA_IPCA_10A' (ECO_INDEX INSTRUMENT, FIELD='INDEX').
+    """
+    q_hs = f"""
+    SELECT "DATE_SYNTHETIC_POSITION" AS dt, "W"
+    FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
+    WHERE "PORTIFOLIO_DATE" = DATE '{date_str}'
+      AND "PORTIFOLIO" = '{portfolio_name}'
+    ORDER BY dt
+    """
+    try:
+        df_hs = read_sql(q_hs)
+    except Exception:
+        return np.array([])
+    if df_hs.empty:
+        return np.array([])
+
+    df_hs["dt"] = pd.to_datetime(df_hs["dt"])
+    dt_min = df_hs["dt"].min().strftime("%Y-%m-%d")
+
+    q_bench = f"""
+    SELECT "DATE" AS dt, "VALUE"
+    FROM public."ECO_INDEX"
+    WHERE "INSTRUMENT" = '{idx_name}' AND "FIELD" = 'INDEX'
+      AND "DATE" >= DATE '{dt_min}'
+      AND "DATE" <= DATE '{date_str}'
+    ORDER BY dt
+    """
+    try:
+        df_b = read_sql(q_bench)
+    except Exception:
+        return np.array([])
+    if df_b.empty:
+        return np.array([])
+
+    df_hs = df_hs.set_index("dt")["W"].astype(float).sort_index()
+    df_b  = df_b.assign(dt=pd.to_datetime(df_b["dt"])).set_index("dt")["VALUE"].astype(float).sort_index()
+    bench_bps = df_b.pct_change().dropna() * 10_000
+    aligned = df_hs.to_frame("W").join(bench_bps.rename("bench"), how="inner")
+    if len(aligned) < 30:
+        return np.array([])
+    return (aligned["W"] - aligned["bench"]).to_numpy()
+
+
 def fetch_frontier_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
     """Realized daily alpha vs IBOV (bps of NAV) for Frontier, last `window_days`
        business days ending at date_str. Series is summed across positions per VAL_DATE.
@@ -953,20 +1145,30 @@ def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:
     fr = fetch_frontier_alpha_series(date_str)
     if len(fr) >= 30:
         out["FRONTIER"] = fr
-    # IDKAs: realized active return (fund − benchmark) series. Key = "IDKA_3Y" / "IDKA_10Y".
-    for desk, idx_name, key in [
-        ("IDKA IPCA 3Y FIRF",  "IDKA_IPCA_3A",  "IDKA_3Y"),
-        ("IDKA IPCA 10Y FIRF", "IDKA_IPCA_10A", "IDKA_10Y"),
+    # IDKAs: HS active return vs benchmark + vs DV-matched replication.
+    for portfolio_name, idx_name, key, target_anos, tenour_du in [
+        ("IDKA3Y",  "IDKA_IPCA_3A",  "IDKA_3Y",  3,  756),
+        ("IDKA10Y", "IDKA_IPCA_10A", "IDKA_10Y", 10, 2520),
     ]:
         try:
-            s = fetch_idka_active_series(desk, idx_name, date_str)
+            s = fetch_idka_hs_active_series(portfolio_name, idx_name, date_str)
             if len(s) >= 30:
                 out[key] = s
         except Exception as e:
-            print(f"  IDKA active series ({key}) failed: {e}")
-    # Albatroz: parked — waiting for ALBATROZ in PORTIFOLIO_DAILY_HISTORICAL_SIMULATION
-    # (same-carteira-across-252d semantics as MACRO, requested engine-side).
-    # `fetch_albatroz_alpha_series` kept as a dormant helper for quick re-enable.
+            print(f"  IDKA HS active series ({key}) failed: {e}")
+        try:
+            s_rep = fetch_idka_hs_replication_series(portfolio_name, target_anos, tenour_du, date_str)
+            if len(s_rep) >= 30:
+                out[f"{key}_REP"] = s_rep
+        except Exception as e:
+            print(f"  IDKA HS replication series ({key}_REP) failed: {e}")
+        try:
+            s_spr = fetch_idka_hs_spread_series(portfolio_name, idx_name, target_anos, tenour_du, date_str)
+            if len(s_spr) >= 30:
+                out[f"{key}_SPREAD"] = s_spr
+        except Exception as e:
+            print(f"  IDKA HS spread series ({key}_SPREAD) failed: {e}")
+    # Albatroz: HS gross W already populated by main query under key 'ALBATROZ'. No override.
     return out
 
 def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
@@ -2861,6 +3063,24 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     total_ano_eq        = 0.0
     total_ano_eq_via    = 0.0
     total_ano_eq_direct = 0.0
+
+    # Bench computation moved here so target_dm is available for factor header spans
+    tenour_du = {3: 756, 10: 2520}.get(int(bench_dur), 756)
+    bench_replication = _compute_idka_bench_replication(date_str, int(bench_dur), tenour_du) if date_str else pd.DataFrame()
+    target_dm = float(bench_dur)
+    y_tenor   = None
+    bench_ano_eq_total = 0.0
+    if not bench_replication.empty:
+        target_dm = float(bench_replication["TARGET_DM"].iloc[0])
+        y_tenor   = float(bench_replication["YIELD_TEN"].iloc[0])
+        bench_ano_eq_total = float(bench_replication["ANO_EQ_BENCH"].sum())
+    else:
+        bench_ano_eq_total = target_dm   # fallback
+
+    def _fae_yrs(val):
+        col = "var(--up)" if val >= 0 else "var(--down)"
+        return f'<span style="color:{col};font-weight:700">{val:+.2f} yrs</span>'
+
     for f in FACTOR_ORDER:
         sub = agg[agg["factor"] == f].sort_values("_abs", ascending=False)
         if sub.empty:
@@ -2868,24 +3088,41 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         is_dur = f in _DUR_FACTORS
         fac_ano = float(sub["ano_eq_brl"].sum())
         fac_pos = float(sub["position_brl"].sum())
+        fac_ano_direct = float(sub[sub["via"] == "direct"]["ano_eq_brl"].sum()) if is_dur else 0.0
         if is_dur:
             total_ano_eq        += fac_ano
             total_ano_eq_via    += float(sub[sub["via"] == "via_albatroz"]["ano_eq_brl"].sum())
-            total_ano_eq_direct += float(sub[sub["via"] == "direct"]["ano_eq_brl"].sum())
+            total_ano_eq_direct += fac_ano_direct
         fac_pct = fac_pos * 100 / nav
         n_pos = len(sub)
-        # Header "Ano-Eq / %NAV" column: yrs for duration, %NAV (notional) for others
+        # Factor header ANO-EQ cell: duration factors get 3 mode-aware spans so the
+        # header updates when the toggle changes (bruto / líq-benchmark / líq-replication).
+        # Benchmark only affects the "real" factor for IDKAs (NTN-B coupon duration).
         if is_dur:
-            fac_ae_val  = fac_ano / nav
-            fac_ae_col  = "var(--up)" if fac_ae_val >= 0 else "var(--down)"
-            fac_ae_cell = f'<td class="mono" style="text-align:right;font-weight:700;color:{fac_ae_col}">{fac_ae_val:+.2f} yrs</td>'
+            bench_adj_b = target_dm          if f == "real" else 0.0
+            bench_adj_r = bench_ano_eq_total if f == "real" else 0.0
+            # Líquido usa total bruto do fator (sem swap plug): total - bench
+            liq_b_val   = fac_ano / nav + bench_adj_b
+            liq_r_val   = fac_ano / nav + bench_adj_r
+            fac_ae_cell = (
+                f'<td class="mono" style="text-align:right;font-weight:700">'
+                f'<span data-idka-span="bruto" style="display:none">{_fae_yrs(fac_ano / nav)}</span>'
+                f'<span data-idka-span="liq-benchmark">{_fae_yrs(liq_b_val)}</span>'
+                f'<span data-idka-span="liq-replication" style="display:none">{_fae_yrs(liq_r_val)}</span>'
+                f'</td>'
+            )
         else:
-            fac_ae_val  = fac_ano * 100 / nav   # %NAV (face value indexado)
+            fac_ae_val  = fac_ano * 100 / nav
             fac_ae_col  = "var(--up)" if fac_ae_val >= 0 else "var(--down)"
             fac_ae_cell = f'<td class="mono" style="text-align:right;font-weight:700;color:{fac_ae_col}">{fac_ae_val:+.1f}%</td>'
         body += (
-            f'<tr class="idka-fac-head" style="background:rgba(96,165,250,0.08);font-weight:600">'
-            f'<td style="padding:6px 8px" colspan="2"><b>{FACTOR_LABEL[f]}</b> '
+            f'<tr class="idka-fac-head" data-idka-fac="{f}" '
+            f'style="background:rgba(96,165,250,0.08);font-weight:600;cursor:pointer" '
+            f'onclick="toggleIdkaFac(this,\'{f}\')">'
+            f'<td style="padding:6px 8px" colspan="2">'
+            f'<span class="idka-fac-caret" style="color:var(--accent-2);margin-right:5px;'
+            f'display:inline-block;transition:transform .15s">▼</span>'
+            f'<b>{FACTOR_LABEL[f]}</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">· {n_pos} pos</span></td>'
             f'<td></td><td></td>'
             + fac_ae_cell
@@ -2906,7 +3143,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
                     col = "var(--up)" if p >= 0 else "var(--down)"
                     ae_cell = f'<td class="mono" style="text-align:right;color:{col}">{p:+.1f}%</td>'
             body += (
-                f'<tr style="font-size:11.5px">'
+                f'<tr class="idka-pos-row" data-idka-child="{f}" style="font-size:11.5px">'
                 f'<td style="padding:4px 20px;color:var(--muted)">{r["PRODUCT"]}</td>'
                 f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r["PRODUCT_CLASS"]}</td>'
                 + _dur_cell(r["mod_dur"], r["yrs_to_mat"])
@@ -2930,53 +3167,19 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         f'</tr>'
     )
 
-    # Líquido view:
-    #   1. Swap plug (via Albatroz → CDI): neutraliza duração da fatia via_albatroz
-    #   2. Benchmark NO PONTO: target_dm = anos / (1+y), referência abstrata do IDKA
-    #   3. Bench REPLICATION (DV-match): 1-2 NTN-Bs que replicam o ponto na prática
-    #   4. TOTAL LÍQUIDO = direct duration − bench (ponto ≡ replication em total)
-    # Os dois bench são importantes pra cálculo de historical spread (parkeado):
-    #   - ponto via ECO_INDEX IDKA_IPCA_Xa direto
-    #   - replication via prices ANBIMA das NTN-Bs × pesos atuais
-    tenour_du = {3: 756, 10: 2520}.get(int(bench_dur), 756)
-    bench_replication = _compute_idka_bench_replication(date_str, int(bench_dur), tenour_du) if date_str else pd.DataFrame()
-
+    # bench_replication, target_dm, bench_ano_eq_total already computed above (before loop)
     via_yrs_disp = total_ano_eq_via / nav
 
     # 3 modos de view com data-idka-view:
     #   'bruto'           — só positions + TOTAL BRUTO
-    #   'liq-benchmark'   — positions + swap + Benchmark point row + TOTAL LÍQUIDO (DEFAULT)
-    #   'liq-replication' — positions + swap + Replication legs + TOTAL LÍQUIDO
-    # Swap row e TOTAL LÍQUIDO aparecem em AMBOS os modos líquidos (duplicamos em HTML)
+    #   'liq-benchmark'   — positions + Benchmark row + TOTAL LÍQUIDO vs Bench (DEFAULT)
+    #   'liq-replication' — positions + Replication rows + TOTAL LÍQUIDO vs Replication
+    # Sem swap plug — comparação é bruto total vs benchmark (inclui via_albatroz)
     _DEFAULT_VIEW = "liq-benchmark"
     def _disp(view_tag):
         return "" if view_tag == _DEFAULT_VIEW else "display:none;"
-    target_dm = float(bench_dur)
-    y_tenor   = None
-    bench_ano_eq_total = 0.0
-    if not bench_replication.empty:
-        target_dm = float(bench_replication["TARGET_DM"].iloc[0])
-        y_tenor   = float(bench_replication["YIELD_TEN"].iloc[0])
-        bench_ano_eq_total = float(bench_replication["ANO_EQ_BENCH"].sum())
-    else:
-        bench_ano_eq_total = target_dm   # fallback
 
-    # Swap plug — aparece em AMBAS as views líquidas (duplicamos)
-    def _swap_html(view_tag):
-        return (
-            f'<tr class="idka-swap" data-idka-view="{view_tag}" '
-            f'style="{_disp(view_tag)}background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
-            f'<td style="padding:6px 8px" colspan="2">⇄ <b>Swap plug (via Albatroz → CDI)</b> '
-            f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-            f'· neutraliza duração da fatia Albatroz (como no PA)</span></td>'
-            f'<td></td><td></td>'
-            f'<td class="mono" style="text-align:right">{-via_yrs_disp:+.2f} yrs</td>'
-            f'<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
-            f'<td class="mono" style="color:var(--muted);font-size:10.5px">swap</td>'
-            f'</tr>'
-        )
-    # Sobrescreve o swap_row anterior para virar dual
-    swap_row = _swap_html("liq-benchmark") + _swap_html("liq-replication")
+    swap_row = ""  # removido: swap plug não faz sentido ao comparar tudo vs IDKA
 
     # Benchmark point row (liq-benchmark mode only; default → visible)
     bench_point_row = (
@@ -2995,56 +3198,39 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         f'</tr>'
     )
 
-    # Replication rows (liq-replication mode only)
-    replication_rows = ""
+    # Replication row (liq-replication mode only) — uma única linha de subtração, sem legs
     if not bench_replication.empty:
-        replication_rows += (
+        legs_detail = " · ".join(
+            f'{r["INSTRUMENT"]} w={float(r["W"])*100:.0f}% MD={float(r["MD"]):.2f}y'
+            for _, r in bench_replication.iterrows()
+        )
+        replication_rows = (
             f'<tr class="idka-bench-repl-head" data-idka-view="liq-replication" '
             f'style="display:none;background:rgba(184,135,0,0.10);color:var(--warn);font-weight:700">'
             f'<td style="padding:6px 8px" colspan="2">− <b>Replication</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-            f'· melhor carteira NTN-B (DV-match) · soma ANO_EQ = {bench_ano_eq_total:.3f}y '
-            f'≈ target MD {target_dm:.3f}y</span></td>'
+            f'· DV-match: {legs_detail}</span></td>'
             f'<td class="mono" style="text-align:right;color:var(--muted)">{target_dm:.2f}y</td>'
             f'<td></td>'
             f'<td class="mono" style="text-align:right">−{bench_ano_eq_total:.3f} yrs</td>'
             f'<td></td><td></td>'
             f'</tr>'
         )
-        for _, r in bench_replication.iterrows():
-            exp = pd.Timestamp(r["EXPIRATION_DATE"]).strftime("%d/%m/%Y")
-            w_pct = float(r["W"]) * 100
-            md = float(r["MD"])
-            ano_eq = float(r["ANO_EQ_BENCH"])
-            replication_rows += (
-                f'<tr class="idka-bench-leg" data-idka-view="liq-replication" '
-                f'style="display:none;font-size:11.5px;color:var(--muted)">'
-                f'<td style="padding:4px 32px">{r["INSTRUMENT"]} '
-                f'<span style="color:var(--line-2);font-size:10.5px">· venc {exp} · TIR {float(r["TIR"]):.2f}%</span></td>'
-                f'<td class="mono" style="font-size:10.5px">NTN-B</td>'
-                f'<td class="mono" style="text-align:right">{md:.2f}y</td>'
-                f'<td class="mono" style="text-align:right">w={w_pct:.1f}%</td>'
-                f'<td class="mono" style="text-align:right">{ano_eq:.3f} yrs</td>'
-                f'<td class="mono" style="text-align:right">—</td>'
-                f'<td class="mono" style="font-size:10.5px">DV-match</td>'
-                f'</tr>'
-            )
     else:
         replication_rows = (
             f'<tr class="idka-bench-repl-head" data-idka-view="liq-replication" '
             f'style="display:none;background:rgba(184,135,0,0.10);color:var(--muted);font-weight:600">'
             f'<td style="padding:6px 8px" colspan="7">⚠ Replication DV-match indisponível '
-            f'(fallback: usa target MD {target_dm:.2f}y como bench). '
+            f'(fallback: usa target MD {target_dm:.2f}y). '
             f'Verifique q_models.BR_YIELDS e PRICES_ANBIMA_BR_PUBLIC_BONDS pra {date_str}.</td></tr>'
         )
 
     bench_rows_html = bench_point_row + replication_rows
 
-    # TOTAL LÍQUIDO em DV01 conv: direct_dv01 − bench_dv01 = direct_dv01 + bench (bench = long bond → DV01 negativo)
-    # vs Benchmark (point): usa target_dm
-    # vs Replication: usa bench_ano_eq_total (soma NTN-Bs DV-match — matematicamente ≈ target_dm)
-    liq_vs_bench_yrs = total_ano_eq_direct / nav + target_dm
-    liq_vs_repl_yrs  = total_ano_eq_direct / nav + bench_ano_eq_total
+    # TOTAL LÍQUIDO = bruto total − bench (inclui via_albatroz; sem swap plug)
+    # + target_dm porque bench é long bond (negativo na convenção) → somar positivo = subtrair
+    liq_vs_bench_yrs = total_ano_eq / nav + target_dm
+    liq_vs_repl_yrs  = total_ano_eq / nav + bench_ano_eq_total
 
     def _liq_row(view_tag, label, yrs):
         col = "var(--up)" if yrs >= 0 else "var(--down)"
@@ -3054,7 +3240,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
             f'background:rgba(74,222,128,0.08)">'
             f'<td style="padding:6px 8px" colspan="2"><b>{label}</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
-            f'· direct duration − bench, via Albatroz swapado</span></td>'
+            f'· duration total − bench (real + nominal + via Albatroz)</span></td>'
             f'<td></td><td></td>'
             f'<td class="mono" style="text-align:right;color:{col};font-weight:700">{yrs:+.2f} yrs</td>'
             f'<td></td><td></td>'
@@ -3072,13 +3258,19 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
       <div class="card-head">
         <span class="card-title">Exposição — {short_label}</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · posições por fator · bench = {bench_label} ({bench_dur:.0f}y real + IPCA carry)</span>
-        <div class="pa-view-toggle" style="margin-left:auto;flex-wrap:wrap">
-          <button class="pa-tgl" data-idka-view="bruto"
-                  onclick="selectIdkaView(this,'bruto')">Bruto</button>
-          <button class="pa-tgl active" data-idka-view="liq-benchmark"
-                  onclick="selectIdkaView(this,'liq-benchmark')">Líquido vs Benchmark</button>
-          <button class="pa-tgl" data-idka-view="liq-replication"
-                  onclick="selectIdkaView(this,'liq-replication')">Líquido vs Replication</button>
+        <div style="display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap">
+          <button class="pa-tgl" style="font-size:11px;padding:3px 8px"
+                  onclick="idkaExpandAll(this)">▼ All</button>
+          <button class="pa-tgl" style="font-size:11px;padding:3px 8px"
+                  onclick="idkaCollapseAll(this)">▶ All</button>
+          <div class="pa-view-toggle" style="flex-wrap:wrap">
+            <button class="pa-tgl" data-idka-view="bruto"
+                    onclick="selectIdkaView(this,'bruto')">Bruto</button>
+            <button class="pa-tgl active" data-idka-view="liq-benchmark"
+                    onclick="selectIdkaView(this,'liq-benchmark')">Líquido vs Benchmark</button>
+            <button class="pa-tgl" data-idka-view="liq-replication"
+                    onclick="selectIdkaView(this,'liq-replication')">Líquido vs Replication</button>
+          </div>
         </div>
       </div>
       <table class="summary-table" data-no-sort="1">
@@ -4477,17 +4669,94 @@ def build_vol_regime_section(fund_short: str, vol_regime_map: dict) -> str:
 
 def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: dict,
                             actuals: dict) -> str:
-    """Single card with toggle between Backward (D-1 carteira + realized DIA) and Forward (D carteira profile)."""
+    """Single card with toggle between Backward (D-1 carteira + realized DIA) and Forward (D carteira profile).
+       IDKA funds also get a second toggle: vs Benchmark / vs Replication."""
     bw_table = _build_backward_table(fund_short, dist_map_prev, actuals)
     fw_table = _build_forward_table(fund_short, dist_map_now)
     if not bw_table and not fw_table:
         return ""
     dck_id = f"dist-{fund_short.lower()}"
-    # Frontier uses realized α vs IBOV (no HS engine); annotate the sub so it's clear.
-    if fund_short == "FRONTIER":
-        sub = f"— {fund_short} · α vs IBOV · bps de NAV · realizado"
-    else:
-        sub = f"— {fund_short} · bps de NAV"
+    _sub_map = {
+        "FRONTIER": f"— {fund_short} · α vs IBOV · bps de NAV · realizado",
+        "IDKA_3Y":  "— IDKA 3Y · HS active return · bps de NAV",
+        "IDKA_10Y": "— IDKA 10Y · HS active return · bps de NAV",
+        "ALBATROZ": "— ALBATROZ · HS · bps de NAV",
+    }
+    sub = _sub_map.get(fund_short, f"— {fund_short} · bps de NAV")
+
+    _EMPTY_BW = '<div class="empty-view">Sem dados backward (D-1 sem simulação).</div>'
+    _EMPTY_FW = '<div class="empty-view">Sem dados forward.</div>'
+
+    # IDKA: extra bench toggle (vs Benchmark / vs Replication / Comparação)
+    if fund_short in {"IDKA_3Y", "IDKA_10Y"}:
+        rep_short = f"{fund_short}_REP"
+        cmp_short = f"{fund_short}_CMP"
+        bw_rep = _build_backward_table(rep_short, dist_map_prev, actuals)
+        fw_rep = _build_forward_table(rep_short, dist_map_now)
+        bw_cmp = _build_backward_table(cmp_short, dist_map_prev, actuals)
+        fw_cmp = _build_forward_table(cmp_short, dist_map_now)
+        has_rep = bool(bw_rep or fw_rep)
+        has_cmp = bool(bw_cmp or fw_cmp)
+
+        def _bench_btn(bench, label, active=False, disabled=False):
+            cls = "dist-bench-btn" + (" active" if active else "")
+            dis = ' disabled title="Dados indisponíveis"' if disabled else ""
+            return (f'<button class="{cls}" data-bench="{bench}"'
+                    f' onclick="setDistBench(\'{dck_id}\',\'{bench}\')"{dis}>{label}</button>')
+
+        bench_toggle_html = (
+            f'<div class="dist-toggle" style="margin-right:6px">'
+            + _bench_btn("benchmark",  "vs Benchmark",  active=True)
+            + _bench_btn("replication","vs Replication", disabled=not has_rep)
+            + _bench_btn("comparison", "Comparação",     disabled=not has_cmp)
+            + '</div>'
+        )
+        sections_html = (
+            f'<div data-bench-section="benchmark">'
+            f'<div class="dist-view" data-mode="backward" style="display:none">{bw_table or _EMPTY_BW}</div>'
+            f'<div class="dist-view" data-mode="forward">{fw_table or _EMPTY_FW}</div>'
+            f'</div>'
+        )
+        if has_rep:
+            sections_html += (
+                f'<div data-bench-section="replication" style="display:none">'
+                f'<div class="dist-view" data-mode="backward" style="display:none">{bw_rep or _EMPTY_BW}</div>'
+                f'<div class="dist-view" data-mode="forward">{fw_rep or _EMPTY_FW}</div>'
+                f'</div>'
+            )
+        if has_cmp:
+            _cmp_note = (
+                '<div class="bar-legend" style="margin-top:6px">'
+                '<b>vs Benchmark</b> = retorno HS do fundo − retorno do índice IDKA · '
+                '<b>vs Replication</b> = retorno HS do fundo − retorno da réplica NTN-B (DV-match) · '
+                '<b>Repl − Bench (spread)</b> = retorno da réplica − retorno do índice: '
+                'positivo = réplica superou o índice naquele cenário histórico'
+                '</div>'
+            )
+            sections_html += (
+                f'<div data-bench-section="comparison" style="display:none">'
+                f'<div class="dist-view" data-mode="backward" style="display:none">{bw_cmp or _EMPTY_BW}{_cmp_note}</div>'
+                f'<div class="dist-view" data-mode="forward">{fw_cmp or _EMPTY_FW}{_cmp_note}</div>'
+                f'</div>'
+            )
+        return f"""
+    <section class="card" id="{dck_id}">
+      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <span class="card-title">Distribuição 252d</span>
+          <span class="card-sub">{sub}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          {bench_toggle_html}
+          <div class="dist-toggle">
+            <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
+            <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
+          </div>
+        </div>
+      </div>
+      {sections_html}
+    </section>"""
+
     return f"""
     <section class="card" id="{dck_id}">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
@@ -4500,8 +4769,8 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
           <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
         </div>
       </div>
-      <div class="dist-view"        data-mode="backward" style="display:none">{bw_table or '<div class="empty-view">Sem dados backward (D-1 sem simulação).</div>'}</div>
-      <div class="dist-view active" data-mode="forward">{fw_table or '<div class="empty-view">Sem dados forward (D sem simulação).</div>'}</div>
+      <div class="dist-view"        data-mode="backward" style="display:none">{bw_table or _EMPTY_BW}</div>
+      <div class="dist-view active" data-mode="forward">{fw_table or _EMPTY_FW}</div>
     </section>"""
 
 def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -> str:
@@ -4617,9 +4886,9 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
             <th style="text-align:left;width:54px">Tipo</th>
             <th style="text-align:left">Nome</th>
             <th style="text-align:right;width:60px">Min</th>
-            <th style="text-align:right;width:70px"><span class="kc">VaR</span> 95</th>
+            <th style="text-align:right;width:70px">p05</th>
             <th style="text-align:right;width:60px">Média</th>
-            <th style="text-align:right;width:70px"><span class="kc">VaR</span> +95</th>
+            <th style="text-align:right;width:70px">a+var95</th>
             <th style="text-align:right;width:60px">Max</th>
             <th style="text-align:right;width:55px">σ</th>
           </tr>
@@ -4627,7 +4896,7 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
         <tbody>{rows}</tbody>
       </table>
       <div class="bar-legend">
-        <b>Min/Max</b> = extremos dos 252 PnLs hipotéticos · <b>VaR 95</b> = 5° percentil (cauda de perda) · <b>VaR +95</b> = 95° percentil (cauda de ganho) · <b>Média/σ</b> = expectativa diária e vol
+        <b>Min/Max</b> = extremos dos 252 PnLs hipotéticos · <b>p05</b> = 5° percentil (cauda de perda, VaR 95%) · <b>a+var95</b> = 95° percentil (cauda de ganho) · <b>Média/σ</b> = expectativa diária e vol
       </div>"""
 
 def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
@@ -6930,18 +7199,16 @@ def _evo_spark_svg(series: "pd.Series", today_val: float,
 def _evo_pct_color(pct: float) -> str:
     """Cor para percentil 'high=bad' usando CSS vars do tema."""
     if pd.isna(pct):        return "var(--muted)"
-    if pct < 70:            return "var(--up)"
-    if pct < 85:            return "var(--warn)"
-    if pct < 95:            return "var(--down)"
+    if pct < 60:            return "var(--up)"
+    if pct < 70:            return "var(--warn)"
     return "var(--down)"
 
 
 def _evo_pct_badge(pct: float) -> str:
     if pd.isna(pct):   return "—"
-    if pct < 70:       return "🟢"
-    if pct < 85:       return "🟡"
-    if pct < 95:       return "🔴"
-    return "⚫"
+    if pct < 60:       return "🟢"
+    if pct < 70:       return "🟡"
+    return "🔴"
 
 
 def _evo_render_camada1(rows: list) -> str:
@@ -6950,7 +7217,11 @@ def _evo_render_camada1(rows: list) -> str:
     # FRONTIER/EVO_STRAT).
     _EXCLUDED_C1 = {"CAIXA", "OUTROS", "CREDITO"}
     rows = [r for r in rows if r["strat"] not in _EXCLUDED_C1]
-    elevated = [r for r in rows if not pd.isna(r["pct"]) and r["pct"] >= 70]
+    # Score: red (≥P70) = 1.0 · yellow (P60–69) = 0.5 · green (<P60) = 0
+    score = sum(1.0 if (not pd.isna(r["pct"]) and r["pct"] >= 70) else
+                0.5 if (not pd.isna(r["pct"]) and r["pct"] >= 60) else 0.0
+                for r in rows)
+    elevated = [r for r in rows if not pd.isna(r["pct"]) and r["pct"] >= 60]
     tr_html = ""
     for r in rows:
         c     = _evo_pct_color(r["pct"])
@@ -6967,18 +7238,24 @@ def _evo_render_camada1(rows: list) -> str:
             f"</tr>"
         )
     alert = ""
-    if len(elevated) >= 3:
+    if score >= 3:
         names = ", ".join(r["strat"] for r in elevated)
+        score_detail = f"score={score:.1f}"
         alert = (f"<div style='margin-top:10px;padding:8px 12px;"
                  f"background:rgba(245,196,81,0.12);border-left:3px solid var(--warn);"
                  f"border-radius:4px;font-size:13px;color:var(--text)'>"
-                 f"⚠️ {len(elevated)} estratégias simultaneamente ≥ P70 "
-                 f"({names}) — sinal de carregamento agregado</div>")
+                 f"⚠️ Alerta C1 ({score_detail}) — {names} — sinal de carregamento agregado</div>")
+    elif score >= 1:
+        names = ", ".join(r["strat"] for r in elevated)
+        alert = (f"<div style='margin-top:10px;padding:8px 12px;"
+                 f"background:rgba(245,196,81,0.06);border-left:3px solid var(--muted);"
+                 f"border-radius:4px;font-size:12px;color:var(--muted)'>"
+                 f"score={score:.1f} · {names}</div>")
     return f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Camada 1 — Utilização histórica por estratégia</span>
-        <span class="card-sub">VaR em bps · percentil 252d próprio · sinal: quantas simultaneamente ≥ P70</span>
+        <span class="card-sub">VaR em bps · percentil 252d próprio · 🟢&lt;P60 · 🟡 P60–69 (0.5 pt) · 🔴≥P70 (1 pt) · alerta score≥3</span>
       </div>
       <table class="summary-table">
         <thead><tr>
@@ -6992,7 +7269,7 @@ def _evo_render_camada1(rows: list) -> str:
       {alert}
       <div class="bar-legend" style="margin-top:10px">
         cada estratégia vs. próprio histórico 252d ·
-        3+ simultâneas em P≥70 = bull market alignment ·
+        score ≥ 3 = carregamento agregado (🔴=1 pt, 🟡=0.5 pt) ·
         CAIXA / OUTROS / CREDITO excluídos
       </div>
     </section>"""
@@ -7513,13 +7790,17 @@ def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
     c3_html  = _evo_render_camada3(c3, c1_rows)
     dir_html = _evo_render_camada_direcional(c_dir)
 
+    c4_html  = _evo_render_camada4_alert(c4)
+
     unified = f"""
     <section class="card">
       <div class="card-head">
-        <span class="card-title">Diversificação — camadas detalhadas</span>
-        <span class="card-sub">Evolution · 4 camadas complementares por sub-tab</span>
+        <span class="card-title">Diversificação — Evolution</span>
+        <span class="card-sub">4 camadas complementares · abre em Resumo (Camada 4)</span>
         <div class="pa-view-toggle evo-div-toggle" style="margin-left:auto;flex-wrap:wrap">
-          <button class="pa-tgl active" data-evo-div="camada1"
+          <button class="pa-tgl active" data-evo-div="resumo"
+                  onclick="selectEvoDivView(this,'resumo')">Resumo</button>
+          <button class="pa-tgl" data-evo-div="camada1"
                   onclick="selectEvoDivView(this,'camada1')">Camada 1 · Utilização</button>
           <button class="pa-tgl" data-evo-div="camada2"
                   onclick="selectEvoDivView(this,'camada2')">Camada 2 · Ratio</button>
@@ -7530,16 +7811,15 @@ def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
         </div>
       </div>
       <div class="evo-div-body">
-        <div class="evo-div-view" data-evo-div="camada1">{c1_html}</div>
+        <div class="evo-div-view" data-evo-div="resumo">{c4_html}</div>
+        <div class="evo-div-view" data-evo-div="camada1" style="display:none">{c1_html}</div>
         <div class="evo-div-view" data-evo-div="camada2" style="display:none">{c2_html}</div>
         <div class="evo-div-view" data-evo-div="camada3" style="display:none">{c3_html}</div>
         <div class="evo-div-view" data-evo-div="direcional" style="display:none">{dir_html}</div>
       </div>
     </section>"""
 
-    # Camada 4 alert stays as standalone summary at the top
-    html = _evo_render_camada4_alert(c4) + unified
-    return html, c4
+    return unified, c4
 
 
 REPORTS = [
@@ -8828,10 +9108,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     pa_alert_items_fund = ""
     if df_pa is not None and not df_pa.empty:
         try:
-            _pa_filt = df_pa[
-                ~df_pa["LIVRO"].isin(_PA_EXCL_LIVROS) &
-                ~df_pa["CLASSE"].isin(_PA_EXCL_CLASSES) &
-                (df_pa["dia_bps"].abs() >= PA_ALERT_MIN_BPS)
+            # Drop benchmark-replication livros (e.g. CI in IDKAs) — their "alpha"
+            # is just tracking error vs. the index they're paid to replicate, not
+            # a directional bet. Keeps the card focused on active alpha.
+            _df_alpha = _pa_filter_alpha(df_pa)
+            _pa_filt = _df_alpha[
+                ~_df_alpha["LIVRO"].isin(_PA_EXCL_LIVROS) &
+                ~_df_alpha["CLASSE"].isin(_PA_EXCL_CLASSES) &
+                (_df_alpha["dia_bps"].abs() >= PA_ALERT_MIN_BPS)
             ].copy()
 
             _zscore_map = {}
@@ -8975,9 +9259,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     # Engine HS source (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION): MACRO, QUANT, EVOLUTION.
     # FRONTIER: realized α vs IBOV (LONG_ONLY_MAINBOARD).
     # IDKAs: realized active return (fund − benchmark) via fetch_idka_active_series.
-    # ALBATROZ/MACRO_Q sem série — parkeado em CLAUDE.md.
+    # MACRO_Q sem série HS — parkeado. ALBATROZ via fetch_albatroz_alpha_series (α vs CDI).
     if (dist_map or dist_map_prev) and dist_actuals is not None:
-        for fs in ["MACRO", "EVOLUTION", "QUANT", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]:
+        for fs in ["MACRO", "EVOLUTION", "QUANT", "FRONTIER", "IDKA_3Y", "IDKA_10Y", "ALBATROZ"]:
             html_sect = build_distribution_card(
                 fs, dist_map or {}, dist_map_prev or {}, dist_actuals,
             )
@@ -9129,10 +9413,14 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     }
     _ANALISE_THRESHOLD_PP = 0.30
 
-    def _an_delta_pp(v):
-        color = "var(--up)" if v > 0 else "var(--down)"
-        sign = "+" if v > 0 else ""
-        return f'<span style="color:{color}; font-weight:700">{sign}{v:.2f} pp</span>'
+    def _an_delta_pp(delta, pct_d0):
+        # Green = reduz risco (|posição hoje| < |posição ontem|)
+        # Red   = aumenta risco (|posição hoje| > |posição ontem|)
+        pct_d1 = pct_d0 - delta
+        reduces_risk = abs(pct_d0) < abs(pct_d1)
+        color = "var(--up)" if reduces_risk else "var(--down)"
+        sign = "+" if delta > 0 else ""
+        return f'<span style="color:{color}; font-weight:700">{sign}{delta:.2f} pp</span>'
 
     _an_outliers_by_fund = {}
     if df_pa_daily is not None and not df_pa_daily.empty:
@@ -9336,7 +9624,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 f'<td class="mono" style="color:var(--muted)">{r.rf}</td>'
                 f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
                 f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_nav:+.2f}%</td>'
-                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta)}</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta, r.pct_nav)}</td>'
                 '</tr>'
                 for r in chg.itertuples(index=False)
             )
@@ -9344,7 +9632,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Mudanças Significativas</span>
-                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp</span>
+                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
               </div>
               <table class="summary-movers">
                 <thead><tr>
@@ -9372,7 +9660,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 f'<td class="mono" style="color:var(--muted)">{r.factor}</td>'
                 f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
                 f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_d0:+.2f}%</td>'
-                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta)}</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta, r.pct_d0)}</td>'
                 '</tr>'
                 for r in big.itertuples(index=False)
             )
@@ -9380,7 +9668,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Mudanças Significativas</span>
-                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp</span>
+                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
               </div>
               <table class="summary-movers">
                 <thead><tr>
@@ -9621,8 +9909,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             f'<td class="sum-fund">{r["label"]}</td>'
             f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
             f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}% {rank_abs}</td>'
-            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
             f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}% {rank_rel}</td>'
+            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
             "</tr>"
         )
     tot_nav      = sum(r["nav"]      for r in house_rows)
@@ -9635,8 +9923,8 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
-        '<td></td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
+        '<td></td>'
         '</tr>'
     )
     # ── Breakdown by risk factor — rows = factors, columns = funds (R$ exposure) ──
@@ -9964,7 +10252,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         total = fund_factor_gross.get((fund_label, factor_label), 0.0)
         if abs(total) < 1e-6 or abs(bench) < 1e-6:
             return 1.0
-        return 1.0 - bench / total
+        # Clamp to [0, 1]: bench e total podem ter sinais opostos (convenção)
+        # o que causaria scale > 1 e Líquido > Bruto.
+        return max(0.0, min(1.0, 1.0 - bench / total))
 
     def _render_top_rows(liquido: bool, mode_key: str) -> str:
         from collections import defaultdict
@@ -9990,6 +10280,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
                 "factor": factor, "product": product, "total": total,
                 "unit": unit, "holders": rows,
             })
+
+        # Top 15 instrumentos por |total|
+        instruments.sort(key=lambda i: abs(i["total"]), reverse=True)
+        instruments = instruments[:15]
 
         factor_totals = defaultdict(float)
         factor_unit   = {}
@@ -10109,9 +10403,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         <thead><tr>
           <th style="text-align:left">Fundo</th>
           <th style="text-align:right">NAV</th>
-          <th style="text-align:right"><span class="kc">VaR</span> abs (%)</th>
+          <th style="text-align:right"><span class="kc">VaR</span></th>
+          <th style="text-align:right"><span class="kc">BVaR</span></th>
           <th style="text-align:center">Bench</th>
-          <th style="text-align:right"><span class="kc">BVaR</span> rel (%)</th>
         </tr></thead>
         <tbody>{house_rows_html}</tbody>
         <tfoot>{house_total_row}</tfoot>
@@ -10869,9 +11163,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   .dist-table .dist-num  {{ font-size:12px; text-align:right; font-variant-numeric: tabular-nums; }}
   .dist-table .metric-row:hover {{ background:var(--panel-2); }}
   .dist-toggle {{ display:inline-flex; gap:2px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:3px; }}
-  .dist-btn {{ padding:5px 12px; font-size:11px; font-weight:600; color:var(--muted); background:transparent; border:0; border-radius:6px; cursor:pointer; letter-spacing:.04em; font-family:'Gadugi','Inter',system-ui,sans-serif; }}
-  .dist-btn:hover {{ color:var(--text); }}
-  .dist-btn.active {{ color:#fff; background:linear-gradient(180deg,var(--accent-2),var(--accent)); }}
+  .dist-btn, .dist-bench-btn {{ padding:5px 12px; font-size:11px; font-weight:600; color:var(--muted); background:transparent; border:0; border-radius:6px; cursor:pointer; letter-spacing:.04em; font-family:'Gadugi','Inter',system-ui,sans-serif; }}
+  .dist-btn:hover, .dist-bench-btn:hover {{ color:var(--text); }}
+  .dist-btn.active, .dist-bench-btn.active {{ color:#fff; background:linear-gradient(180deg,var(--accent-2),var(--accent)); }}
+  .dist-bench-btn:disabled {{ opacity:.35; cursor:default; }}
   .dist-view {{ margin-top:10px; }}
 
   /* CSV export button (injected into each card-head) */
@@ -11736,11 +12031,21 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   window.setDistMode = function(cardId, mode) {{
     var card = document.getElementById(cardId);
     if (!card) return;
-    card.querySelectorAll('.dist-btn').forEach(function(b) {{
+    card.querySelectorAll('.dist-btn[data-mode]').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.mode === mode);
     }});
-    card.querySelectorAll('.dist-view').forEach(function(v) {{
+    card.querySelectorAll('.dist-view[data-mode]').forEach(function(v) {{
       v.style.display = (v.dataset.mode === mode) ? '' : 'none';
+    }});
+  }};
+  window.setDistBench = function(cardId, bench) {{
+    var card = document.getElementById(cardId);
+    if (!card) return;
+    card.querySelectorAll('.dist-bench-btn').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.bench === bench);
+    }});
+    card.querySelectorAll('[data-bench-section]').forEach(function(s) {{
+      s.style.display = (s.dataset.benchSection === bench) ? '' : 'none';
     }});
   }};
   // ── PDF export ─────────────────────────────────────────────────────────
@@ -11772,7 +12077,32 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     }});
   }};
 
-  // IDKA exposure — Bruto / Líquido toggle (shows/hides synthetic rows)
+  // IDKA exposure — expand/collapse per factor (click on header row)
+  window.toggleIdkaFac = function(header, fac) {{
+    var tbody = header.closest('tbody');
+    if (!tbody) return;
+    var children = tbody.querySelectorAll('tr[data-idka-child="' + fac + '"]');
+    var caret = header.querySelector('.idka-fac-caret');
+    var anyVisible = Array.from(children).some(function(tr) {{
+      return tr.style.display !== 'none';
+    }});
+    children.forEach(function(tr) {{ tr.style.display = anyVisible ? 'none' : ''; }});
+    if (caret) caret.textContent = anyVisible ? '▶' : '▼';
+  }};
+  window.idkaExpandAll = function(btn) {{
+    var card = btn.closest('section.card');
+    if (!card) return;
+    card.querySelectorAll('tr[data-idka-child]').forEach(function(tr) {{ tr.style.display = ''; }});
+    card.querySelectorAll('.idka-fac-caret').forEach(function(c) {{ c.textContent = '▼'; }});
+  }};
+  window.idkaCollapseAll = function(btn) {{
+    var card = btn.closest('section.card');
+    if (!card) return;
+    card.querySelectorAll('tr[data-idka-child]').forEach(function(tr) {{ tr.style.display = 'none'; }});
+    card.querySelectorAll('.idka-fac-caret').forEach(function(c) {{ c.textContent = '▶'; }});
+  }};
+
+  // IDKA exposure — Bruto / Líquido toggle (shows/hides synthetic rows + factor header spans)
   window.selectIdkaView = function(btn, view) {{
     var card = btn.closest('section.card');
     if (!card) return;
@@ -11782,6 +12112,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     // Rows with data-idka-view only visible in their matching view
     card.querySelectorAll('tr[data-idka-view]').forEach(function(tr) {{
       tr.style.display = (tr.getAttribute('data-idka-view') === view) ? '' : 'none';
+    }});
+    // Factor header spans — each shows its mode's value (bruto / liq-benchmark / liq-replication)
+    card.querySelectorAll('[data-idka-span]').forEach(function(el) {{
+      el.style.display = (el.getAttribute('data-idka-span') === view) ? '' : 'none';
     }});
   }};
 
