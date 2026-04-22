@@ -839,6 +839,10 @@ _DIST_PORTFOLIOS = [
     # FRONTIER — realized alpha vs IBOV series (no HS simulation available).
     # Series is fetched separately from frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD.
     ("FRONTIER",    "FRONTIER α vs IBOV", "fund",  "FRONTIER",    "FRONTIER"),
+    # IDKAs — realized active return (fund − benchmark) series.
+    # Series fetched separately via fetch_idka_active_series.
+    ("IDKA_3Y",     "IDKA 3Y α vs Bench",  "fund",  "IDKA_3Y",     "IDKA_3Y"),
+    ("IDKA_10Y",    "IDKA 10Y α vs Bench", "fund",  "IDKA_10Y",    "IDKA_10Y"),
     # ALBATROZ — parked (waiting for engine HS).
 ]
 
@@ -863,6 +867,51 @@ def fetch_albatroz_alpha_series(date_str: str = DATA_STR, window_days: int = 252
     if df.empty or df["alpha_bps"].isna().all():
         return np.array([])
     return df.sort_values("DATE")["alpha_bps"].astype(float).to_numpy()
+
+
+def fetch_idka_active_series(desk: str, idka_idx_name: str,
+                               date_str: str = DATA_STR,
+                               window_days: int = 252) -> np.ndarray:
+    """Realized daily active return (fund − benchmark) in bps of NAV for an IDKA fund.
+
+    Fund return: pct_change da SHARE em `LOTE_TRADING_DESKS_NAV_SHARE`.
+    Benchmark:   pct_change do índice IDKA em `public.ECO_INDEX` (FIELD='INDEX').
+    Retorna np.array(len ≤ window_days) de active returns × 10000 (bps de NAV).
+    Array vazio se dados insuficientes.
+
+    NOTA: esta série usa o BENCHMARK (ponto), não a Replication.
+    Pra Replication (daily DV-match) ver `fetch_idka_replication_series`.
+    """
+    q_fund = f"""
+    SELECT "VAL_DATE", "SHARE" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+    WHERE "TRADING_DESK" = '{desk}'
+      AND "VAL_DATE" > DATE '{date_str}' - INTERVAL '500 days'
+      AND "VAL_DATE" <= DATE '{date_str}'
+    ORDER BY "VAL_DATE"
+    """
+    q_bench = f"""
+    SELECT "DATE" AS val_date, "VALUE" FROM "public"."ECO_INDEX"
+    WHERE "INSTRUMENT" = '{idka_idx_name}' AND "FIELD" = 'INDEX'
+      AND "DATE" > DATE '{date_str}' - INTERVAL '500 days'
+      AND "DATE" <= DATE '{date_str}'
+    ORDER BY "DATE"
+    """
+    try:
+        f = read_sql(q_fund); b = read_sql(q_bench)
+    except Exception:
+        return np.array([])
+    if f.empty or b.empty:
+        return np.array([])
+    f["VAL_DATE"] = pd.to_datetime(f["VAL_DATE"])
+    b["val_date"] = pd.to_datetime(b["val_date"])
+    f = f.set_index("VAL_DATE")["SHARE"].astype(float).sort_index()
+    b = b.set_index("val_date")["VALUE"].astype(float).sort_index()
+    rf = f.pct_change()
+    rb = b.pct_change()
+    active = (rf - rb).dropna()
+    if len(active) < 10:
+        return np.array([])
+    return (active.tail(window_days).to_numpy() * 10000).astype(float)
 
 
 def fetch_frontier_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
@@ -904,6 +953,17 @@ def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:
     fr = fetch_frontier_alpha_series(date_str)
     if len(fr) >= 30:
         out["FRONTIER"] = fr
+    # IDKAs: realized active return (fund − benchmark) series. Key = "IDKA_3Y" / "IDKA_10Y".
+    for desk, idx_name, key in [
+        ("IDKA IPCA 3Y FIRF",  "IDKA_IPCA_3A",  "IDKA_3Y"),
+        ("IDKA IPCA 10Y FIRF", "IDKA_IPCA_10A", "IDKA_10Y"),
+    ]:
+        try:
+            s = fetch_idka_active_series(desk, idx_name, date_str)
+            if len(s) >= 30:
+                out[key] = s
+        except Exception as e:
+            print(f"  IDKA active series ({key}) failed: {e}")
     # Albatroz: parked — waiting for ALBATROZ in PORTIFOLIO_DAILY_HISTORICAL_SIMULATION
     # (same-carteira-across-252d semantics as MACRO, requested engine-side).
     # `fetch_albatroz_alpha_series` kept as a dormant helper for quick re-enable.
@@ -8913,9 +8973,10 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     # Distribution 252d sections (per fund) — combined card with Backward/Forward toggle.
     # Engine HS source (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION): MACRO, QUANT, EVOLUTION.
     # FRONTIER: realized α vs IBOV (LONG_ONLY_MAINBOARD).
-    # ALBATROZ/MACRO_Q/IDKA_3Y/IDKA_10Y sem série — parkeado em CLAUDE.md.
+    # IDKAs: realized active return (fund − benchmark) via fetch_idka_active_series.
+    # ALBATROZ/MACRO_Q sem série — parkeado em CLAUDE.md.
     if (dist_map or dist_map_prev) and dist_actuals is not None:
-        for fs in ["MACRO", "EVOLUTION", "QUANT", "FRONTIER"]:
+        for fs in ["MACRO", "EVOLUTION", "QUANT", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]:
             html_sect = build_distribution_card(
                 fs, dist_map or {}, dist_map_prev or {}, dist_actuals,
             )
