@@ -7455,13 +7455,13 @@ def _build_fund_mini_briefing(
         top_c = top_contrib.iloc[0]
         if abs(float(top_c["dia_bps"])) >= 3:
             flow_parts.append(
-                f"topo <b>{top_c['PRODUCT']}</b> <span style=\"color:var(--up)\">+{float(top_c['dia_bps'])/100:.2f}%</span>"
+                f"contrib <b>{top_c['PRODUCT']}</b> <span style=\"color:var(--up)\">+{float(top_c['dia_bps'])/100:.2f}%</span>"
             )
     if len(top_detract) > 0:
         top_d = top_detract.iloc[-1]  # most negative
         if abs(float(top_d["dia_bps"])) >= 3:
             flow_parts.append(
-                f"fundo <b>{top_d['PRODUCT']}</b> <span style=\"color:var(--down)\">{float(top_d['dia_bps'])/100:.2f}%</span>"
+                f"detrator <b>{top_d['PRODUCT']}</b> <span style=\"color:var(--down)\">{float(top_d['dia_bps'])/100:.2f}%</span>"
             )
     if flow_parts:
         commentary_parts.append("Fluxo: " + " · ".join(flow_parts) + ".")
