@@ -8364,7 +8364,98 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
           </div>
         </div>"""
 
+    def _an_movers_frontier():
+        """Top movers for FRONTIER — por papel e por setor, já líquido do bench
+           (usa TOTAL_IBVSP_DAY = excess return vs IBOV).
+           Retorna (papel_body, setor_body) — strings HTML, ou (None, None)."""
+        if df_frontier is None or df_frontier.empty:
+            return None, None
+        sub = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])].copy()
+        sub = sub[sub["TOTAL_IBVSP_DAY"].notna()]
+        if sub.empty:
+            return None, None
+        sub["alpha_pct"] = sub["TOTAL_IBVSP_DAY"].astype(float) * 100.0  # fração → %
+
+        _THR = 0.01  # 1 bp: ignora ruído mínimo
+
+        def _fmt_rows(df_in, col_name, color):
+            if df_in is None or df_in.empty:
+                return '<li class="comment-empty">— nada material</li>'
+            out = ""
+            for _, r in df_in.iterrows():
+                v = float(r["alpha_pct"])
+                out += (
+                    '<li>'
+                    f'<span class="mono" style="color:{color}; font-weight:600">{r[col_name]}</span> '
+                    f'<span class="mono">{"+" if v >= 0 else ""}{v:.2f}%</span>'
+                    '</li>'
+                )
+            return out
+
+        def _split_html(pos_items, neg_items, col_name):
+            return f"""
+            <div class="mov-split">
+              <div>
+                <div class="mov-col-title">Contribuintes (α vs IBOV)</div>
+                <ul class="comment-list">{_fmt_rows(pos_items, col_name, "var(--up)")}</ul>
+              </div>
+              <div>
+                <div class="mov-col-title">Detratores (α vs IBOV)</div>
+                <ul class="comment-list">{_fmt_rows(neg_items, col_name, "var(--down)")}</ul>
+              </div>
+            </div>"""
+
+        # Por Papel
+        papel_pos = sub[sub["alpha_pct"] >=  _THR].nlargest(5, "alpha_pct")
+        papel_neg = sub[sub["alpha_pct"] <= -_THR].nsmallest(5, "alpha_pct")
+        papel_body = _split_html(papel_pos, papel_neg, "PRODUCT")
+
+        # Por Setor — join com sectors table
+        setor_body = ""
+        if df_frontier_sectors is not None and not df_frontier_sectors.empty:
+            merged = sub.merge(
+                df_frontier_sectors[["TICKER", "GLPG_SECTOR"]],
+                left_on="PRODUCT", right_on="TICKER", how="left",
+            )
+            merged["GLPG_SECTOR"] = merged["GLPG_SECTOR"].fillna("—")
+            by = merged.groupby("GLPG_SECTOR", as_index=False)["alpha_pct"].sum()
+            by = by[by["alpha_pct"].abs() >= _THR]
+            setor_pos = by[by["alpha_pct"] > 0].sort_values("alpha_pct", ascending=False).head(5)
+            setor_neg = by[by["alpha_pct"] < 0].sort_values("alpha_pct").head(5)
+            setor_body = _split_html(setor_pos, setor_neg, "GLPG_SECTOR")
+
+        return papel_body, setor_body
+
     def _an_movers_card(short):
+        # Frontier é Long Only — não tem PA com LIVRO/CLASSE. Usa alpha vs IBOV
+        # direto do Long Only Mainboard, agrupado por papel ou por setor.
+        if short == "FRONTIER":
+            papel_body, setor_body = _an_movers_frontier()
+            if not papel_body and not setor_body:
+                return ""
+            if setor_body:
+                toggle = """
+                <div class="pa-view-toggle sum-tgl">
+                  <button class="pa-tgl active" data-mov-view="papel"
+                          onclick="selectMoversView(this,'papel')">Por Papel</button>
+                  <button class="pa-tgl" data-mov-view="setor"
+                          onclick="selectMoversView(this,'setor')">Por Setor</button>
+                </div>"""
+                setor_div = f'<div class="mov-view" data-mov-view="setor" style="display:none">{setor_body}</div>'
+            else:
+                toggle = ""
+                setor_div = ""
+            return f"""
+            <section class="card sum-movers-card">
+              <div class="card-head">
+                <span class="card-title">Top Movers — DIA</span>
+                <span class="card-sub">— Frontier · α vs IBOV (líquido do bench) · drop &lt; 1 bp</span>
+                {toggle}
+              </div>
+              <div class="mov-view" data-mov-view="papel">{papel_body}</div>
+              {setor_div}
+            </section>"""
+
         livro_body  = _an_movers_rows(short, "LIVRO")
         classe_body = _an_movers_rows(short, "CLASSE")
         if not (livro_body or classe_body):
