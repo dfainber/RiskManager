@@ -78,7 +78,12 @@ def fetch_pm_pnl_history():
     ORDER BY "LIVRO", mes
     """
     df = read_sql(q)
-    df["mes"] = pd.to_datetime(df["mes"], utc=True).dt.tz_localize(None)
+    # DATE_TRUNC('month', ...) vem do Postgres como TIMESTAMPTZ; se parsearmos
+    # com utc=True + tz_localize(None) o horário fica defasado em +3h (2026-04-01
+    # UTC virou 03:00 wall-clock naive). Converter p/ BRT antes de strip preserva
+    # o timestamp 00:00:00 local → match com `cur_mes = Timestamp(data).to_period('M').to_timestamp()`.
+    s = pd.to_datetime(df["mes"], utc=True)
+    df["mes"] = s.dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
     return df
 
 
@@ -4076,6 +4081,86 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
         <b>Min/Max</b> = extremos dos 252 PnLs hipotéticos · <b>VaR 95</b> = 5° percentil (cauda de perda) · <b>VaR +95</b> = 95° percentil (cauda de ganho) · <b>Média/σ</b> = expectativa diária e vol
       </div>"""
 
+def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
+    """Modal with month-by-month PnL + carry evolution per PM.
+       Triggered by a button in the Risk Budget Monitor card head."""
+    PM_ORDER  = ["CI", "LF", "JD", "RJ"]
+    PM_LABELS = {"CI": "CI (Comitê)", "LF": "Luiz Felipe", "JD": "Joca Dib",
+                 "RJ": "Rodrigo Jafet"}
+    tabs_html   = ""
+    tables_html = ""
+    first_pm = None
+    for pm in PM_ORDER:
+        if pm not in stop_history or stop_history[pm].empty:
+            continue
+        hist = stop_history[pm].sort_values("mes")
+        if first_pm is None:
+            first_pm = pm
+        active_cls = "active" if pm == first_pm else ""
+        tabs_html += (
+            f'<button class="pa-tgl {active_cls}" data-stop-pm="{pm}" '
+            f'onclick="selectStopPm(this,\'{pm}\')">{PM_LABELS[pm]}</button>'
+        )
+        # Build rows — month-by-month
+        rows_html = ""
+        for _, r in hist.iterrows():
+            mes_lbl  = r["mes"].strftime("%b/%y")
+            pnl      = float(r["pnl"])
+            ytd      = float(r["ytd"]) + pnl   # pnl already added AFTER building row in build_stop_history;
+                                                # ytd stored here is BEFORE the month's pnl → adjust for display
+            budget   = float(r["budget_abs"])
+            base     = STOP_BASE if pm != "CI" else 233.0
+            delta_c  = budget - base
+            pnl_c = "var(--up)" if pnl >= 0 else "var(--down)"
+            ytd_c = "var(--up)" if ytd >= 0 else "var(--down)"
+            dc_c  = "var(--up)" if delta_c > 0.1 else ("var(--down)" if delta_c < -0.1 else "var(--muted)")
+            rows_html += (
+                '<tr>'
+                f'<td style="padding:5px 8px">{mes_lbl}</td>'
+                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{pnl_c}">{pnl:+.1f}</td>'
+                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{ytd_c}">{ytd:+.1f}</td>'
+                f'<td class="mono" style="text-align:right;padding:5px 8px;color:var(--muted)">{base:.0f}</td>'
+                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{dc_c}">{delta_c:+.1f}</td>'
+                f'<td class="mono" style="text-align:right;padding:5px 8px;font-weight:700">{budget:.1f}</td>'
+                '</tr>'
+            )
+        display_style = "" if pm == first_pm else 'style="display:none"'
+        tables_html += (
+            f'<div class="stop-pm-view" data-stop-pm="{pm}" {display_style}>'
+            '<table class="summary-table"><thead><tr>'
+            '<th style="text-align:left">Mês</th>'
+            '<th style="text-align:right">PnL mês (bps)</th>'
+            '<th style="text-align:right">PnL YTD</th>'
+            '<th style="text-align:right">Base</th>'
+            '<th style="text-align:right">Δ Carry</th>'
+            '<th style="text-align:right">Budget total</th>'
+            '</tr></thead>'
+            f'<tbody>{rows_html}</tbody></table></div>'
+        )
+    if not first_pm:
+        return ""
+    return f"""
+    <div id="stop-history-modal" class="stop-modal" style="display:none">
+      <div class="stop-modal-overlay" onclick="closeStopHistory()"></div>
+      <div class="stop-modal-box">
+        <div class="stop-modal-head">
+          <span class="modal-title">Histórico de Stop por PM — mês a mês</span>
+          <button class="stop-modal-close" onclick="closeStopHistory()" title="Fechar">✕</button>
+        </div>
+        <div class="stop-modal-tabs">{tabs_html}</div>
+        <div class="stop-modal-body">{tables_html}</div>
+        <div class="bar-legend" style="margin-top:14px">
+          <b>Base</b>: stop fixo por mandato (63 bps p/ PMs · 233 bps CI hard stop).
+          <b>Δ Carry</b>: ajuste do mês em cima da base — positivo = carry de ganho prévio; negativo = base erodida por perda/override.
+          <b>Budget total</b> = Base + Δ Carry = stop efetivo desse mês.
+          Regra de carry: ganhou → +50% do ganho vira carry no próximo mês;
+          perdeu → consome 50% do carry e, se exceder, penaliza base.
+          YTD reseta em janeiro. CI não tem carry (hard stop fixo 233 bps).
+        </div>
+      </div>
+    </div>"""
+
+
 def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.DataFrame) -> str:
     """Build the stop monitor HTML section."""
     PM_ORDER  = ["CI", "LF", "JD", "RJ"]
@@ -4172,11 +4257,13 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
           <td class="spark-cell"><img src="data:image/png;base64,{spark}" height="34"/></td>
         </tr>"""
 
+    modal_html = _build_stop_history_modal(stop_history)
     return f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Risk Budget Monitor</span>
         <span class="card-sub">— MACRO · stop por PM</span>
+        <button class="pa-tgl" style="margin-left:auto" onclick="openStopHistory()" title="Ver histórico mês a mês">📜 Histórico</button>
       </div>
       <table class="metric-table stop-table">
         <thead>
@@ -4194,7 +4281,8 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
       <div class="bar-legend">
         Barra: <span style="color:var(--accent-2)">azul</span> = budget disponível · <span style="color:var(--up)">verde</span> = ganho MTD · <span style="color:var(--down)">vermelho</span> = consumo · Budget (bps) = base 63 + carrego
       </div>
-    </section>"""
+    </section>
+    {modal_html}"""
 
 
 # ── MACRO · PM Budget vs VaR (parametric + historic) ────────────────────────
@@ -10225,6 +10313,36 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   }}
   .pa-alert-view-hidden {{ display:none; }}
 
+  /* Stop history modal — child window triggered from Risk Budget Monitor */
+  .stop-modal {{
+    position:fixed; inset:0; z-index:9999;
+    display:flex; align-items:center; justify-content:center;
+  }}
+  .stop-modal-overlay {{
+    position:absolute; inset:0; background:rgba(0,0,0,0.72);
+    backdrop-filter: blur(2px);
+  }}
+  .stop-modal-box {{
+    position:relative; z-index:1; max-width:860px; width:92%;
+    max-height:85vh; overflow-y:auto;
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:18px 22px 16px;
+    box-shadow:0 16px 48px rgba(0,0,0,0.6);
+  }}
+  .stop-modal-head {{
+    display:flex; justify-content:space-between; align-items:center;
+    border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:14px;
+  }}
+  .stop-modal-head .modal-title {{
+    font-size:15px; font-weight:700; color:var(--text);
+  }}
+  .stop-modal-close {{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    width:28px; height:28px; border-radius:6px; font-size:14px; cursor:pointer;
+  }}
+  .stop-modal-close:hover {{ color:var(--text); border-color:var(--text); }}
+  .stop-modal-tabs {{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }}
+
   /* Top Movers split (per-fund) */
   .mov-split {{ display:grid; grid-template-columns:1fr 1fr; gap:24px; }}
   .mov-col-title {{
@@ -10876,6 +10994,33 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
       }}, 500);
     }}, 120);
   }};
+
+  // Stop history modal (child window) — opened from Risk Budget Monitor
+  window.openStopHistory = function() {{
+    var m = document.getElementById('stop-history-modal');
+    if (m) m.style.display = 'flex';
+  }};
+  window.closeStopHistory = function() {{
+    var m = document.getElementById('stop-history-modal');
+    if (m) m.style.display = 'none';
+  }};
+  window.selectStopPm = function(btn, pm) {{
+    var modal = btn.closest('.stop-modal-box');
+    if (!modal) return;
+    modal.querySelectorAll('.stop-modal-tabs [data-stop-pm]').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.stopPm === pm);
+    }});
+    modal.querySelectorAll('.stop-pm-view').forEach(function(v) {{
+      v.style.display = (v.dataset.stopPm === pm) ? '' : 'none';
+    }});
+  }};
+  // ESC closes modal
+  document.addEventListener('keydown', function(e) {{
+    if (e.key === 'Escape') {{
+      var m = document.getElementById('stop-history-modal');
+      if (m && m.style.display !== 'none') m.style.display = 'none';
+    }}
+  }});
 
   // Summary > Top Movers view toggle (Por Livro / Por Classe)
   window.selectMoversView = function(btn, view) {{
