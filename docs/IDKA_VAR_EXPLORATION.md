@@ -118,7 +118,7 @@ Alternativa: limites são em anualizado e a comparação com Lote-daily precisa 
 - IDKA 3Y BVaR annualized = 0.282% × √252 = **4.48%** vs soft 1.75% = **256% utilização** 🔴 (fora do limite)
 - IDKA 10Y BVaR annualized = 0.656% × √252 = **10.42%** vs soft 3.50% = **298% utilização** 🔴
 
-**Dúvida aberta**: precisa validar com mandato qual é a convenção dos limites. Recomendação — checar com quem definiu o mandato se os 1.75/2.50 são daily ou annualized.
+**Resolvido 2026-04-22**: limites confirmados como **daily** — 3Y soft 0.40% / hard 0.60%, 10Y soft 1.00% / hard 1.50%. Os limites anteriores (1.75/2.50) eram provisórios incorretos. Com os novos limites: utilização ~70-80%, dentro do soft. Ver CLAUDE.md Fase 4 sessão 2026-04-22.
 
 ### 3.4 Gap 1.6-3x Lote vs HS — causas prováveis
 
@@ -131,10 +131,9 @@ Consistente em 3Y e 10Y, BVaR e VaR:
 
 ## 4. Próximos passos (parkeado)
 
-### 4.1 Validar convenção dos limites (urgente)
-Confirmar com mandato se IDKA 3Y soft 1.75% / hard 2.50% são **daily** ou **annualized**.
-- Se daily: fundos bem dentro (16-26% util), tudo OK.
-- Se annualized: fundos fora do soft (256-298% util) 🔴 — ação necessária.
+### 4.1 ~~Validar convenção dos limites~~ — **fechado 2026-04-22**
+Limites confirmados como **daily**: 3Y soft 0.40% / hard 0.60% · 10Y soft 1.00% / hard 1.50%.
+Utilização atual ~70-80% — dentro do soft. Limites provisórios anteriores (1.75/2.50) eram incorretos.
 
 ### 4.2 HS posicional completo
 - Incluir DI1 Future + DAP Future + LFT + ALBATROZ look-through
@@ -159,3 +158,4 @@ Confirmar com mandato se IDKA 3Y soft 1.75% / hard 2.50% são **daily** ou **ann
 | 2026-04-22 | Exploração inicial. Identificou bug de triplicação no SUM. |
 | 2026-04-22 | Fix aplicado: filtro `BOOKS='{*}'`. Valores IDKA 3Y/10Y caem ~3x. |
 | 2026-04-22 | Análise corrigida: Lote é DAILY (não annualized). Gap 1.6-3x vs HS é razoável. Dúvida aberta: convenção dos limites (daily vs annualized). |
+| 2026-04-22 | Limites confirmados como daily: 3Y 0.40/0.60%, 10Y 1.00/1.50%. Dúvida fechada. IDKAs migrados para HS engine em Distribuição 252d com toggle Benchmark/Replication/Comparação. |
