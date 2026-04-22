@@ -2584,13 +2584,24 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     df = df.copy()
     df["yrs_to_mat"] = pd.to_numeric(df.get("yrs_to_mat", 0), errors="coerce").fillna(0.0)
     df["mod_dur"]    = pd.to_numeric(df.get("mod_dur",    0), errors="coerce").fillna(0.0)
-    # DV01 ≈ ano_eq_brl × 0.0001 (BRL perdido por 1bp de alta de yield)
-    df["dv01_brl"] = df["ano_eq_brl"] * 0.0001
+    # DV01 convention para duration factors (real + nominal): long bond = negative.
+    # ipca_idx / cdi / other são face-value notional (%NAV), NÃO duration — não flipar
+    # (e não vão no total de yrs).
+    _DUR_FAC = {"real", "nominal"}
+    df["ano_eq_brl"] = df.apply(
+        lambda r: -r["ano_eq_brl"] if r["factor"] in _DUR_FAC else r["ano_eq_brl"],
+        axis=1,
+    )
+    df["dv01_brl"] = df.apply(
+        lambda r: r["ano_eq_brl"] * 0.0001 if r["factor"] in _DUR_FAC else 0.0,
+        axis=1,
+    )
 
     # Aggregate per (factor, PRODUCT, expiry, via)
     agg = (df.groupby(["factor", "PRODUCT", "PRODUCT_CLASS", "via", "yrs_to_mat"],
                       as_index=False)
              .agg(ano_eq_brl=("ano_eq_brl", "sum"),
+                  dv01_brl=("dv01_brl",   "sum"),
                   delta_brl=("delta_brl",   "sum"),
                   position_brl=("position_brl", "sum"),
                   mod_dur=("mod_dur", "max")))
@@ -2624,8 +2635,8 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
 
     body = ""
     # Duration totals in yrs — SOMENTE fatores 'real' + 'nominal'.
-    # ipca_idx (carry) e cdi são notional (BRL face value), não duration → mostrados
-    # na tabela com seus números mas EXCLUÍDOS dos totais de yrs pra não misturar unidades.
+    # ipca_idx (carry) e cdi são notional (BRL face value) — mostrados como %NAV,
+    # EXCLUÍDOS dos totais de yrs pra não misturar unidades.
     _DUR_FACTORS = {"real", "nominal"}
     total_ano_eq        = 0.0
     total_ano_eq_via    = 0.0
@@ -2634,34 +2645,53 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         sub = agg[agg["factor"] == f].sort_values("_abs", ascending=False)
         if sub.empty:
             continue
+        is_dur = f in _DUR_FACTORS
         fac_ano = float(sub["ano_eq_brl"].sum())
         fac_pos = float(sub["position_brl"].sum())
-        if f in _DUR_FACTORS:
+        if is_dur:
             total_ano_eq        += fac_ano
             total_ano_eq_via    += float(sub[sub["via"] == "via_albatroz"]["ano_eq_brl"].sum())
             total_ano_eq_direct += float(sub[sub["via"] == "direct"]["ano_eq_brl"].sum())
-        fac_yrs_disp = fac_ano / nav
         fac_pct = fac_pos * 100 / nav
         n_pos = len(sub)
+        # Header "Ano-Eq / %NAV" column: yrs for duration, %NAV (notional) for others
+        if is_dur:
+            fac_ae_val  = fac_ano / nav
+            fac_ae_col  = "var(--up)" if fac_ae_val >= 0 else "var(--down)"
+            fac_ae_cell = f'<td class="mono" style="text-align:right;font-weight:700;color:{fac_ae_col}">{fac_ae_val:+.2f} yrs</td>'
+        else:
+            fac_ae_val  = fac_ano * 100 / nav   # %NAV (face value indexado)
+            fac_ae_col  = "var(--up)" if fac_ae_val >= 0 else "var(--down)"
+            fac_ae_cell = f'<td class="mono" style="text-align:right;font-weight:700;color:{fac_ae_col}">{fac_ae_val:+.1f}%</td>'
         body += (
             f'<tr class="idka-fac-head" style="background:rgba(96,165,250,0.08);font-weight:600">'
             f'<td style="padding:6px 8px" colspan="2"><b>{FACTOR_LABEL[f]}</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">· {n_pos} pos</span></td>'
             f'<td></td><td></td>'
-            f'<td class="mono" style="text-align:right;font-weight:700">{fac_yrs_disp:+.2f} yrs</td>'
-            f'<td class="mono" style="text-align:right;color:var(--muted)">{fac_pct:+.1f}%</td>'
-            f'<td></td>'
-            f'</tr>'
+            + fac_ae_cell
+            + f'<td class="mono" style="text-align:right;color:var(--muted)">{fac_pct:+.1f}%</td>'
+            + f'<td></td>'
+            + '</tr>'
         )
         for _, r in sub.iterrows():
             via_tag = "direct" if r["via"] == "direct" else ("via Albatroz" if r["via"] == "via_albatroz" else r["via"])
+            # Per-row: yrs for duration factors, %NAV (notional face) for others
+            if is_dur:
+                ae_cell = _yrs_cell(r["ano_eq_brl"] / nav)
+            else:
+                p = r["ano_eq_brl"] * 100 / nav
+                if abs(p) < 0.05:
+                    ae_cell = '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+                else:
+                    col = "var(--up)" if p >= 0 else "var(--down)"
+                    ae_cell = f'<td class="mono" style="text-align:right;color:{col}">{p:+.1f}%</td>'
             body += (
                 f'<tr style="font-size:11.5px">'
                 f'<td style="padding:4px 20px;color:var(--muted)">{r["PRODUCT"]}</td>'
                 f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r["PRODUCT_CLASS"]}</td>'
                 + _dur_cell(r["mod_dur"], r["yrs_to_mat"])
-                + _dv01_cell(r["dv01_brl"] if "dv01_brl" in r else r["ano_eq_brl"]*0.0001)
-                + _yrs_cell(r["ano_eq_brl"] / nav)
+                + (_dv01_cell(r["dv01_brl"]) if is_dur else '<td class="mono" style="text-align:right;color:var(--muted)">—</td>')
+                + ae_cell
                 + _pct_cell(r["position_brl"])
                 + f'<td class="mono" style="color:var(--muted);font-size:10.5px">{via_tag}</td>'
                 + '</tr>'
@@ -2711,8 +2741,10 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         f'<td class="mono" style="color:var(--muted);font-size:10.5px">synthetic</td>'
         f'</tr>'
     )
-    # Liquido = gross - via_albatroz (swap) - bench_dur = direct - bench_dur
-    liq_real_yrs = total_ano_eq_direct / nav - bench_dur
+    # DV01 conv: direct_dv01 (negative for long) − bench_dv01 (also negative for long bench)
+    # = direct_dv01 − (−bench_dur) = direct_dv01 + bench_dur
+    # Net negative = still long above bench ("dado"); net positive = under bench.
+    liq_real_yrs = total_ano_eq_direct / nav + bench_dur
     liq_row = (
         f'<tr class="idka-liq-total" data-idka-view="liquido" '
         f'style="display:none;border-top:2px solid var(--border);font-weight:700;'
@@ -2776,15 +2808,16 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     rel = df[df["factor"].isin(["real", "nominal"])].copy()
     if rel.empty:
         return ""
-    # Express ANO_EQ in years (ano_eq_brl / NAV). One unit = 1 year of duration
-    # per 100% NAV. Bench below is also in years, so bars/table/stats align.
-    rel["yr"] = rel["ano_eq_brl"] / nav
+    # Express ANO_EQ in years (ano_eq_brl / NAV).
+    # DV01 convention: long bond = negative (bar goes DOWN from zero).
+    # ano_eq_brl is long=positive in fetch_rf_exposure_map; flip sign here.
+    rel["yr"] = -rel["ano_eq_brl"] / nav
     pivot = (rel.pivot_table(index="bucket", columns="factor", values="yr",
                              aggfunc="sum", fill_value=0.0))
     bucket_order = [b[0] for b in _RF_BUCKETS]
     pivot = pivot.reindex(index=bucket_order, columns=["real", "nominal"], fill_value=0.0)
 
-    # Per-bucket arrays in years-equivalent (unit: yr × NAV fraction)
+    # Per-bucket arrays in years-equivalent (DV01 conv: long bond = negative)
     fund_real_b = pivot["real"].tolist()
     fund_nom_b  = pivot["nominal"].tolist()
 
@@ -2796,11 +2829,11 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
                 return i
         return len(_RF_BUCKETS) - 1
 
-    # Benchmark per-bucket: IDKAs = 100% NAV concentrated at bench_dur bucket, real only
+    # Benchmark per-bucket: IDKAs = 100% NAV long at bench_dur → DV01 conv negative
     bench_real_b = [0.0] * len(bucket_order)
     bench_nom_b  = [0.0] * len(bucket_order)
     if not cdi_bench:
-        bench_real_b[bench_bucket_idx(bench_dur_yrs)] = bench_dur_yrs
+        bench_real_b[bench_bucket_idx(bench_dur_yrs)] = -bench_dur_yrs
 
     # Relative = fund - bench per bucket
     rel_real_b = [fund_real_b[i] - bench_real_b[i] for i in range(len(bucket_order))]
@@ -9273,10 +9306,9 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             if not shorts_with_data:
                 continue
             unit = _FACTOR_UNIT.get(factor_key, "pct")
-            # For rate factors (yrs), factor/bench matrices are stored in DV01
-            # convention (long bond = negative). Flip sign for display so long
-            # duration reads as positive (intuitive for the reader).
-            sign_flip = -1 if unit == "yrs" else 1
+            # DV01 convention everywhere: long bond = negative (bar goes DOWN).
+            # factor_matrix/bench_matrix already stored in DV01 conv — no flip.
+            sign_flip = 1
             cells = ""
             total_brl = 0.0
             for short in FUND_ORDER:
