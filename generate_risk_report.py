@@ -2564,6 +2564,207 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
     return df
 
 
+def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
+                                  bench_dur: float, bench_label: str) -> str:
+    """IDKA exposure table — positions por fator com toggle Bruto/Líquido.
+       Líquido = Bruto − bench sintético (bench_dur anos de IPCA Coupon + 1 NAV de IPCA carry).
+       Dados vêm de rf_expo_maps[short] (fetch_rf_exposure_map)."""
+    if df is None or df.empty or not nav:
+        return ""
+
+    FACTOR_ORDER = ["real", "ipca_idx", "nominal", "cdi", "other"]
+    FACTOR_LABEL = {
+        "real":     "Duration Real (IPCA Coupon)",
+        "ipca_idx": "Indexação IPCA (carry)",
+        "nominal":  "Juros Nominais",
+        "cdi":      "CDI / LFT",
+        "other":    "Outros",
+    }
+
+    df = df.copy()
+    df["yrs_to_mat"] = pd.to_numeric(df.get("yrs_to_mat", 0), errors="coerce").fillna(0.0)
+    df["mod_dur"]    = pd.to_numeric(df.get("mod_dur",    0), errors="coerce").fillna(0.0)
+    # DV01 ≈ ano_eq_brl × 0.0001 (BRL perdido por 1bp de alta de yield)
+    df["dv01_brl"] = df["ano_eq_brl"] * 0.0001
+
+    # Aggregate per (factor, PRODUCT, expiry, via)
+    agg = (df.groupby(["factor", "PRODUCT", "PRODUCT_CLASS", "via", "yrs_to_mat"],
+                      as_index=False)
+             .agg(ano_eq_brl=("ano_eq_brl", "sum"),
+                  delta_brl=("delta_brl",   "sum"),
+                  position_brl=("position_brl", "sum"),
+                  mod_dur=("mod_dur", "max")))
+    agg["_abs"] = agg["ano_eq_brl"].abs()
+
+    def _yrs_cell(v):
+        if v is None or pd.isna(v) or abs(v) < 0.001:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        col = "var(--up)" if v >= 0 else "var(--down)"
+        return f'<td class="mono" style="text-align:right;color:{col}">{v:+.2f} yrs</td>'
+
+    def _pct_cell(v_brl):
+        if v_brl is None or pd.isna(v_brl) or abs(v_brl) < 1_000:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        pct = v_brl * 100 / nav
+        col = "var(--up)" if v_brl >= 0 else "var(--down)"
+        return f'<td class="mono" style="text-align:right;color:{col}">{pct:+.1f}%</td>'
+
+    def _dv01_cell(v_brl):
+        if v_brl is None or pd.isna(v_brl) or abs(v_brl) < 10:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        col = "var(--up)" if v_brl >= 0 else "var(--down)"
+        return f'<td class="mono" style="text-align:right;color:{col}">{v_brl/1e3:+,.1f}k</td>'
+
+    def _dur_cell(d, y):
+        # If we have mod_dur use it; else show yrs_to_mat as proxy
+        val = d if d and d > 0.01 else y
+        if not val or abs(val) < 0.01:
+            return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        return f'<td class="mono" style="text-align:right;color:var(--muted)">{val:.2f}y</td>'
+
+    body = ""
+    # Duration totals in yrs — SOMENTE fatores 'real' + 'nominal'.
+    # ipca_idx (carry) e cdi são notional (BRL face value), não duration → mostrados
+    # na tabela com seus números mas EXCLUÍDOS dos totais de yrs pra não misturar unidades.
+    _DUR_FACTORS = {"real", "nominal"}
+    total_ano_eq        = 0.0
+    total_ano_eq_via    = 0.0
+    total_ano_eq_direct = 0.0
+    for f in FACTOR_ORDER:
+        sub = agg[agg["factor"] == f].sort_values("_abs", ascending=False)
+        if sub.empty:
+            continue
+        fac_ano = float(sub["ano_eq_brl"].sum())
+        fac_pos = float(sub["position_brl"].sum())
+        if f in _DUR_FACTORS:
+            total_ano_eq        += fac_ano
+            total_ano_eq_via    += float(sub[sub["via"] == "via_albatroz"]["ano_eq_brl"].sum())
+            total_ano_eq_direct += float(sub[sub["via"] == "direct"]["ano_eq_brl"].sum())
+        fac_yrs_disp = fac_ano / nav
+        fac_pct = fac_pos * 100 / nav
+        n_pos = len(sub)
+        body += (
+            f'<tr class="idka-fac-head" style="background:rgba(96,165,250,0.08);font-weight:600">'
+            f'<td style="padding:6px 8px" colspan="2"><b>{FACTOR_LABEL[f]}</b> '
+            f'<span style="color:var(--muted);font-weight:400;font-size:11px">· {n_pos} pos</span></td>'
+            f'<td></td><td></td>'
+            f'<td class="mono" style="text-align:right;font-weight:700">{fac_yrs_disp:+.2f} yrs</td>'
+            f'<td class="mono" style="text-align:right;color:var(--muted)">{fac_pct:+.1f}%</td>'
+            f'<td></td>'
+            f'</tr>'
+        )
+        for _, r in sub.iterrows():
+            via_tag = "direct" if r["via"] == "direct" else ("via Albatroz" if r["via"] == "via_albatroz" else r["via"])
+            body += (
+                f'<tr style="font-size:11.5px">'
+                f'<td style="padding:4px 20px;color:var(--muted)">{r["PRODUCT"]}</td>'
+                f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r["PRODUCT_CLASS"]}</td>'
+                + _dur_cell(r["mod_dur"], r["yrs_to_mat"])
+                + _dv01_cell(r["dv01_brl"] if "dv01_brl" in r else r["ano_eq_brl"]*0.0001)
+                + _yrs_cell(r["ano_eq_brl"] / nav)
+                + _pct_cell(r["position_brl"])
+                + f'<td class="mono" style="color:var(--muted);font-size:10.5px">{via_tag}</td>'
+                + '</tr>'
+            )
+
+    # Total BRUTO row — duration only (yrs = real + nominal factors)
+    total_yrs_bruto = total_ano_eq / nav
+    body_bruto_total = (
+        f'<tr class="pa-total-row" data-pinned="1" '
+        f'style="border-top:2px solid var(--border);font-weight:700;background:rgba(0,0,0,0.25)">'
+        f'<td style="padding:6px 8px" colspan="2"><b>TOTAL BRUTO — Duration</b> '
+        f'<span style="color:var(--muted);font-weight:400;font-size:11px">(só fatores real + nominal)</span></td>'
+        f'<td></td><td></td>'
+        f'<td class="mono" style="text-align:right;color:var(--text);font-weight:700">{total_yrs_bruto:+.2f} yrs</td>'
+        f'<td></td><td></td>'
+        f'</tr>'
+    )
+
+    # Líquido view — three synthetic rows added on top of Bruto:
+    #   1. Swap plug (via Albatroz → CDI): neutraliza duração da fatia via_albatroz
+    #      (IDKA paga duração via swap com Albatroz e recebe CDI, como no PA).
+    #   2. Benchmark IDKA Xy: −bench_dur yrs (duração real do índice).
+    #   3. TOTAL LÍQUIDO = direct duration − bench (via_albatroz zera via swap).
+    via_yrs_disp = total_ano_eq_via / nav
+    swap_row = (
+        f'<tr class="idka-swap" data-idka-view="liquido" '
+        f'style="display:none;background:rgba(147,197,253,0.06);color:var(--accent-2);font-weight:600">'
+        f'<td style="padding:6px 8px" colspan="2">⇄ <b>Swap plug (via Albatroz → CDI)</b> '
+        f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+        f'· neutraliza duração da fatia Albatroz (como no PA)</span></td>'
+        f'<td></td><td></td>'
+        f'<td class="mono" style="text-align:right">{-via_yrs_disp:+.2f} yrs</td>'
+        f'<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
+        f'<td class="mono" style="color:var(--muted);font-size:10.5px">swap</td>'
+        f'</tr>'
+    )
+    bench_row = (
+        f'<tr class="idka-bench" data-idka-view="liquido" '
+        f'style="display:none;background:rgba(184,135,0,0.08);color:var(--warn);font-weight:600">'
+        f'<td style="padding:6px 8px" colspan="2">− <b>Benchmark {bench_label}</b> '
+        f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+        f'· {bench_dur:.0f}y duração real (+ 1× NAV IPCA carry)</span></td>'
+        f'<td class="mono" style="text-align:right;color:var(--muted)">{bench_dur:.2f}y</td>'
+        f'<td></td>'
+        f'<td class="mono" style="text-align:right">−{bench_dur:.2f} yrs</td>'
+        f'<td class="mono" style="text-align:right;color:var(--muted)">−100%</td>'
+        f'<td class="mono" style="color:var(--muted);font-size:10.5px">synthetic</td>'
+        f'</tr>'
+    )
+    # Liquido = gross - via_albatroz (swap) - bench_dur = direct - bench_dur
+    liq_real_yrs = total_ano_eq_direct / nav - bench_dur
+    liq_row = (
+        f'<tr class="idka-liq-total" data-idka-view="liquido" '
+        f'style="display:none;border-top:2px solid var(--border);font-weight:700;'
+        f'background:rgba(74,222,128,0.08)">'
+        f'<td style="padding:6px 8px" colspan="2"><b>TOTAL LÍQUIDO</b> '
+        f'<span style="color:var(--muted);font-weight:400;font-size:11px">'
+        f'· direct duration − bench ({bench_dur:.0f}y), via Albatroz swapado pra CDI</span></td>'
+        f'<td></td><td></td>'
+        f'<td class="mono" style="text-align:right;color:{"var(--up)" if liq_real_yrs >=0 else "var(--down)"};font-weight:700">'
+        f'{liq_real_yrs:+.2f} yrs</td>'
+        f'<td></td><td></td>'
+        f'</tr>'
+    )
+
+    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    short_label = "IDKA 3Y" if short == "IDKA_3Y" else ("IDKA 10Y" if short == "IDKA_10Y" else short)
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Exposição — {short_label}</span>
+        <span class="card-sub">— NAV R$ {nav_fmt}M · posições por fator · bench = {bench_label} ({bench_dur:.0f}y real + IPCA carry)</span>
+        <div class="pa-view-toggle" style="margin-left:auto">
+          <button class="pa-tgl active" data-idka-view="bruto"
+                  onclick="selectIdkaView(this,'bruto')">Bruto</button>
+          <button class="pa-tgl" data-idka-view="liquido"
+                  onclick="selectIdkaView(this,'liquido')">Líquido (ex bench)</button>
+        </div>
+      </div>
+      <table class="summary-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Fator / Produto</th>
+          <th style="text-align:left">Classe</th>
+          <th style="text-align:right">Duration</th>
+          <th style="text-align:right">DV01 (R$)</th>
+          <th style="text-align:right">Ano-Eq (yrs)</th>
+          <th style="text-align:right">%NAV (face)</th>
+          <th style="text-align:left">Via</th>
+        </tr></thead>
+        <tbody>{body}{body_bruto_total}{swap_row}{bench_row}{liq_row}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:10px">
+        <b>Duration</b>: modified duration ou anos até o vencimento (proxy).
+        <b>DV01</b>: BRL perdido por 1bp de alta de yield (= Ano-Eq × 0.0001).
+        <b>Ano-Eq</b>: exposição em <i>anos de duration × NAV</i> (BRL-yr) convertida em anos por NAV.
+        <b>%NAV</b>: posição nominal ÷ NAV.
+        <b>Bruto</b>: todas as posições como estão (direct + via Albatroz).
+        <b>Líquido</b>: adiciona linha de benchmark sintético ({bench_dur:.0f}y duração real) e mostra overweight/underweight vs índice.
+        Positivo = overweight duration (ganha com queda de yield real).
+      </div>
+    </section>"""
+
+
 def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
                                    bench_dur_yrs: float, bench_label: str) -> str:
     """Grouped bar chart of ANO_EQ (% NAV) by maturity bucket × factor,
@@ -8349,6 +8550,13 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
             )
             if html_k:
                 sections.append((short_k, "exposure-map", html_k))
+            # IDKAs also get a position-level exposure table with Bruto/Líquido toggle
+            if short_k in ("IDKA_3Y", "IDKA_10Y"):
+                idka_html = build_idka_exposure_section(
+                    short_k, df_k, nav_k, cfg_k["bench_dur"], cfg_k["bench_label"],
+                )
+                if idka_html:
+                    sections.append((short_k, "exposure", idka_html))
 
     # ALBATROZ — Risk Budget (150 bps/month stop)
     if df_pa is not None and not df_pa.empty:
@@ -11002,6 +11210,19 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
         body.classList.remove('print-full', 'print-current');
       }}, 500);
     }}, 120);
+  }};
+
+  // IDKA exposure — Bruto / Líquido toggle (shows/hides synthetic rows)
+  window.selectIdkaView = function(btn, view) {{
+    var card = btn.closest('section.card');
+    if (!card) return;
+    card.querySelectorAll('.pa-view-toggle .pa-tgl').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.idkaView === view);
+    }});
+    // Rows with data-idka-view only visible in their matching view
+    card.querySelectorAll('tr[data-idka-view]').forEach(function(tr) {{
+      tr.style.display = (tr.getAttribute('data-idka-view') === view) ? '' : 'none';
+    }});
   }};
 
   // Stop history modal (child window) — opened from Risk Budget Monitor
