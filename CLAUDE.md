@@ -358,6 +358,12 @@ dashboards originais.
 - **Convenção anti-DB-drift**: as tabelas PA/NAV/CDI da GLPG-DB01 são re-escritas continuamente por rotinas batch (observado: ~30-60 valores mudam a cada 5-10 min mesmo para datas passadas). Validação numérica de refactor **exige** regen back-to-back (<2 min entre runs); caso contrário diffs aparentes são drift de DB, não regressão.
 
 **Fase 4 — pendente (consolidado e priorizado):**
+- **iPhone / iOS — botões não funcionam** (user report 2026-04-23): no iOS Mail e/ou Safari Mobile, o HTML abre mas os botões de navegação (tabs, fund switcher, sort, toggles, collapse/expand, drill-down) ficam inertes. Causa provável: iOS Mail preview é sandboxed e não roda JS; Safari roda JS mas pode estar bloqueando `onclick` em `<div>`/`<span>` (touch events diferentes de desktop). Fase 1 do mobile (2026-04-21) só cobriu CSS responsivo, não interação. Próximas alternativas (ordem de esforço):
+  1. **Low-effort**: instruir usuários iOS a baixar o anexo + abrir em Safari ou Chrome full app (não no preview do Mail). Adicionar bloco `<noscript>` ou aviso "Para celular: baixe o arquivo e abra no navegador".
+  2. **Med-effort**: substituir `onclick` em `<div>`/`<span>` por `<button>` real ou `role="button"` + `tabindex="0"` — Safari trata melhor. Testar se resolve sem refactor pesado.
+  3. **Med-effort**: trocar JS de navegação de tabs por CSS `:target` (hash-based). Já usamos hash pra nav mode — poderia-se fazer tabs funcionarem só com CSS também, eliminando necessidade de JS pra view switching.
+  4. **High-effort**: gerar versão "mobile-static" paralela sem JS — todas as seções expandidas, sem filtros/sort/toggles. Anexar 2 arquivos (desktop + mobile) no email.
+- **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
   - QUANT herda as colunas de MACRO que hoje não tem: **Δ Expo** (D-0 vs D-1), **σ (bps)**, **VaR (bps)** signed, **Δ VaR** vs D-1

@@ -7,4 +7,5 @@ __pycache__/
 data/morning-calls/
 data/macro-stops/snapshots/
 data/.smoke_snapshots/
+data/email-logs/
 tmp_*.py
