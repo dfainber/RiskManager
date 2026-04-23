@@ -18,7 +18,8 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoDir   = Split-Path -Parent $ScriptDir
 $Python    = "C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe"
 $Script    = Join-Path $RepoDir "generate_risk_report.py"
-$MailTo    = "diego.fainberg@galapagoscapital.com; fabio.guarda@galapagoscapital.com; luiz.laudari@galapagoscapital.com; rodrigo.jafet@galapagoscapital.com; jorge.dib@galapagoscapital.com; rodrigo.fonseca@galapagoscapital.com; pedro.alexandre@galapagoscapital.com; pedro.borges@galapagoscapital.com; luca.esposito@galapagoscapital.com; thiago.veiga@galapagoscapital.com"
+$MailTo    = "diego.fainberg@galapagoscapital.com"
+$MailBcc   = "fabio.guarda@galapagoscapital.com; luiz.laudari@galapagoscapital.com; rodrigo.jafet@galapagoscapital.com; jorge.dib@galapagoscapital.com; rodrigo.fonseca@galapagoscapital.com; pedro.alexandre@galapagoscapital.com; pedro.borges@galapagoscapital.com; luca.esposito@galapagoscapital.com; thiago.veiga@galapagoscapital.com"
 
 # Data-alvo: ultimo dia util
 $d = (Get-Date).AddDays(-1)
@@ -55,7 +56,8 @@ $Success = ($ExitCode -eq 0) -and (Test-Path $HtmlFile)
 try {
     $Outlook = New-Object -ComObject Outlook.Application
     $Mail    = $Outlook.CreateItem(0)   # 0 = olMailItem
-    $Mail.To = $MailTo
+    $Mail.To  = $MailTo
+    $Mail.BCC = $MailBcc
 
     if ($Success) {
         $HtmlSizeKB = [math]::Round((Get-Item $HtmlFile).Length / 1KB, 0)
