@@ -24,6 +24,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
 from risk_runtime import DATA_STR, DATA, DATE_1Y, DATE_60D, OUT_DIR, fmt_br_num as _fmt_br_num
+from risk_config import (
+    FUNDS, RAW_FUNDS, IDKA_FUNDS, ALL_FUNDS,
+    ALERT_THRESHOLD, UTIL_WARN, UTIL_HARD,
+    STOP_BASE, STOP_SEM, STOP_ANO, ALBATROZ_STOP_BPS,
+    REPORTS, FUND_ORDER, FUND_LABELS,
+    _FUND_PA_KEY, _PA_BENCH_LIVROS,
+)
 from evolution_diversification_card import (
     build_ratio_series          as _evo_build_ratio_series,
     compute_camada1             as _evo_compute_camada1,
@@ -35,33 +42,7 @@ from evolution_diversification_card import (
     compute_camada4             as _evo_compute_camada4,
 )
 
-# ── Config ──────────────────────────────────────────────────────────────────
-
-FUNDS = {
-    "Galapagos Macro FIM":           {"short": "MACRO",      "level": 2, "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
-    "Galapagos Quantitativo FIM":    {"short": "QUANT",      "level": 2, "stress_col": "macro", "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
-    "Galapagos Evolution FIC FIM CP":{"short": "EVOLUTION",  "level": 3, "stress_col": "spec",  "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 10.5, "stress_hard": 15.0},
-}
-# Funds in LOTE_FUND_STRESS (product-level, not RPM). Limits provisional — to be calibrated.
-# informative=True → VaR/Stress shown as reference (no limit, no util %). Used for Frontier (LO equity).
-RAW_FUNDS = {
-    "GALAPAGOS ALBATROZ FIRF LP": {"short": "ALBATROZ", "stress_col": "macro", "var_soft": 1.0, "var_hard": 1.5, "stress_soft": 5.0, "stress_hard": 8.0},
-    "Galapagos Global Macro Q":   {"short": "MACRO_Q",  "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
-    "Frontier A\u00e7\u00f5es FIC FI": {"short": "FRONTIER", "stress_col": "macro", "var_soft": 99.0, "var_hard": 99.0, "stress_soft": 99.0, "stress_hard": 99.0, "informative": True},
-}
-# IDKA funds — benchmarked RF. Primary metric = BVaR (relative), secondary = VaR (reference, no limit).
-# Data source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE (RELATIVE_VAR_PCT, ABSOLUTE_VAR_PCT).
-# Shape mirrors FUNDS/RAW_FUNDS but maps: var_* -> BVaR limits, stress_* -> VaR (no hard limit).
-# Limits provisional — to be calibrated against the official mandate.
-IDKA_FUNDS = {
-    # Limites BVaR 95% 1-day (daily). Confirmados 2026-04-22 com mandato:
-    #   IDKA 3Y  soft = 0.40%
-    #   IDKA 10Y soft = 1.00%
-    # Hard = 1.5× soft (convenção). Stress sem limite explícito (→ 99 = informativo).
-    "IDKA IPCA 3Y FIRF":  {"short": "IDKA_3Y",  "primary": "bvar", "var_soft": 0.40, "var_hard": 0.60, "stress_soft": 99.0, "stress_hard": 99.0},
-    "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 1.00, "var_hard": 1.50, "stress_soft": 99.0, "stress_hard": 99.0},
-}
-ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
+# ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
 
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
@@ -465,15 +446,7 @@ def make_sparkline(series: pd.Series, color: str, width=160, height=50) -> str:
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
-ALERT_THRESHOLD = 80.0   # % no range 12m acima do qual gera alerta
-UTIL_WARN       = 70.0   # util % abaixo do qual = verde
-UTIL_HARD       = 100.0  # util % acima do qual = vermelho (limite atingido)
-
 # ── Carry formula ─────────────────────────────────────────────────────────────
-STOP_BASE = 63.0
-STOP_SEM  = 128.0
-STOP_ANO  = 252.0
-
 def carry_step(budget_abs: float, pnl: float, ytd: float) -> tuple[float, bool]:
     """Calcula budget do próximo mês e flag gancho.
 
@@ -3803,9 +3776,6 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         <tbody>{pos_rows}</tbody>
       </table>
     </section>"""
-
-
-ALBATROZ_STOP_BPS = 150.0  # monthly loss budget (bps)
 
 
 def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
@@ -7817,58 +7787,6 @@ def build_evolution_diversification_section(date_str: str) -> tuple[str, dict]:
 
     return unified, c4
 
-
-REPORTS = [
-    ("performance",     "PA"),
-    ("exposure",        "Exposure"),
-    ("exposure-map",    "Exposure Map"),
-    ("single-name",     "Single-Name"),
-    ("risk-monitor",    "Risk Monitor"),
-    ("diversification", "Diversificação"),
-    ("analise",         "Análise"),
-    ("distribution",    "Distribuição 252d"),
-    ("vol-regime",      "Vol Regime"),
-    ("stop-monitor",    "Risk Budget"),
-    ("briefing",        "Briefing"),
-]
-FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
-FUND_LABELS = {
-    "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
-    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "FRONTIER": "Frontier",
-    "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
-}
-
-# PA key in q_models.REPORT_ALPHA_ATRIBUTION for each fund short.
-#
-# IDKA calibration vs. xlsx (F:/Macros/DADOS/Projetos/PA_Fundos/PA_REPORTS/YYYY_MM_DD_DAILY_PA.xlsx):
-# ---------------------------------------------------------------------------------------------------
-# Snapshot 2026-04-17 · IDKA 3Y "DISCRICIONÁRIO" TOTAL row (RF BZ + RF BZ IPCA only, exclui Caixa/Custos):
-#   Xlsx:  DIA +7.58 bps · MÊS +85.98 bps · ANO -65.94 bps
-#   DB:    DIA +7.58 bps · MÊS +86.17 bps · ANO -61.93 bps
-# DIA bate exato. MÊS/ANO com residual de ~2–4 bps — provável rounding de display no xlsx vs floats
-# no banco, não problema estrutural. Revisitar se algum dia o gap crescer para > 10 bps.
-#
-# IDKAs não têm coluna LEVEL em REPORT_ALPHA_ATRIBUTION — apenas leaf rows (87 p/ 3Y, 85 p/ 10Y).
-# A hierarquia de níveis vem das colunas dimensionais: CLASSE → GRUPO → SUBCLASSE → LIVRO →
-# BOOK → PRODUCT_CLASS → PRODUCT.
-_FUND_PA_KEY = {
-    "MACRO":     "MACRO",
-    "QUANT":     "QUANT",
-    "EVOLUTION": "EVOLUTION",
-    "MACRO_Q":   "GLOBAL",
-    "ALBATROZ":  "ALBATROZ",
-    "FRONTIER":  "GFA",
-    "IDKA_3Y":   "IDKAIPCAY3",
-    "IDKA_10Y":  "IDKAIPCAY10",
-}
-
-# Livros that are benchmark-tracking (passive replica) per fund PA key.
-# Their dia_bps contribution moves with the index, not with alpha — exclude
-# from "≥ 1% NAV" alerts since the index itself is not a risk event.
-_PA_BENCH_LIVROS = {
-    "IDKAIPCAY3":  {"CI"},   # CI book tracks the IDKA 3Y index
-    "IDKAIPCAY10": {"CI"},   # CI book tracks the IDKA 10Y index
-}
 
 def _pa_filter_alpha(df):
     """Drop PA rows from benchmark-tracking livros; keep only alpha-bearing contributions."""
