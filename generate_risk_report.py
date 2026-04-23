@@ -3828,6 +3828,12 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
 </script>
 </head>
 <body>
+<!-- iOS banner: visible only on iPhone/iPad (shown by the polyfill script at the end of <body>) -->
+<div id="ios-banner" style="display:none; background:#fbbf24; color:#422006;
+     border-bottom:1px solid #ca8a04; padding:10px 16px;
+     font:13px/1.5 system-ui,-apple-system,sans-serif; text-align:center">
+  📱 <b>iPhone/iPad:</b> se os botões não responderem, <b>abra o anexo no Safari</b> (tocar "Abrir em..." → Safari) ou <b>baixe o arquivo e abra direto no browser</b>.
+</div>
 <noscript>
   <div style="background:#7c2d12;color:#fca5a5;border-bottom:1px solid #a16207;
               padding:10px 16px;font:13px/1.5 system-ui,sans-serif">
@@ -3877,6 +3883,72 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
   <div id="empty-state" style="display:none">Sem dados para essa combinação de fundo × report.</div>
   {alerts_html}
 </main>
+<script>
+/* ── iOS touch polyfill ──────────────────────────────────────────────────────
+ * Safari Mobile has two quirks that break the report on iPhone/iPad:
+ *   1. onclick on non-semantic elements (div/span/tr/th) often fails to fire
+ *      on first tap unless the element has role="button" + tabindex + cursor
+ *   2. touch events need keyboard-equivalent handlers for accessibility
+ *
+ * This polyfill runs once after DOMContentLoaded and patches every element
+ * with an inline onclick attribute:
+ *   - adds role="button" + tabindex="0" if missing
+ *   - adds cursor:pointer if missing
+ *   - adds keydown (Enter/Space) that triggers the onclick
+ *
+ * Also toggles the #ios-banner visibility based on user agent so desktop
+ * users don't see the mobile hint.
+ * ─────────────────────────────────────────────────────────────────────────── */
+(function() {{
+  var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+              || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  function patchClickables() {{
+    var els = document.querySelectorAll('[onclick]');
+    els.forEach(function(el) {{
+      var tag = el.tagName.toLowerCase();
+      // <button> and <a> already work fine on Safari — skip
+      if (tag === 'button' || tag === 'a') return;
+
+      if (!el.hasAttribute('role'))     el.setAttribute('role', 'button');
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+      if (!el.style.cursor)             el.style.cursor = 'pointer';
+
+      // Keyboard equivalents (Enter/Space triggers click) — also helps iOS
+      // VoiceOver users and fixes some focus-driven tap flows.
+      if (!el.dataset.iosPatched) {{
+        el.dataset.iosPatched = '1';
+        el.addEventListener('keydown', function(e) {{
+          if (e.key === 'Enter' || e.key === ' ') {{
+            e.preventDefault();
+            el.click();
+          }}
+        }});
+      }}
+    }});
+  }}
+
+  function run() {{
+    if (isIOS) {{
+      var banner = document.getElementById('ios-banner');
+      if (banner) banner.style.display = 'block';
+    }}
+    patchClickables();
+    // Observe DOM mutations — some cards lazy-render children on expand,
+    // those need the same patching when they appear.
+    if (window.MutationObserver) {{
+      var mo = new MutationObserver(function() {{ patchClickables(); }});
+      mo.observe(document.body, {{ childList: true, subtree: true }});
+    }}
+  }}
+
+  if (document.readyState === 'loading') {{
+    document.addEventListener('DOMContentLoaded', run);
+  }} else {{
+    run();
+  }}
+}})();
+</script>
 </body>
 </html>"""
     return html
