@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from risk_runtime import DATA_STR, DATA, OUT_DIR, fmt_br_num as _fmt_br_num
+from risk_runtime import DATA_STR, DATA, OUT_DIR
 from risk_config import (
     FUNDS, RAW_FUNDS, IDKA_FUNDS, ALL_FUNDS,
     ALERT_THRESHOLD, UTIL_WARN, UTIL_HARD,
@@ -68,6 +68,8 @@ from summary_renderers import (
     build_comments_card,
     build_factor_breakdown_card,
     build_top_positions_card,
+    build_var_bvar_card,
+    build_status_grid,
 )
 from data_fetch import (
     fetch_pm_pnl_history,
@@ -908,44 +910,8 @@ def build_html(d: ReportData) -> str:
             "bvar_pct":  rel_var_pct, "bvar_brl": bvar_brl,
         })
 
-    # Rank: top 5 by absolute R$ VaR and by relative R$ VaR
-    top5_abs = set(r["short"] for r in sorted(house_rows, key=lambda r: r["var_brl"],  reverse=True)[:5])
-    top5_rel = set(r["short"] for r in sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)[:5])
-
     # Per-fund mini briefing — registered as "briefing" report (first tab)
     _house_by_short = {r["short"]: r for r in house_rows}
-
-    def _mm(v):
-        try: return _fmt_br_num(f"{v/1e6:,.1f}M")
-        except Exception: return "—"
-
-    house_rows_html = ""
-    for r in house_rows:
-        rank_abs = "🔺" if r["short"] in top5_abs else ""
-        rank_rel = "🔷" if r["short"] in top5_rel else ""
-        house_rows_html += (
-            "<tr>"
-            f'<td class="sum-fund">{r["label"]}</td>'
-            f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}% {rank_abs}</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}% {rank_rel}</td>'
-            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
-            "</tr>"
-        )
-    tot_nav      = sum(r["nav"]      for r in house_rows)
-    tot_var_brl  = sum(r["var_brl"]  for r in house_rows)
-    tot_bvar_brl = sum(r["bvar_brl"] for r in house_rows)
-    tot_var_pct  = (tot_var_brl  / tot_nav * 100) if tot_nav else 0.0
-    tot_bvar_pct = (tot_bvar_brl / tot_nav * 100) if tot_nav else 0.0
-    house_total_row = (
-        '<tr class="house-total-row">'
-        '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
-        '<td></td>'
-        '</tr>'
-    )
     # ── Breakdown by risk factor — rows = factors, columns = funds (R$ exposure) ──
     # Factor sources:
     #   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
@@ -1191,57 +1157,9 @@ def build_html(d: ReportData) -> str:
 
     by_factor_html = build_factor_breakdown_card(factor_matrix, bench_matrix, nav_by_short)
 
-    house_html = f"""
-    <section class="card">
-      <div class="card-head">
-        <span class="card-title">Risco VaR e BVaR por fundo</span>
-        <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
-      </div>
-      <table class="summary-table" data-no-sort="1">
-        <thead><tr>
-          <th style="text-align:left">Fundo</th>
-          <th style="text-align:right">NAV</th>
-          <th style="text-align:right"><span class="kc">VaR</span></th>
-          <th style="text-align:right"><span class="kc">BVaR</span></th>
-          <th style="text-align:center">Bench</th>
-        </tr></thead>
-        <tbody>{house_rows_html}</tbody>
-        <tfoot>{house_total_row}</tfoot>
-      </table>
-      <div class="bar-legend" style="margin-top:10px">
-        🔺 top-5 por risco absoluto (R$) &nbsp;·&nbsp;
-        🔷 top-5 por risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
-        <span style="color:var(--muted)">ranking por R$ (não exibido); BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples ponderada por NAV (sem benefício de diversificação).</span>
-      </div>
-    </section>"""
+    house_html = build_var_bvar_card(house_rows)
 
-    fund_grid_html = f"""
-    <section class="card">
-      <div class="card-head">
-        <span class="card-title">Status consolidado</span>
-        <span class="card-sub">— {DATA_STR} · alpha vs. CDI (Frontier: ER vs. IBOV) · utilização de VaR</span>
-      </div>
-      <table class="summary-table">
-        <thead><tr>
-          <th style="width:60px; text-align:center">Status</th>
-          <th style="text-align:left">Fundo</th>
-          <th style="text-align:right">DIA</th>
-          <th style="text-align:right">MTD</th>
-          <th style="text-align:right">YTD</th>
-          <th style="text-align:right">12M</th>
-          <th style="text-align:right"><span class="kc">VaR</span></th>
-          <th style="text-align:right">Util <span class="kc">VaR</span></th>
-          <th style="text-align:right">Δ <span class="kc">VaR</span> D-1</th>
-        </tr></thead>
-        <tbody>{summary_rows_html}{bench_rows_html}</tbody>
-      </table>
-      <div class="bar-legend" style="margin-top:12px">
-        <span style="color:var(--up)">🟢</span> util &lt; 70% &nbsp;·&nbsp;
-        <span style="color:var(--warn)">🟡</span> 70–100% &nbsp;·&nbsp;
-        <span style="color:var(--down)">🔴</span> ≥ 100% &nbsp;·&nbsp;
-        <span style="color:var(--muted)">Status = utilização de VaR (stop mensal vive no Risk Budget)</span>
-      </div>
-    </section>"""
+    fund_grid_html = build_status_grid(summary_rows_html, bench_rows_html)
 
     vol_regime_html = build_vol_regime_card(vol_regime_map)
 

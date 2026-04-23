@@ -594,3 +594,95 @@ def build_top_positions_card(agg_rows: list, bench_matrix: dict) -> str:
         Drill-down: clique em um <b>Fator</b> (ex: Real, Nominal, Commodities) para abrir seus instrumentos; clique em um <b>Instrumento</b> para ver em quais fundos está alocado e a %. <b>Líquido</b>: cada contribuição é escalada por (1 − bench/total_fundo_fator); <b>Bruto</b>: sem abater bench. EVOLUTION usa posições diretas (sem look-through); via_albatroz excluído (contado em ALBATROZ direto).
       </div>
     </section>"""
+
+
+# ── VaR / BVaR per-fund table ─────────────────────────────────────────────────
+
+def build_var_bvar_card(house_rows: list) -> str:
+    if not house_rows:
+        return ""
+    top5_abs = set(r["short"] for r in sorted(house_rows, key=lambda r: r["var_brl"],  reverse=True)[:5])
+    top5_rel = set(r["short"] for r in sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)[:5])
+
+    rows_html = ""
+    for r in house_rows:
+        rank_abs = "🔺" if r["short"] in top5_abs else ""
+        rank_rel = "🔷" if r["short"] in top5_rel else ""
+        rows_html += (
+            "<tr>"
+            f'<td class="sum-fund">{r["label"]}</td>'
+            f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}% {rank_abs}</td>'
+            f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}% {rank_rel}</td>'
+            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
+            "</tr>"
+        )
+    tot_nav      = sum(r["nav"]      for r in house_rows)
+    tot_var_brl  = sum(r["var_brl"]  for r in house_rows)
+    tot_bvar_brl = sum(r["bvar_brl"] for r in house_rows)
+    tot_var_pct  = (tot_var_brl  / tot_nav * 100) if tot_nav else 0.0
+    tot_bvar_pct = (tot_bvar_brl / tot_nav * 100) if tot_nav else 0.0
+    total_row = (
+        '<tr class="house-total-row">'
+        '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
+        f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
+        '<td></td>'
+        '</tr>'
+    )
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Risco VaR e BVaR por fundo</span>
+        <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
+      </div>
+      <table class="summary-table" data-no-sort="1">
+        <thead><tr>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">NAV</th>
+          <th style="text-align:right"><span class="kc">VaR</span></th>
+          <th style="text-align:right"><span class="kc">BVaR</span></th>
+          <th style="text-align:center">Bench</th>
+        </tr></thead>
+        <tbody>{rows_html}</tbody>
+        <tfoot>{total_row}</tfoot>
+      </table>
+      <div class="bar-legend" style="margin-top:10px">
+        🔺 top-5 por risco absoluto (R$) &nbsp;·&nbsp;
+        🔷 top-5 por risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
+        <span style="color:var(--muted)">ranking por R$ (não exibido); BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples ponderada por NAV (sem benefício de diversificação).</span>
+      </div>
+    </section>"""
+
+
+# ── Status Grid ───────────────────────────────────────────────────────────────
+
+def build_status_grid(summary_rows_html: str, bench_rows_html: str) -> str:
+    return f"""
+    <section class="card">
+      <div class="card-head">
+        <span class="card-title">Status consolidado</span>
+        <span class="card-sub">— {DATA_STR} · alpha vs. CDI (Frontier: ER vs. IBOV) · utilização de VaR</span>
+      </div>
+      <table class="summary-table">
+        <thead><tr>
+          <th style="width:60px; text-align:center">Status</th>
+          <th style="text-align:left">Fundo</th>
+          <th style="text-align:right">DIA</th>
+          <th style="text-align:right">MTD</th>
+          <th style="text-align:right">YTD</th>
+          <th style="text-align:right">12M</th>
+          <th style="text-align:right"><span class="kc">VaR</span></th>
+          <th style="text-align:right">Util <span class="kc">VaR</span></th>
+          <th style="text-align:right">Δ <span class="kc">VaR</span> D-1</th>
+        </tr></thead>
+        <tbody>{summary_rows_html}{bench_rows_html}</tbody>
+      </table>
+      <div class="bar-legend" style="margin-top:12px">
+        <span style="color:var(--up)">🟢</span> util &lt; 70% &nbsp;·&nbsp;
+        <span style="color:var(--warn)">🟡</span> 70–100% &nbsp;·&nbsp;
+        <span style="color:var(--down)">🔴</span> ≥ 100% &nbsp;·&nbsp;
+        <span style="color:var(--muted)">Status = utilização de VaR (stop mensal vive no Risk Budget)</span>
+      </div>
+    </section>"""
