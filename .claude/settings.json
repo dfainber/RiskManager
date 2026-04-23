@@ -70,7 +70,15 @@
       "Bash(grep -cn 'f\"R\\\\$\" *{\\\\|replace\\(\".\", \"X\"\\\\|.replace\\(\"X\", \",\"\\)\\\\|,.1f}.replace' generate_risk_report.py)",
       "Bash(python -c ' *)",
       "Bash(git stash *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(git log *)",
+      "Bash(sed -n '55,75p')",
+      "Bash(sed -n '12,37p' risk_config.py)",
+      "Bash(git checkout *)",
+      "Read(//c/Windows/Temp/**)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }
