@@ -23,6 +23,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
+from risk_runtime import DATA_STR, DATA, DATE_1Y, DATE_60D, OUT_DIR, fmt_br_num as _fmt_br_num
 from evolution_diversification_card import (
     build_ratio_series          as _evo_build_ratio_series,
     compute_camada1             as _evo_compute_camada1,
@@ -35,23 +36,6 @@ from evolution_diversification_card import (
 )
 
 # ── Config ──────────────────────────────────────────────────────────────────
-def _parse_date_arg(s: str) -> str:
-    """Validate a CLI date string. Must be YYYY-MM-DD and a real calendar date."""
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
-        sys.exit(f"Error: date must be YYYY-MM-DD, got {s!r}")
-    try:
-        pd.Timestamp(s)
-    except ValueError:
-        sys.exit(f"Error: invalid date {s!r}")
-    return s
-
-
-DATA_STR  = _parse_date_arg(sys.argv[1]) if len(sys.argv) > 1 else (
-    (pd.Timestamp("today") - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
-)
-DATA      = pd.Timestamp(DATA_STR)
-DATE_1Y   = DATA - pd.DateOffset(years=1)
-DATE_60D  = DATA - pd.Timedelta(days=90)  # ~60 business days buffer
 
 FUNDS = {
     "Galapagos Macro FIM":           {"short": "MACRO",      "level": 2, "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
@@ -78,13 +62,6 @@ IDKA_FUNDS = {
     "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 1.00, "var_hard": 1.50, "stress_soft": 99.0, "stress_hard": 99.0},
 }
 ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
-OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _fmt_br_num(s: str) -> str:
-    """Convert en-US number separators to pt-BR (e.g. '1,234.5' → '1.234,5')."""
-    return s.replace(",", "_").replace(".", ",").replace("_", ".")
 
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
