@@ -409,11 +409,23 @@ dashboards originais.
 Ver [memory/project_todo_risk_analytics_roadmap](C:/Users/diego.fainberg/.claude/projects/f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor/memory/project_todo_risk_analytics_roadmap.md) para o backlog detalhado.
 
 **Code quality — parkado (ver `project_todo_code_quality_2026_04_22.md`):**
-- **BRL locale formatter** — `_fmt_brl` helper substituindo `f"{v:,.1f}".replace(...)` em ~L2181 (20 min, LOW risk)
-- **Return type hints** em funções `fetch_*` principais (45 min, LOW risk)
-- **13 `iterrows` restantes** — requerem refactor das funções render (`make_row`, `_tr`, `fmt_row`) que recebem `r` como Series. Outros motivos: index como chave (L2179, L2357, L2361), `r.get()` (L3561, L4253, L8778), coluna dinâmica (L9527), `"% Cash"` (L10222)
-- **`apply()` row-by-row** em `evolution_diversification_card.py` ~L455 (~8k chamadas Python puras)
-- **Quebrar funções monolíticas** — `build_macro_exposure_section` (~450 linhas) e `build_evolution_exposure_section` (~250 linhas) — HIGH risk, só tocar com smoke_test expandido
+- ✅ **BRL locale formatter** — entregue em L1 (Fase 3): `fmt_br_num(s)` em `risk_runtime.py`, substitui 12 cópias do padrão
+- **Return type hints** em funções `fetch_*` principais (45 min, LOW risk) — agora em [data_fetch.py](data_fetch.py); escopo menor porque ficou isolado
+- **13 `iterrows` restantes** — requerem refactor das funções render (`make_row`, `_tr`, `fmt_row`) que recebem `r` como Series. Depois do refactor L1+L2+3 os iterrows moveram junto com as builders — agora vivem em [expo_renderers.py](expo_renderers.py), [fund_renderers.py](fund_renderers.py), [pa_renderers.py](pa_renderers.py). Refactor mais fácil agora porque módulo-destino é pequeno
+- **`apply()` row-by-row** em `evolution_diversification_card.py` ~L455 (~8k chamadas Python puras) — arquivo ainda não refatorado, mas é standalone
+- **Quebrar funções monolíticas** (depois do refactor L1+L2+3):
+  - `build_evolution_exposure_section` (~480 linhas em [expo_renderers.py](expo_renderers.py)) — 3 níveis + classificação de livros, candidato a split por nível
+  - `build_exposure_section` MACRO (~320 linhas em [expo_renderers.py](expo_renderers.py))
+  - `build_idka_exposure_section` (~320 linhas em [expo_renderers.py](expo_renderers.py)) — toggle 3-vias + replication é o mais complexo
+  - `build_frontier_exposure_section` (~380 linhas em [expo_renderers.py](expo_renderers.py))
+  - HIGH risk; só tocar com smoke_test que valide cada card individualmente (hoje valida só a soma)
+
+**Refactor L4 — débito remanescente da Fase 3 (parkado 2026-04-22 noite):**
+- **Section registry no orquestrador** — `build_html` em [generate_risk_report.py](generate_risk_report.py) ainda tem ~600 linhas montando as seções uma a uma com muita condicional. Refactor pra registry declarativo `{"fund_short": {"report_type": builder_fn}}` reduziria de ~600 para ~150 linhas e tornaria trivial adicionar novo card/fundo. MED risk, ~2h. Benefício alto se quiser adicionar ETFs ou nova família de fundo.
+- **Briefings via LLM (Claude API Haiku 4.5)** — `_build_fund_mini_briefing` e `_build_executive_briefing` agora isoladas em [fund_renderers.py](fund_renderers.py). Substituir as ~400 linhas rule-based por chamada ao Haiku 4.5 com JSON de números pre-computados como contexto. **Muito mais fácil agora** que briefings estão isoladas — a função que chama `fund_renderers._build_fund_mini_briefing` é só uma linha dentro de `build_html`. Ver backlog detalhado no `project_todo_risk_analytics_roadmap`.
+- **Testes unitários por módulo** — com os módulos separados, dá pra testar `svg_renderers.range_bar_svg(0.5, 0, 1, 0.7, 0.9)` sem subir o DB, `metrics.compute_pm_hs_var(mock_dict)` idem, etc. Smoke test hoje valida o pipeline ponta-a-ponta; unit tests dariam feedback 10× mais rápido e capturariam regressões localizadas. ~1 dia pra cobrir os 4 módulos críticos (svg, metrics, pa, expo).
+- **Expandir smoke_test com validação por card** — hoje o smoke valida o HTML todo. Com os módulos separados dá pra adicionar checks granulares ("Frontier Single-Name card tem ≥5 linhas", "IDKA Exposure tem 3 toggle buttons", etc.). Diminuiria o risco de quebrar um card específico sem perceber. ~2h.
+- **Deletar `generate_risk_report - Copy.py`** — arquivo órfão de backup manual do usuário. Não está sendo usado; limpar quando o usuário confirmar que não precisa mais.
 
 ---
 
