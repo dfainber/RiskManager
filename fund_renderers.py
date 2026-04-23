@@ -37,8 +37,8 @@ from risk_config import (
     _DIST_PORTFOLIOS, _VR_PORTFOLIOS,
 )
 from svg_renderers import make_sparkline, range_line_svg, stop_bar_svg
-from metrics import compute_distribution_stats
-from pa_renderers import _pa_filter_alpha
+from metrics import compute_distribution_stats, compute_pa_outliers
+from pa_renderers import _pa_filter_alpha, _pa_render_name
 
 
 def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
@@ -2724,3 +2724,293 @@ def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
             # CI budget is fixed — no carry
         result[pm] = pd.DataFrame(rows)
     return result
+
+
+# ── Análise sections (per-fund outliers / movers / position changes) ─────────
+_ANALISE_MOVERS_EXCLUDE = {
+    "LIVRO":  {"Taxas e Custos", "Caixa", "Caixa USD"},
+    "CLASSE": {"Custos", "Caixa"},
+}
+_ANALISE_THRESHOLD_PP = 0.30
+
+
+def _an_delta_pp(delta: float, pct_d0: float) -> str:
+    pct_d1 = pct_d0 - delta
+    reduces_risk = abs(pct_d0) < abs(pct_d1)
+    color = "var(--up)" if reduces_risk else "var(--down)"
+    sign = "+" if delta > 0 else ""
+    return f'<span style="color:{color}; font-weight:700">{sign}{delta:.2f} pp</span>'
+
+
+def build_analise_sections(d, df_pa_daily) -> list:
+    """Build per-fund Análise tab sections (outliers / top movers / position changes).
+
+    Args:
+        d: ReportData instance (accessed via d.df_pa, d.df_expo, etc.)
+        df_pa_daily: historical PA data for z-score computation.
+
+    Returns:
+        list of (fund_short, "analise", html) tuples.
+    """
+    sections = []
+
+    # Pre-compute per-fund outlier sets (single pass over the historical series).
+    outliers_by_fund = {}
+    if df_pa_daily is not None and not df_pa_daily.empty:
+        try:
+            _all_out = compute_pa_outliers(df_pa_daily, DATA_STR, z_min=2.0, bps_min=3.0, min_obs=20)
+            if not _all_out.empty:
+                for pa_key in _all_out["FUNDO"].unique():
+                    outliers_by_fund[pa_key] = _all_out[_all_out["FUNDO"] == pa_key]
+        except Exception as e:
+            print(f"  per-fund outliers failed ({e})")
+
+    def _an_outliers_card(short):
+        pa_key = _FUND_PA_KEY.get(short)
+        sub = outliers_by_fund.get(pa_key)
+        if sub is None or sub.empty:
+            body = '<div class="comment-empty">— sem eventos significativos (|z| ≥ 2σ · |contrib| ≥ 3 bps)</div>'
+        else:
+            items = ""
+            for r in sub.itertuples(index=False):
+                color = "var(--up)" if r.today_bps > 0 else "var(--down)"
+                items += (
+                    '<li>'
+                    f'<span class="mono" style="font-weight:700">{r.PRODUCT}</span> '
+                    f'<span class="mono" style="color:{color}">{r.today_bps:+.1f} bps</span> '
+                    f'<span class="mono" style="color:var(--muted)">({r.z:+.1f}σ)</span>'
+                    f' &nbsp;·&nbsp; <span style="color:var(--muted)">{_pa_render_name(r.LIVRO)}</span>'
+                    '</li>'
+                )
+            body = f'<ul class="comment-list">{items}</ul>'
+        return f"""
+        <section class="card">
+          <div class="card-head">
+            <span class="card-title">Outliers do dia</span>
+            <span class="card-sub">— {FUND_LABELS.get(short, short)} · |z| ≥ 2σ (vs. 90d) · |contrib| ≥ 3 bps</span>
+          </div>
+          {body}
+        </section>"""
+
+    def _an_movers_rows(short, group_col):
+        pa_key = _FUND_PA_KEY.get(short)
+        if not pa_key or d.df_pa is None or d.df_pa.empty:
+            return ""
+        sub = d.df_pa[d.df_pa["FUNDO"] == pa_key]
+        sub = sub[~sub[group_col].isin(_ANALISE_MOVERS_EXCLUDE.get(group_col, set()))]
+        by = sub.groupby(group_col)["dia_bps"].sum()
+        by = by[by.abs() > 0.5]
+        pos = by[by > 0].sort_values(ascending=False).head(5)
+        neg = by[by < 0].sort_values().head(5)
+        render = _pa_render_name if group_col == "LIVRO" else (lambda s: s)
+
+        def _fmt(color, items_s):
+            if not len(items_s):
+                return '<li class="comment-empty">— nada material</li>'
+            return "".join(
+                '<li>'
+                f'<span class="mono" style="color:{color}; font-weight:600">{render(l)}</span> '
+                f'<span class="mono">{"+" if v >= 0 else ""}{v/100:.2f}%</span>'
+                '</li>'
+                for l, v in items_s.items()
+            )
+        return f"""
+        <div class="mov-split">
+          <div>
+            <div class="mov-col-title">Contribuintes</div>
+            <ul class="comment-list">{_fmt("var(--up)", pos)}</ul>
+          </div>
+          <div>
+            <div class="mov-col-title">Detratores</div>
+            <ul class="comment-list">{_fmt("var(--down)", neg)}</ul>
+          </div>
+        </div>"""
+
+    def _an_movers_frontier():
+        if d.df_frontier is None or d.df_frontier.empty:
+            return None, None
+        sub = d.df_frontier[~d.df_frontier["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])].copy()
+        sub = sub[sub["TOTAL_IBVSP_DAY"].notna()]
+        if sub.empty:
+            return None, None
+        sub["alpha_pct"] = sub["TOTAL_IBVSP_DAY"].astype(float) * 100.0
+
+        _THR = 0.01
+
+        def _fmt_rows(df_in, col_name, color):
+            if df_in is None or df_in.empty:
+                return '<li class="comment-empty">— nada material</li>'
+            out = ""
+            for _, r in df_in.iterrows():
+                v = float(r["alpha_pct"])
+                out += (
+                    '<li>'
+                    f'<span class="mono" style="color:{color}; font-weight:600">{r[col_name]}</span> '
+                    f'<span class="mono">{"+" if v >= 0 else ""}{v:.2f}%</span>'
+                    '</li>'
+                )
+            return out
+
+        def _split_html(pos_items, neg_items, col_name):
+            return f"""
+            <div class="mov-split">
+              <div>
+                <div class="mov-col-title">Contribuintes (α vs IBOV)</div>
+                <ul class="comment-list">{_fmt_rows(pos_items, col_name, "var(--up)")}</ul>
+              </div>
+              <div>
+                <div class="mov-col-title">Detratores (α vs IBOV)</div>
+                <ul class="comment-list">{_fmt_rows(neg_items, col_name, "var(--down)")}</ul>
+              </div>
+            </div>"""
+
+        papel_pos = sub[sub["alpha_pct"] >=  _THR].nlargest(5, "alpha_pct")
+        papel_neg = sub[sub["alpha_pct"] <= -_THR].nsmallest(5, "alpha_pct")
+        papel_body = _split_html(papel_pos, papel_neg, "PRODUCT")
+
+        setor_body = ""
+        if d.df_frontier_sectors is not None and not d.df_frontier_sectors.empty:
+            merged = sub.merge(
+                d.df_frontier_sectors[["TICKER", "GLPG_SECTOR"]],
+                left_on="PRODUCT", right_on="TICKER", how="left",
+            )
+            merged["GLPG_SECTOR"] = merged["GLPG_SECTOR"].fillna("—")
+            by = merged.groupby("GLPG_SECTOR", as_index=False)["alpha_pct"].sum()
+            by = by[by["alpha_pct"].abs() >= _THR]
+            setor_pos = by[by["alpha_pct"] > 0].sort_values("alpha_pct", ascending=False).head(5)
+            setor_neg = by[by["alpha_pct"] < 0].sort_values("alpha_pct").head(5)
+            setor_body = _split_html(setor_pos, setor_neg, "GLPG_SECTOR")
+
+        return papel_body, setor_body
+
+    def _an_movers_card(short):
+        if short == "FRONTIER":
+            papel_body, setor_body = _an_movers_frontier()
+            if not papel_body and not setor_body:
+                return ""
+            if setor_body:
+                toggle = """
+                <div class="pa-view-toggle sum-tgl">
+                  <button class="pa-tgl active" data-mov-view="papel"
+                          onclick="selectMoversView(this,'papel')">Por Papel</button>
+                  <button class="pa-tgl" data-mov-view="setor"
+                          onclick="selectMoversView(this,'setor')">Por Setor</button>
+                </div>"""
+                setor_div = f'<div class="mov-view" data-mov-view="setor" style="display:none">{setor_body}</div>'
+            else:
+                toggle = ""
+                setor_div = ""
+            return f"""
+            <section class="card sum-movers-card">
+              <div class="card-head">
+                <span class="card-title">Top Movers — DIA</span>
+                <span class="card-sub">— Frontier · α vs IBOV (líquido do bench) · drop &lt; 1 bp</span>
+                {toggle}
+              </div>
+              <div class="mov-view" data-mov-view="papel">{papel_body}</div>
+              {setor_div}
+            </section>"""
+
+        livro_body  = _an_movers_rows(short, "LIVRO")
+        classe_body = _an_movers_rows(short, "CLASSE")
+        if not (livro_body or classe_body):
+            return ""
+        return f"""
+        <section class="card sum-movers-card">
+          <div class="card-head">
+            <span class="card-title">Top Movers — DIA</span>
+            <span class="card-sub">— {FUND_LABELS.get(short, short)} · alpha do dia (drop &lt; 0.5 bps · Caixa/Custos excluídos)</span>
+            <div class="pa-view-toggle sum-tgl">
+              <button class="pa-tgl active" data-mov-view="livro"
+                      onclick="selectMoversView(this,'livro')">Por Livro</button>
+              <button class="pa-tgl" data-mov-view="classe"
+                      onclick="selectMoversView(this,'classe')">Por Classe</button>
+            </div>
+          </div>
+          <div class="mov-view" data-mov-view="livro">{livro_body}</div>
+          <div class="mov-view" data-mov-view="classe" style="display:none">{classe_body}</div>
+        </section>"""
+
+    def _an_changes_card(short):
+        if short == "MACRO":
+            if d.df_expo is None or d.df_expo_d1 is None:
+                return ""
+            d0 = d.df_expo.groupby(["pm", "rf"])["pct_nav"].sum().reset_index()
+            d1 = d.df_expo_d1.groupby(["pm", "rf"])["pct_nav"].sum().reset_index().rename(
+                columns={"pct_nav": "pct_d1"}
+            )
+            chg = d0.merge(d1, on=["pm", "rf"], how="outer").fillna(0.0)
+            chg["delta"] = chg["pct_nav"] - chg["pct_d1"]
+            chg = chg[chg["delta"].abs() >= _ANALISE_THRESHOLD_PP]
+            chg = chg.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(10)
+            if chg.empty:
+                return ""
+            rows = "".join(
+                '<tr>'
+                f'<td class="sum-fund" style="width:70px">{r.pm}</td>'
+                f'<td class="mono" style="color:var(--muted)">{r.rf}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_nav:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta, r.pct_nav)}</td>'
+                '</tr>'
+                for r in chg.itertuples(index=False)
+            )
+            return f"""
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">Mudanças Significativas</span>
+                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
+              </div>
+              <table class="summary-movers">
+                <thead><tr>
+                  <th style="text-align:left; width:70px">PM</th>
+                  <th style="text-align:left">Fator</th>
+                  <th style="text-align:right">D-1</th>
+                  <th style="text-align:right">D-0</th>
+                  <th style="text-align:right">Δ</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </section>"""
+        else:
+            if not d.position_changes:
+                return ""
+            df_chg = d.position_changes.get(short)
+            if df_chg is None or df_chg.empty:
+                return ""
+            big = df_chg[df_chg["delta"].abs() >= _ANALISE_THRESHOLD_PP]
+            big = big.sort_values("delta", key=lambda s: s.abs(), ascending=False).head(10)
+            if big.empty:
+                return ""
+            rows = "".join(
+                '<tr>'
+                f'<td class="mono" style="color:var(--muted)">{r.factor}</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text); opacity:.75">{r.pct_d1:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right; color:var(--text)">{r.pct_d0:+.2f}%</td>'
+                f'<td class="mono" style="text-align:right">{_an_delta_pp(r.delta, r.pct_d0)}</td>'
+                '</tr>'
+                for r in big.itertuples(index=False)
+            )
+            return f"""
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title">Mudanças Significativas</span>
+                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
+              </div>
+              <table class="summary-movers">
+                <thead><tr>
+                  <th style="text-align:left">Fator</th>
+                  <th style="text-align:right">D-1</th>
+                  <th style="text-align:right">D-0</th>
+                  <th style="text-align:right">Δ</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </section>"""
+
+    for short in FUND_ORDER:
+        for card in (_an_outliers_card(short), _an_movers_card(short), _an_changes_card(short)):
+            if card:
+                sections.append((short, "analise", card))
+
+    return sections
