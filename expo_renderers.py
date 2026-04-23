@@ -354,41 +354,104 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
         factor_order=_QUANT_FACTOR_ORDER,
     )
 
-    # ── Por Livro matrix (livro × factor, Net %NAV) ──────────────────────────
-    def _pct(v):
-        pct = v * 100 / nav if nav else 0
-        if abs(pct) < 0.01:
-            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-        col = "var(--up)" if v >= 0 else "var(--down)"
-        return f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
+    # ── Por Livro summary (livro-level: Net, Δ Expo, σ, VaR signed, Δ VaR) ────
+    # Aggregate exposure per BOOK
+    livro_agg = (df.assign(_abs=df["delta"].abs())
+                   .groupby("BOOK", as_index=False)
+                   .agg(delta=("delta", "sum"),
+                        gross_brl=("_abs", "sum"),
+                        sigma=("sigma", "mean")))
+    livro_agg["net_pct"]   = livro_agg["delta"]     * 100 / nav
+    livro_agg["gross_pct"] = livro_agg["gross_brl"] * 100 / nav
 
-    pivot = df.pivot_table(
-        index="BOOK", columns="factor", values="delta",
-        aggfunc="sum", fill_value=0.0,
-    )
-    livro_factors = [f for f in _QUANT_FACTOR_ORDER if f in pivot.columns]
-    pivot = pivot[livro_factors]
-    pivot["_total"] = pivot.sum(axis=1)
-    pivot = pivot.sort_values("_total", key=lambda s: s.abs(), ascending=False)
+    # Weighted-average σ per livro (weight = |net_pct|)
+    def _livro_sigma(book):
+        sub = df[df["BOOK"] == book].copy()
+        sub = sub.dropna(subset=["sigma"])
+        w = sub["delta"].abs()
+        return float((w * sub["sigma"]).sum() / w.sum()) if w.sum() > 0 else None
 
-    livro_header = '<th style="text-align:left">Livro</th>' + "".join(
-        f'<th style="text-align:right">{f}</th>' for f in livro_factors
-    ) + '<th style="text-align:right">Total</th>'
+    # VaR per livro from df_var_tagged (already has factor column; sum by BOOK)
+    v_livro = {}
+    if df_var_tagged is not None and not df_var_tagged.empty and "BOOK" in df_var_tagged.columns:
+        vl = df_var_tagged.groupby("BOOK", as_index=False).agg(var_pct=("var_pct", "sum"))
+        v_livro = dict(zip(vl["BOOK"], vl["var_pct"]))
+
+    # D-1 per livro
+    d1_livro_net = {}
+    v1_livro = {}
+    if df_d1 is not None and not df_d1.empty:
+        d1g = (df_d1.groupby("BOOK", as_index=False).agg(delta=("delta", "sum")))
+        d1_livro_net = {r.BOOK: r.delta * 100 / nav for r in d1g.itertuples(index=False)}
+    if df_var_d1_tagged is not None and not df_var_d1_tagged.empty and "BOOK" in df_var_d1_tagged.columns:
+        v1l = df_var_d1_tagged.groupby("BOOK", as_index=False).agg(var_pct=("var_pct", "sum"))
+        v1_livro = dict(zip(v1l["BOOK"], v1l["var_pct"]))
+
+    livro_agg = livro_agg.sort_values("net_pct", key=lambda s: s.abs(), ascending=False)
+
+    def _c(txt, col, extra=""):
+        return (f'<td class="mono" style="text-align:right;font-size:11.5px;color:{col};{extra}">'
+                f'{txt}</td>')
+
     livro_rows = ""
-    for livro, row in pivot.iterrows():
-        cells = "".join(_pct(row[f]) for f in livro_factors)
-        _tot_pct = row["_total"] * 100 / nav if nav else 0
-        _tot_col = "var(--up)" if row["_total"] >= 0 else "var(--down)"
-        cells += f'<td class="mono" style="text-align:right; font-weight:600; color:{_tot_col}">{_tot_pct:+.2f}%</td>'
-        livro_rows += f'<tr><td class="sum-fund">{livro}</td>{cells}</tr>'
-    totals_cells = "".join(_pct(pivot[f].sum()) for f in livro_factors)
-    _gt_pct = pivot["_total"].sum() * 100 / nav if nav else 0
-    _gt_col = "var(--up)" if pivot["_total"].sum() >= 0 else "var(--down)"
-    totals_cells += f'<td class="mono" style="text-align:right; font-weight:700; color:{_gt_col}">{_gt_pct:+.2f}%</td>'
+    tot_net_l = tot_var_l = 0.0; any_var_l = False
+    for r in livro_agg.itertuples(index=False):
+        net_c   = "var(--up)" if r.net_pct >= 0 else "var(--down)"
+        sig_val = _livro_sigma(r.BOOK)
+        sig_s   = f'{sig_val:.1f}' if sig_val is not None else "—"
+        # Δ Expo
+        d1n = d1_livro_net.get(r.BOOK)
+        dexp_raw = (r.net_pct - d1n) if d1n is not None else None
+        dexp_s = f'{dexp_raw:+.2f}%' if dexp_raw is not None else "—"
+        dexp_c = "var(--up)" if (dexp_raw is not None and dexp_raw >= 0) else "var(--down)" if dexp_raw is not None else "var(--muted)"
+        # VaR signed
+        var_raw_l = v_livro.get(r.BOOK)
+        if var_raw_l is None:
+            var_s_l, var_c_l = "—", "var(--muted)"
+        else:
+            var_signed_l = var_raw_l * (-1 if r.net_pct >= 0 else 1)
+            var_s_l = f'{var_signed_l:+.1f}'
+            var_c_l = "var(--up)" if var_signed_l < 0 else "var(--down)"
+            tot_var_l += var_signed_l; any_var_l = True
+        # Δ VaR
+        d1v_l = v1_livro.get(r.BOOK)
+        if var_raw_l is not None and d1v_l is not None:
+            dvar_raw_l = var_raw_l - d1v_l
+            dvar_s_l = f'{dvar_raw_l:+.1f}'
+            dvar_c_l = "var(--up)" if dvar_raw_l < 0 else "var(--down)"
+        else:
+            dvar_s_l, dvar_c_l = "—", "var(--muted)"
+        tot_net_l += r.net_pct
+        livro_rows += (
+            f'<tr>'
+            f'<td class="sum-fund">{r.BOOK}</td>'
+            + _c(f'{r.net_pct:+.2f}%', net_c, "font-weight:600")
+            + _c(dexp_s, dexp_c)
+            + _c(sig_s, "var(--muted)")
+            + _c(var_s_l, var_c_l)
+            + _c(dvar_s_l, dvar_c_l)
+            + '</tr>'
+        )
+    # Total row
+    tot_net_c_l = "var(--up)" if tot_net_l >= 0 else "var(--down)"
+    tot_var_c_l = ("var(--up)" if tot_var_l < 0 else "var(--down)") if any_var_l else "var(--muted)"
     livro_rows += (
         '<tr class="pa-total-row">'
         '<td class="sum-fund" style="font-weight:700">Total</td>'
-        + totals_cells + "</tr>"
+        + _c(f'{tot_net_l:+.2f}%', tot_net_c_l, "font-weight:700")
+        + '<td></td>'
+        + '<td></td>'
+        + _c(f'{tot_var_l:+.1f}' if any_var_l else '—', tot_var_c_l, "font-weight:700")
+        + '<td></td>'
+        + '</tr>'
+    )
+    livro_header = (
+        '<th style="text-align:left">Livro</th>'
+        '<th style="text-align:right">Net %NAV</th>'
+        '<th style="text-align:right">Δ Expo</th>'
+        '<th style="text-align:right">σ (bps)</th>'
+        '<th style="text-align:right">VaR (bps)</th>'
+        '<th style="text-align:right">Δ VaR</th>'
     )
 
     nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
@@ -417,8 +480,8 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
       </div>
 
       <div class="bar-legend" style="margin-top:10px">
-        <b>Por Fator</b>: factor × produto, mesma formatação do MACRO — Net/Gross em %NAV e BRL, Δ Expo vs D-1, σ (bps) e VaR (bps) por BOOK (LOTE_FUND_STRESS_RPM LEVEL=3).
-        <b>Por Livro</b>: matriz livro × fator, Net %NAV. Fonte: LOTE_PRODUCT_EXPO, source = QUANT direto.
+        <b>Por Fator</b>: factor × produto — Net/Gross %NAV, Δ Expo, σ (bps), VaR signed (dado=−/verde · tomado=+/vermelho).
+        <b>Por Livro</b>: Net %NAV, Δ Expo, σ, VaR signed e Δ VaR por livro. Fonte: LOTE_PRODUCT_EXPO + LOTE_FUND_STRESS_RPM LEVEL=3.
       </div>
     </section>"""
 
