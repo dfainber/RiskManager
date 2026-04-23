@@ -107,13 +107,16 @@ for i in df_titulos.index:
 A instância `servicos` é configurada assim (script original):
 
 ```python
+import os
 from GLPG_Public_Bonds import ServicosFinanceiros
+
+# Credentials from environment variables — never hardcode.
 servicos = ServicosFinanceiros(db_config={
-    'hostname': 'GLPG-DB01',
-    'port': 5432,
-    'database': 'DATA_DEV_DB',
-    'username': 'svc_automation',
-    'password': 'admin',
+    'hostname': os.environ['GLPG_DB_HOST'],
+    'port':     int(os.environ.get('GLPG_DB_PORT', '5432')),
+    'database': os.environ['GLPG_DB_NAME'],
+    'username': os.environ['GLPG_DB_USER'],
+    'password': os.environ['GLPG_DB_PASSWORD'],
 })
 ```
 

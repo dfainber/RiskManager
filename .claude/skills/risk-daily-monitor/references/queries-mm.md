@@ -5,21 +5,29 @@ Queries extraídas dos scripts `MACRO_TABLES_GRAPHS.py`, `SISTEMATICO_TABLES_GRA
 ## Conexão padrão
 
 ```python
+import os
 import GLPG_DBAPI as SQL
+
+# Credentials must come from environment variables (or .env loaded at startup).
+# Never hardcode credentials in source files.
+# Canonical env var names match glpg_fetch.py:
+#   GLPG_DB_HOST, GLPG_DB_PORT, GLPG_DB_NAME, GLPG_DB_USER, GLPG_DB_PASSWORD
 
 def get_df(query):
     db = SQL.dbinterface()
     db.open(
-        hostname='GLPG-DB01',
-        port=5432,
-        database='DATA_DEV_DB',
-        username='svc_automation',
-        password='admin',
+        hostname=os.environ['GLPG_DB_HOST'],
+        port=int(os.environ.get('GLPG_DB_PORT', '5432')),
+        database=os.environ['GLPG_DB_NAME'],
+        username=os.environ['GLPG_DB_USER'],
+        password=os.environ['GLPG_DB_PASSWORD'],
     )
     df = db.read_sql(query)
     db.close()
     return df
 ```
+
+> **Nota:** Em produção, usar `glpg_fetch.py` (que gerencia pool de conexões e carrega as variáveis de ambiente).
 
 ## Parâmetros-chave
 

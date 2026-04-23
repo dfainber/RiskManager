@@ -55,9 +55,11 @@ ANO_EQ é próximo de Duration Modificada, mas:
 from GLPG_Public_Bonds import NTNB, ServicosFinanceiros
 
 servicos = ServicosFinanceiros(db_config={
-    'hostname': 'GLPG-DB01', 'port': 5432,
-    'database': 'DATA_DEV_DB',
-    'username': 'svc_automation', 'password': 'admin',
+    'hostname': os.environ['GLPG_DB_HOST'],
+    'port':     int(os.environ.get('GLPG_DB_PORT', '5432')),
+    'database': os.environ['GLPG_DB_NAME'],
+    'username': os.environ['GLPG_DB_USER'],
+    'password': os.environ['GLPG_DB_PASSWORD'],
 })
 
 ntnb = NTNB(expiration_date, dia_atual)
