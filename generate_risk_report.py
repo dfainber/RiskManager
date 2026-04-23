@@ -5,8 +5,10 @@ Usage: python generate_risk_report.py [YYYY-MM-DD]
 """
 import sys
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import date
+from typing import Optional
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -93,6 +95,67 @@ from data_fetch import (
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
 
 
+# ── Report data bundle ───────────────────────────────────────────────────────
+@dataclass
+class ReportData:
+    series_map:       dict
+    stop_hist:        Optional[dict]            = None
+    # MACRO
+    df_today:         Optional[pd.DataFrame]    = None
+    df_expo:          Optional[pd.DataFrame]    = None
+    df_var:           Optional[pd.DataFrame]    = None
+    macro_aum:        Optional[float]           = None
+    df_expo_d1:       Optional[pd.DataFrame]    = None
+    df_var_d1:        Optional[pd.DataFrame]    = None
+    df_pnl_prod:      Optional[pd.DataFrame]    = None
+    pm_margem:        Optional[dict]            = None
+    # QUANT
+    df_quant_sn:      Optional[pd.DataFrame]    = None
+    quant_nav:        Optional[float]           = None
+    quant_legs:       Optional[dict]            = None
+    df_quant_expo:    Optional[pd.DataFrame]    = None
+    quant_expo_nav:   Optional[float]           = None
+    df_quant_expo_d1: Optional[pd.DataFrame]    = None
+    df_quant_var:     Optional[pd.DataFrame]    = None
+    df_quant_var_d1:  Optional[pd.DataFrame]    = None
+    # EVOLUTION
+    df_evo_sn:        Optional[pd.DataFrame]    = None
+    evo_nav:          Optional[float]           = None
+    evo_legs:         Optional[dict]            = None
+    df_evo_direct:    Optional[pd.DataFrame]    = None
+    df_evo_expo:      Optional[pd.DataFrame]    = None
+    evo_expo_nav:     Optional[float]           = None
+    df_evo_expo_d1:   Optional[pd.DataFrame]    = None
+    df_evo_var:       Optional[pd.DataFrame]    = None
+    df_evo_var_d1:    Optional[pd.DataFrame]    = None
+    df_evo_pnl_prod:  Optional[pd.DataFrame]    = None
+    # ALBATROZ
+    df_alb_expo:      Optional[pd.DataFrame]    = None
+    alb_nav:          Optional[float]           = None
+    # FRONTIER
+    df_frontier:      Optional[pd.DataFrame]    = None
+    frontier_bvar:    Optional[float]           = None
+    df_frontier_ibov: Optional[pd.DataFrame]    = None
+    df_frontier_smll: Optional[pd.DataFrame]    = None
+    df_frontier_sectors: Optional[pd.DataFrame] = None
+    # Cross-fund
+    df_pa:            Optional[pd.DataFrame]    = None
+    cdi:              Optional[pd.Series]       = None
+    ibov:             Optional[pd.Series]       = None
+    df_pa_daily:      Optional[pd.DataFrame]    = None
+    idka_idx_ret:     Optional[dict]            = None
+    walb:             Optional[dict]            = None
+    rf_expo_maps:     Optional[dict]            = None
+    position_changes: Optional[dict]            = None
+    dist_map:         Optional[dict]            = None
+    dist_map_prev:    Optional[dict]            = None
+    dist_actuals:     Optional[dict]            = None
+    vol_regime_map:   Optional[dict]            = None
+    pm_book_var:      Optional[dict]            = None
+    expo_date_label:  Optional[str]             = None
+    data_manifest:    Optional[dict]            = None
+
+
 # ── Fetch data ───────────────────────────────────────────────────────────────
 # ── Build series ─────────────────────────────────────────────────────────────
 def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
@@ -171,31 +234,32 @@ def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
 # cotas-júnior spike — see docs/CREDITO_TREATMENT.md.
 
 
-def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
-               df_expo=None, df_var=None, macro_aum=None,
-               df_expo_d1=None, df_var_d1=None,
-               df_pnl_prod=None, pm_margem=None,
-               df_quant_sn=None, quant_nav=None, quant_legs=None,
-               df_evo_sn=None, evo_nav=None, evo_legs=None,
-               df_evo_direct=None,
-               df_pa=None, cdi=None, ibov=None, df_pa_daily=None,
-               idka_idx_ret=None, walb=None,
-               df_alb_expo=None, alb_nav=None,
-               df_quant_expo=None, quant_expo_nav=None,
-               df_quant_expo_d1=None,
-               df_quant_var=None, df_quant_var_d1=None,
-               df_evo_expo=None, evo_expo_nav=None,
-               df_evo_expo_d1=None,
-               df_evo_var=None, df_evo_var_d1=None,
-               df_evo_pnl_prod=None,
-               rf_expo_maps=None,
-               df_frontier=None, frontier_bvar=None,
-               df_frontier_ibov=None, df_frontier_smll=None, df_frontier_sectors=None,
-               position_changes=None,
-               dist_map=None, dist_map_prev=None, dist_actuals=None,
-               vol_regime_map=None,
-               pm_book_var=None,
-               expo_date_label=None, data_manifest=None) -> str:
+def build_html(d: ReportData) -> str:
+    # Unpack for readability inside this function — no logic changes below this block.
+    (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
+     df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
+     df_quant_sn, quant_nav, quant_legs,
+     df_evo_sn, evo_nav, evo_legs, df_evo_direct,
+     df_alb_expo, alb_nav,
+     df_frontier, frontier_bvar, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
+     df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
+     position_changes, dist_map, dist_map_prev, dist_actuals,
+     vol_regime_map, pm_book_var, expo_date_label, data_manifest,
+     df_quant_expo, quant_expo_nav, df_quant_expo_d1, df_quant_var, df_quant_var_d1,
+     df_evo_expo, evo_expo_nav, df_evo_expo_d1, df_evo_var, df_evo_var_d1,
+     df_evo_pnl_prod) = (
+        d.series_map, d.stop_hist, d.df_today, d.df_expo, d.df_var, d.macro_aum,
+        d.df_expo_d1, d.df_var_d1, d.df_pnl_prod, d.pm_margem,
+        d.df_quant_sn, d.quant_nav, d.quant_legs,
+        d.df_evo_sn, d.evo_nav, d.evo_legs, d.df_evo_direct,
+        d.df_alb_expo, d.alb_nav,
+        d.df_frontier, d.frontier_bvar, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
+        d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
+        d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
+        d.vol_regime_map, d.pm_book_var, d.expo_date_label, d.data_manifest,
+        d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.df_quant_var, d.df_quant_var_d1,
+        d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.df_evo_var, d.df_evo_var_d1,
+        d.df_evo_pnl_prod)
     alerts = []
     td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
     sections = []  # list of (fund_short, report_id, html)
@@ -3954,7 +4018,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     return html
 
 # ── Main ─────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
+def main():  # noqa: C901
     import time
     from concurrent.futures import ThreadPoolExecutor
     from glpg_fetch import read_sql
@@ -4323,32 +4387,33 @@ if __name__ == "__main__":
         "stop_pms_pnl":   [pm for pm, v in (pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
     }
 
-    html = build_html(series, stop_hist, df_today, df_expo, df_var, macro_aum, df_expo_d1, df_var_d1,
-                      df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
-                      df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
-                      df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs,
-                      df_evo_direct=df_evo_direct,
-                      df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
-                      idka_idx_ret=idka_idx_ret, walb=walb,
-                      df_alb_expo=df_alb_expo, alb_nav=alb_nav,
-                      df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
-                      df_quant_expo_d1=df_quant_expo_d1,
-                      df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
-                      df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav,
-                      df_evo_expo_d1=df_evo_expo_d1,
-                      df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1,
-                      df_evo_pnl_prod=df_evo_pnl_prod,
-                      rf_expo_maps=rf_expo_maps,
-                      df_frontier=df_frontier,
-                      frontier_bvar=frontier_bvar,
-                      df_frontier_ibov=df_frontier_ibov,
-                      df_frontier_smll=df_frontier_smll,
-                      df_frontier_sectors=df_frontier_sectors,
-                      position_changes=position_changes,
-                      dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
-                      vol_regime_map=vol_regime_map,
-                      pm_book_var=pm_book_var,
-                      expo_date_label=expo_date_label, data_manifest=data_manifest)
+    report_data = ReportData(
+        series_map=series, stop_hist=stop_hist,
+        df_today=df_today, df_expo=df_expo, df_var=df_var, macro_aum=macro_aum,
+        df_expo_d1=df_expo_d1, df_var_d1=df_var_d1,
+        df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
+        df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
+        df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
+        df_quant_expo_d1=df_quant_expo_d1, df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
+        df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs, df_evo_direct=df_evo_direct,
+        df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav, df_evo_expo_d1=df_evo_expo_d1,
+        df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1, df_evo_pnl_prod=df_evo_pnl_prod,
+        df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+        df_frontier=df_frontier, frontier_bvar=frontier_bvar,
+        df_frontier_ibov=df_frontier_ibov, df_frontier_smll=df_frontier_smll,
+        df_frontier_sectors=df_frontier_sectors,
+        df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
+        idka_idx_ret=idka_idx_ret, walb=walb, rf_expo_maps=rf_expo_maps,
+        position_changes=position_changes,
+        dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
+        vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
+        expo_date_label=expo_date_label, data_manifest=data_manifest,
+    )
+    html = build_html(report_data)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")
     print(f"Saved: {out}")
+
+
+if __name__ == "__main__":
+    main()
