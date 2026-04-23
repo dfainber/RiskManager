@@ -38,6 +38,20 @@ def _parse_pm(book: str) -> str:
 
 # ── Date helpers ──────────────────────────────────────────────────────────────
 def _prev_bday(date_str: str) -> str:
+    """Most recent trading day strictly before date_str.
+    Queries LOTE_TRADING_DESKS_NAV_SHARE so Brazilian holidays are handled
+    automatically. Falls back to Mon-Fri subtraction if the query fails.
+    """
+    try:
+        result = read_sql(f"""
+            SELECT MAX("VAL_DATE")::text AS d
+            FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+            WHERE "VAL_DATE" < DATE '{date_str}'
+        """)
+        if not result.empty and result["d"].iloc[0] is not None:
+            return str(result["d"].iloc[0])
+    except Exception:
+        pass
     d = pd.Timestamp(date_str)
     return (d - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
 
