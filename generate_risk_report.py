@@ -66,6 +66,8 @@ from summary_renderers import (
     build_movers_card,
     build_changes_card,
     build_comments_card,
+    build_factor_breakdown_card,
+    build_top_positions_card,
 )
 from data_fetch import (
     fetch_pm_pnl_history,
@@ -1086,73 +1088,6 @@ def build_html(d: ReportData) -> str:
     if nav_by_short.get("FRONTIER") and factor_matrix["Equity BR"].get("FRONTIER"):
         bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
 
-    factor_list = ["Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx", "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities"]
-    # Unit per factor:
-    #   "yrs" → ano_eq_brl is duration-weighted BRL (BRL-years). Divide by NAV → anos.
-    #   "pct" → ano_eq_brl is BRL notional. Divide by NAV → %NAV.
-    # Duration factors (real/nominal rates) precisam de "yrs" pra não reportar
-    # "+376% NAV" quando o valor real é "+3.76 anos de duration".
-    _FACTOR_UNIT = {
-        "Juros Reais (IPCA)": "yrs",
-        "Juros Nominais":     "yrs",
-        "IPCA Idx":           "pct",
-        "Equity BR":          "pct",
-        "Equity DM":          "pct",
-        "Equity EM":          "pct",
-        "FX":                 "pct",
-        "Commodities":        "pct",
-    }
-
-    house_nav_tot = sum(v for v in nav_by_short.values() if v)
-    def _render_factor_rows(net_of_bench: bool) -> str:
-        rows = ""
-        for factor_key in factor_list:
-            allocations = factor_matrix.get(factor_key, {})
-            benches     = bench_matrix.get(factor_key, {}) if net_of_bench else {}
-            shorts_with_data = set(allocations.keys()) | set(benches.keys())
-            if not shorts_with_data:
-                continue
-            unit = _FACTOR_UNIT.get(factor_key, "pct")
-            # DV01 convention everywhere: long bond = negative (bar goes DOWN).
-            # factor_matrix/bench_matrix already stored in DV01 conv — no flip.
-            sign_flip = 1
-            cells = ""
-            total_brl = 0.0
-            for short in FUND_ORDER:
-                gross = allocations.get(short, 0.0)
-                bench = benches.get(short, 0.0) if net_of_bench else 0.0
-                v_brl = (gross - bench) * sign_flip
-                nav_k = nav_by_short.get(short, 0.0)
-                if abs(v_brl) < 1_000 or not nav_k:
-                    cells += '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-                else:
-                    total_brl += v_brl
-                    col = "var(--up)" if v_brl >= 0 else "var(--down)"
-                    if unit == "yrs":
-                        yrs = v_brl / nav_k
-                        cells += f'<td class="mono" style="text-align:right; color:{col}">{yrs:+.2f} yrs</td>'
-                    else:
-                        pct = v_brl / nav_k * 100
-                        cells += f'<td class="mono" style="text-align:right; color:{col}">{pct:+.2f}%</td>'
-            tot_col = "var(--up)" if total_brl >= 0 else "var(--down)"
-            if unit == "yrs":
-                tot_yrs = (total_brl / house_nav_tot) if house_nav_tot else 0.0
-                tot_cell = f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_yrs:+.2f} yrs</td>'
-            else:
-                tot_pct = (total_brl / house_nav_tot * 100) if house_nav_tot else 0.0
-                tot_cell = f'<td class="mono" style="text-align:right; font-weight:700; color:{tot_col}">{tot_pct:+.2f}%</td>'
-            rows += (
-                "<tr>"
-                f'<td class="sum-fund">{factor_key}</td>'
-                + cells
-                + tot_cell
-                + "</tr>"
-            )
-        return rows
-
-    factor_rows_liquido = _render_factor_rows(net_of_bench=True)
-    factor_rows_bruto   = _render_factor_rows(net_of_bench=False)
-    factor_rows_html    = factor_rows_liquido  # keep legacy var name for below
 
     # Per-fund mini briefings. Rebuild sections_html so briefings come FIRST
     # within each fund's block (DOM order = tab order: briefing → ... → others).
@@ -1192,9 +1127,6 @@ def build_html(d: ReportData) -> str:
             )
     sections_html = _reordered_html
 
-    fund_col_headers = "".join(
-        f'<th style="text-align:right">{FUND_LABELS.get(f, f)}</th>' for f in FUND_ORDER
-    )
     # ── Cross-fund top positions — consolidated list ──────────────────────────
     # One row per (fund, factor, product); exclude via_albatroz to avoid double-counting
     # (those positions are already captured under ALBATROZ direct).
@@ -1254,161 +1186,10 @@ def build_html(d: ReportData) -> str:
                 "brl": brl, "unit": "BRL",
             })
 
-    # Bruto total per (fund, factor) for pro-rata bench subtraction in Líquido view.
-    fund_factor_gross = {}
-    for r in agg_rows:
-        key = (r["fund"], r["factor"])
-        fund_factor_gross[key] = fund_factor_gross.get(key, 0.0) + r["brl"]
+    top_positions_html = build_top_positions_card(agg_rows, bench_matrix)
 
-    # Líquido scale factor: (1 − bench/total_fund_factor_gross). Positions that
-    # just replicate bench get scaled down pro-rata to their share of fund exposure.
-    def _liquido_scale(fund_label, factor_label) -> float:
-        short = next((s for s, lbl in FUND_LABELS.items() if lbl == fund_label), fund_label)
-        factor_key = factor_label  # already matches bench_matrix keys
-        bench = bench_matrix.get(factor_key, {}).get(short, 0.0)
-        total = fund_factor_gross.get((fund_label, factor_label), 0.0)
-        if abs(total) < 1e-6 or abs(bench) < 1e-6:
-            return 1.0
-        # Clamp to [0, 1]: bench e total podem ter sinais opostos (convenção)
-        # o que causaria scale > 1 e Líquido > Bruto.
-        return max(0.0, min(1.0, 1.0 - bench / total))
 
-    def _render_top_rows(liquido: bool, mode_key: str) -> str:
-        from collections import defaultdict
-        scaled = []
-        for r in agg_rows:
-            brl = r["brl"]
-            if liquido:
-                brl = brl * _liquido_scale(r["fund"], r["factor"])
-            if abs(brl) < 1_000:
-                continue
-            rr = dict(r); rr["brl"] = brl
-            scaled.append(rr)
-
-        by_fi = defaultdict(list)
-        for r in scaled:
-            by_fi[(r["factor"], r["product"])].append(r)
-
-        instruments = []
-        for (factor, product), rows in by_fi.items():
-            total = sum(r["brl"] for r in rows)
-            unit  = rows[0]["unit"]
-            instruments.append({
-                "factor": factor, "product": product, "total": total,
-                "unit": unit, "holders": rows,
-            })
-
-        # Top 15 instrumentos por |total|
-        instruments.sort(key=lambda i: abs(i["total"]), reverse=True)
-        instruments = instruments[:15]
-
-        factor_totals = defaultdict(float)
-        factor_unit   = {}
-        for inst in instruments:
-            factor_totals[inst["factor"]] += inst["total"]
-            factor_unit[inst["factor"]] = inst["unit"]
-        factor_order = sorted(factor_totals.keys(),
-                              key=lambda f: abs(factor_totals[f]), reverse=True)
-
-        html = ""
-        for factor in factor_order:
-            factor_insts = [i for i in instruments if i["factor"] == factor]
-            factor_insts.sort(key=lambda i: abs(i["total"]), reverse=True)
-            if not factor_insts:
-                continue
-            ftot = factor_totals[factor]
-            ftot_col = "var(--up)" if ftot >= 0 else "var(--down)"
-            fpath = f"{mode_key}|{factor}"
-            html += (
-                f'<tr class="tp-row tp-lvl-0" data-tp-path="{fpath}" '
-                f'onclick="toggleTopPos(this)" style="cursor:pointer">'
-                f'<td class="sum-fund" style="font-weight:700; letter-spacing:.05em; text-transform:uppercase">'
-                f'<span class="tp-caret">▶</span> {factor}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:11px">{len(factor_insts)} instrumentos</td>'
-                f'<td class="mono" style="text-align:right; color:{ftot_col}; font-weight:700">{_mm(ftot)}</td>'
-                f'<td class="mono" style="color:var(--muted); font-size:10.5px">{factor_unit.get(factor, "")}</td>'
-                "</tr>"
-            )
-            for inst in factor_insts:
-                col = "var(--up)" if inst["total"] >= 0 else "var(--down)"
-                ipath = f"{mode_key}|{factor}|{inst['product']}"
-                expandable = len(inst["holders"]) > 0
-                caret_html = '<span class="tp-caret">▶</span> ' if expandable else '  '
-                html += (
-                    f'<tr class="tp-row tp-lvl-1" data-tp-parent="{fpath}" data-tp-path="{ipath}" '
-                    f'onclick="toggleTopPos(this)" style="display:none; cursor:pointer">'
-                    f'<td class="sum-fund" style="padding-left:22px">{caret_html}{inst["product"]}</td>'
-                    f'<td class="mono" style="color:var(--muted); font-size:11px">{len(inst["holders"])} fundo(s)</td>'
-                    f'<td class="mono" style="text-align:right; color:{col}; font-weight:600">{_mm(inst["total"])}</td>'
-                    f'<td class="mono" style="color:var(--muted); font-size:10.5px">{inst["unit"]}</td>'
-                    "</tr>"
-                )
-                inst["holders"].sort(key=lambda r: abs(r["brl"]), reverse=True)
-                for h in inst["holders"]:
-                    hcol = "var(--up)" if h["brl"] >= 0 else "var(--down)"
-                    pct = (h["brl"] / inst["total"] * 100) if inst["total"] else 0
-                    html += (
-                        f'<tr class="tp-row tp-lvl-2" data-tp-parent="{ipath}" style="display:none">'
-                        f'<td class="sum-fund" style="padding-left:44px; font-size:11.5px; color:var(--muted)">{h["fund"]}</td>'
-                        f'<td class="mono" style="color:var(--muted); font-size:10.5px">{pct:+.0f}% da posição</td>'
-                        f'<td class="mono" style="text-align:right; color:{hcol}; font-size:11.5px">{_mm(h["brl"])}</td>'
-                        f'<td class="mono" style="color:var(--muted); font-size:10.5px">{h["unit"]}</td>'
-                        "</tr>"
-                    )
-        return html
-
-    top_rows_liquido = _render_top_rows(liquido=True,  mode_key="liq")
-    top_rows_bruto   = _render_top_rows(liquido=False, mode_key="bru")
-
-    top_positions_html = f"""
-    <section class="card">
-      <div class="card-head">
-        <span class="card-title">Top Posições — consolidado</span>
-        <span class="card-sub">— top 15 posições da casa por |exposure| · via_albatroz excluído (contado em ALBATROZ direto)</span>
-        <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
-          <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
-          <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
-        </div>
-      </div>
-      <table class="summary-table" data-no-sort="1">
-        <thead><tr>
-          <th style="text-align:left">Fator / Instrumento / Fundo</th>
-          <th style="text-align:left">Detalhe</th>
-          <th style="text-align:right">Total</th>
-          <th style="text-align:left">Unidade</th>
-        </tr></thead>
-        <tbody class="rf-brl-body" data-rf-brl="liquido">{top_rows_liquido}</tbody>
-        <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{top_rows_bruto}</tbody>
-      </table>
-      <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        Drill-down: clique em um <b>Fator</b> (ex: Real, Nominal, Commodities) para abrir seus instrumentos; clique em um <b>Instrumento</b> para ver em quais fundos está alocado e a %. <b>Líquido</b>: cada contribuição é escalada por (1 − bench/total_fundo_fator); <b>Bruto</b>: sem abater bench. EVOLUTION usa posições diretas (sem look-through); via_albatroz excluído (contado em ALBATROZ direto).
-      </div>
-    </section>"""
-
-    by_factor_html = f"""
-    <section class="card" id="breakdown-por-fator">
-      <div class="card-head">
-        <span class="card-title">Breakdown por Fator</span>
-        <span class="card-sub">— exposure por fator × fundo · <b>Juros Reais/Nominais em anos de duration</b> (yrs); <b>IPCA Idx/Equity/FX/Commodities em %NAV nocional</b></span>
-        <div class="pa-view-toggle rf-brl-toggle" style="margin-left:auto">
-          <button class="pa-tgl active" data-rf-brl="liquido" onclick="selectRfBrl(this,'liquido')">Líquido</button>
-          <button class="pa-tgl"        data-rf-brl="bruto"   onclick="selectRfBrl(this,'bruto')">Bruto</button>
-        </div>
-      </div>
-      <table class="summary-table" data-no-sort="1">
-        <thead><tr>
-          <th style="text-align:left">Fator</th>
-          {fund_col_headers}
-          <th style="text-align:right">Total</th>
-        </tr></thead>
-        <tbody class="rf-brl-body" data-rf-brl="liquido">{factor_rows_liquido}</tbody>
-        <tbody class="rf-brl-body" data-rf-brl="bruto" style="display:none">{factor_rows_bruto}</tbody>
-      </table>
-      <div class="bar-legend" style="margin-top:10px; color:var(--muted)">
-        <b>Líquido</b>: fundo − benchmark (IDKAs menos bench real-rate 3y/10y; Frontier menos IBOV 100% NAV). <b>Bruto</b>: exposição total sem abater bench.
-        Cada célula = valor BRL / NAV do fundo × 100. Total = soma BRL / house NAV × 100. Real/Nominal/IPCA em %NAV·ano (yr-eq); Equity/FX/Commodities em %NAV nocional. Cobre IDKAs + Albatroz + Frontier + MACRO + QUANT + EVOLUTION. Crédito omitido por escopo.
-      </div>
-    </section>"""
+    by_factor_html = build_factor_breakdown_card(factor_matrix, bench_matrix, nav_by_short)
 
     house_html = f"""
     <section class="card">
