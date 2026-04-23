@@ -4,12 +4,9 @@ Gera o HTML diário de risco MM com barras de range 12m e sparklines 60d.
 Usage: python generate_risk_report.py [YYYY-MM-DD]
 """
 import sys
-import re
-import base64
-import io
 import json
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -17,83 +14,29 @@ warnings.filterwarnings("ignore")
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from glpg_fetch import read_sql
-from risk_runtime import DATA_STR, DATA, DATE_1Y, DATE_60D, OUT_DIR, fmt_br_num as _fmt_br_num
+from risk_runtime import DATA_STR, DATA, OUT_DIR, fmt_br_num as _fmt_br_num
 from risk_config import (
     FUNDS, RAW_FUNDS, IDKA_FUNDS, ALL_FUNDS,
     ALERT_THRESHOLD, UTIL_WARN, UTIL_HARD,
-    STOP_BASE, STOP_SEM, STOP_ANO, ALBATROZ_STOP_BPS,
+    STOP_BASE, ALBATROZ_STOP_BPS,
     REPORTS, FUND_ORDER, FUND_LABELS,
     _FUND_PA_KEY, _PA_BENCH_LIVROS,
-    _IDKA_BENCH_INSTRUMENT,
-    _RF_ORDER, _RF_COLOR, _EXCL_PRIM, _RATE_PRIM,
-    _PM_LIVRO, _ETF_TO_LIST,
-    _QUANT_BOOK_FACTOR, _QUANT_FACTOR_ORDER, _QUANT_VAR_BOOK_FACTOR,
-    _RF_FACTOR_MAP, _RF_BUCKETS,
-    _EVO_STRATEGY_ORDER, _EVO_STRATEGY_COLOR, _EVO_LIVRO_EXTRA_STRATEGY, _EVO_EXPECTED_STRATS,
-    _DIST_PORTFOLIOS, _VR_PORTFOLIOS,
+    _PM_LIVRO,
     ALERT_COMMENTS,
-    _FUND_DESK_FOR_EXPO, _PRODCLASS_TO_FACTOR,
-    _PA_LIVRO_RENAMES, _PA_PINNED_BOTTOM,
-    _PA_ORDER_CLASSE, _PA_ORDER_LIVRO, _PA_ORDER_STRATEGY, _PA_ORDER_BY_LEVEL,
-    _PA_AGG_LEN,
 )
-from html_assets import UEXPO_JS as _UEXPO_JS
-from svg_renderers import (
-    make_sparkline,
-    range_bar_svg,
-    stop_bar_svg,
-    range_line_svg,
-    evo_spark_svg as _evo_spark_svg,
-)
-from db_helpers import (
-    _parse_rf,
-    _parse_pm,
-    _prev_bday,
-    _NAV_CACHE,
-    fetch_all_latest_navs,
-    _latest_nav,
-)
+from svg_renderers import make_sparkline, range_bar_svg
+from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav
 from metrics import (
     compute_pm_hs_var,
     compute_frontier_bvar_hs,
-    compute_idka_bvar_hs,
     compute_portfolio_vol_regime,
-    compute_distribution_stats,
     compute_pa_outliers,
 )
-from pa_renderers import (
-    _pa_escape,
-    _pa_render_name,
-    _evo_strategy,
-    _pa_bp_cell,
-    _pa_pos_cell,
-    _build_pa_tree,
-    _render_pa_tree_rows,
-    _render_pa_row_html,
-    _build_pa_view,
-    _build_pa_bench_decomp_view,
-    build_pa_section_hier,
-    _pa_filter_alpha,
-)
-from evo_renderers import (
-    _evo_pct_color,
-    _evo_pct_badge,
-    _evo_render_camada1,
-    _evo_render_camada2,
-    _evo_render_camada3,
-    _evo_render_camada_direcional,
-    _evo_render_camada4_alert,
-    build_evolution_diversification_section,
-)
+from pa_renderers import _pa_render_name, _pa_filter_alpha, build_pa_section_hier
+from evo_renderers import build_evolution_diversification_section
 from expo_renderers import (
-    _build_expo_unified_table,
-    _prepare_quant_var_for_unified,
     build_quant_exposure_section,
     build_evolution_exposure_section,
     build_idka_exposure_section,
@@ -105,13 +48,8 @@ from expo_renderers import (
 from fund_renderers import (
     build_albatroz_risk_budget,
     build_single_names_section,
-    _dist_entries,
-    _kind_tag,
     build_vol_regime_section,
     build_distribution_card,
-    _build_backward_table,
-    _build_forward_table,
-    _build_stop_history_modal,
     build_stop_history,
     build_stop_section,
     build_pm_budget_vs_var_section,
@@ -122,7 +60,6 @@ from fund_renderers import (
 )
 from data_fetch import (
     fetch_pm_pnl_history,
-    fetch_macro_pm_pnl_daily,
     fetch_risk_history,
     fetch_risk_history_raw,
     fetch_risk_history_idka,
@@ -130,30 +67,16 @@ from data_fetch import (
     fetch_frontier_exposure_data,
     fetch_aum_history,
     fetch_macro_pnl_products,
-    fetch_albatroz_alpha_series,
-    fetch_idka_active_series,
-    _compute_idka_bench_replication,
-    fetch_idka_hs_replication_series,
-    fetch_idka_hs_spread_series,
-    fetch_idka_hs_active_series,
-    fetch_frontier_alpha_series,
     fetch_pnl_distribution,
     fetch_pnl_actual_by_cut,
     fetch_macro_exposure,
-    _fetch_single_names_generic,
     fetch_quant_single_names,
-    _quant_classify_factor,
     fetch_quant_exposure,
     fetch_quant_var,
     fetch_albatroz_exposure,
-    _rf_classify,
-    _rf_bucket,
     fetch_rf_exposure_map,
     fetch_evolution_direct_single_names,
     fetch_evolution_single_names,
-    _load_evo_livros_map,
-    _evo_classify_livro,
-    _evo_classify_factor,
     fetch_evolution_exposure,
     fetch_evolution_var,
     fetch_evolution_pnl_products,

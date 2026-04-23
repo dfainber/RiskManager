@@ -289,6 +289,7 @@ dashboards originais.
 - **Camada 4 — Bull Market Alignment** — alerta agregado das 5 condições (≥3 buckets ≥ P70 · ≥1 ≥ P95 · Ratio C2 ≥ P80 · ≥1 par corr ≥ P85 filtrado · ≥3 categorias same-sign). Buckets direcionais = {MACRO, SIST, FRONTIER+EVO_STRAT unidos, CREDITO}. FRONTIER+EVO percentile recomputado da soma das séries. Dispara 🚨 quando ≥ 3 acesas, 🟡 parcial quando 1-2, ✓ verde quando 0. Headline no topo do tab Diversificação + Summary.
 - **docs/EVOLUTION_DIVERSIFICATION_METHODOLOGY.md** — doc completo (motivação, 4 camadas + Camada 4, thresholds, tratamento CREDITO, caveats, changelog).
 - **MACRO Budget vs VaR por PM** — novo card no Risk Budget tab, consolidado no mesmo `sec-MACRO-stop-monitor`. Colunas:
+
   - **Margem atual** (91/63/124/123 bps — dinâmica por PM, igual Risk Budget Monitor)
   - **VaR paramétrico** (Lote `PARAMETRIC_VAR` LEVEL=10 soma signed por prefixo de PM, magnitude)
   - **VaR hist 21/63/252d** (`1.645 × σ(W)` sobre posição atual × retornos históricos, fonte `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION`)
@@ -338,6 +339,23 @@ dashboards originais.
   - `html_assets.py` (110 linhas) — blob `UEXPO_JS` (~100 linhas de JS inline) usado pelas seções de exposure.
 - **Não extraído (deliberado):** `fetch_*` / `compute_*` / `build_*`. Motivo: acoplamento com helpers internos (`_latest_nav`, `_prev_bday`, `_parse_rf`, `_parse_pm`, `_NAV_CACHE`) e domain dicts (`_PM_LIVRO`, `_PA_*`, `_RF_*`, `_EVO_*`, `_QUANT_*`) que ainda estão inline em `generate_risk_report.py`. Mover sem moves-coordenados desses helpers criaria imports circulares ou ciclos de `from generate_risk_report import …`. Próxima etapa de refactor precisa primeiro decidir o mapa desses helpers (geral/SVG/PA) para ter módulo-destino certo.
 - `generate_risk_report.py`: 13071 → 12874 linhas (−197); 3 módulos novos com 258 linhas organizadas. Smoke test verde em todos os 4 commits (`049a888 → 5ceb018 → 0e43c1f → 139e263`).
+
+**Fase 4 — entregues (sessão 2026-04-22 noite: refactor Fase 3 completa):**
+- **Pré-3 · smoke_test expansion** — numeric snapshot check (`extract_numeric_content` strips `<script>` + base64 PNGs, extrai todo `\d+\.\d+%` + `\d+\.\d+\s*bps`, compara como multiset). Flag `--save-snapshot` salva em `data/.smoke_snapshots/<date>_<kind>.json` (gitignored). Default date migrou de hardcoded `2026-04-22` pra D-2 dias úteis via `date.today() - timedelta(2)` rollback pra sexta no weekend. Baseline de 3580 valores salvo pra 2026-04-20.
+- **Fase 3a-3i · 9 módulos novos** (8 commits principais + 1 bug fix + 1 cleanup):
+  - `svg_renderers.py` (256 linhas) — `make_sparkline`, `range_bar_svg`, `stop_bar_svg`, `range_line_svg`, `evo_spark_svg`. Pure matplotlib/strings.
+  - `risk_config.py` expandido (391 linhas, +22 dicts) — `_IDKA_BENCH_INSTRUMENT`, `_RF_*`, `_PM_LIVRO`, `_ETF_TO_LIST`, `_QUANT_*`, `_RF_BUCKETS`, `_EVO_*`, `_DIST_PORTFOLIOS`, `_VR_PORTFOLIOS`, `ALERT_COMMENTS`, `_FUND_DESK_FOR_EXPO`, `_PRODCLASS_TO_FACTOR`, `_PA_LIVRO_RENAMES`, `_PA_PINNED_BOTTOM`, `_PA_ORDER_*`, `_PA_AGG_LEN`.
+  - `db_helpers.py` (96 linhas) — `_parse_rf`, `_parse_pm`, `_prev_bday`, `_NAV_CACHE`, `fetch_all_latest_navs`, `_latest_nav`.
+  - `data_fetch.py` (1602 linhas, 44 itens) — todos os `fetch_*` (36 públicos) + 8 helpers privados (`_fetch_single_names_generic`, `_compute_idka_bench_replication`, `_quant_classify_factor`, `_rf_classify`, `_rf_bucket`, `_load_evo_livros_map`, `_evo_classify_livro`, `_evo_classify_factor`).
+  - `metrics.py` (363 linhas) — `compute_pm_hs_var`, `compute_frontier_bvar_hs`, `compute_idka_bvar_hs`, `compute_portfolio_vol_regime`, `compute_distribution_stats`, `compute_pa_outliers`.
+  - `pa_renderers.py` (499 linhas) — 12 helpers de Performance Attribution: tree builder, lazy-render JSON, bench decomposition, section assembler.
+  - `evo_renderers.py` (654 linhas) — 8 helpers da EVOLUTION diversification (4 camadas + matriz direcional + alerta C4 + section assembler). Owna os aliases `_evo_*` de `evolution_diversification_card`.
+  - `expo_renderers.py` (2424 linhas) — 9 builders de exposure: `_build_expo_unified_table`, `build_quant_exposure_section`, `build_evolution_exposure_section` (monolito ~480 linhas), `build_idka_exposure_section`, `build_rf_exposure_map_section`, `build_albatroz_exposure`, `build_exposure_section` (MACRO), `build_frontier_exposure_section`, `_prepare_quant_var_for_unified`.
+  - `fund_renderers.py` (2726 linhas) — 18 itens: `build_stop_section`, `build_pm_budget_vs_var_section`, `build_single_names_section`, `build_vol_regime_section`, `build_distribution_card`, `build_frontier_lo_section`, `build_data_quality_section`, `build_albatroz_risk_budget`, briefings (`_build_fund_mini_briefing`, `_build_executive_briefing`), stop-history cluster (`carry_step`, `_load_risk_budget_overrides`, `build_stop_history`), distribution tables (`_build_backward_table`, `_build_forward_table`, `_build_stop_history_modal`, `_dist_entries`, `_kind_tag`).
+- **Bug silencioso pego pelo HTML diff**: `_PRODCLASS_TO_FACTOR` não foi importado em data_fetch.py durante 3b, causando falha silenciosa em `fetch_fund_position_changes` para FRONTIER (16 valores ausentes no card de Mudanças Significativas). Fix commitado como `2660610`.
+- **Validação metódica por fase**: cada commit rodou `ast.unparse()`-based diff (44 funções comparadas byte-a-byte no AST para 3d; 12 para 3f; etc.) e, para 3h/3i, comparação HTML back-to-back regenerando com código pré-3a (`45eb8ce`) vs atual — ambas as runs produziram **3502 valores numéricos idênticos**, provando zero semantic drift.
+- **Orquestrador final**: [generate_risk_report.py](generate_risk_report.py) **13071 → 4282 linhas (−67%)**. Total do kit: 13444 linhas distribuídas em 12 arquivos (orquestrador + 11 módulos especializados). CLAUDE.md e backlog não tocados.
+- **Convenção anti-DB-drift**: as tabelas PA/NAV/CDI da GLPG-DB01 são re-escritas continuamente por rotinas batch (observado: ~30-60 valores mudam a cada 5-10 min mesmo para datas passadas). Validação numérica de refactor **exige** regen back-to-back (<2 min entre runs); caso contrário diffs aparentes são drift de DB, não regressão.
 
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
