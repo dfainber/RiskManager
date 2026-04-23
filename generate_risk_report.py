@@ -51,6 +51,14 @@ from svg_renderers import (
     range_line_svg,
     evo_spark_svg as _evo_spark_svg,
 )
+from db_helpers import (
+    _parse_rf,
+    _parse_pm,
+    _prev_bday,
+    _NAV_CACHE,
+    fetch_all_latest_navs,
+    _latest_nav,
+)
 from evolution_diversification_card import (
     build_ratio_series          as _evo_build_ratio_series,
     compute_camada1             as _evo_compute_camada1,
@@ -570,22 +578,6 @@ def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return result
 
 # ── MACRO Exposure ───────────────────────────────────────────────────────────
-def _parse_rf(book: str) -> str:
-    """Extract risk factor from BOOK name like 'JD_RF-BZ_Direcional' → 'RF-BZ'."""
-    PMS = ("CI","LF","JD","RJ","QM","MD")
-    parts = book.split("_")
-    if len(parts) >= 2 and parts[0] in PMS:
-        return parts[1]
-    return None   # structural book
-
-def _parse_pm(book: str) -> str:
-    """Extract PM prefix from BOOK name like 'JD_RF-BZ_Direcional' → 'JD'."""
-    PMS = ("CI","LF","JD","RJ","QM","MD")
-    parts = book.split("_")
-    if len(parts) >= 1 and parts[0] in PMS:
-        return parts[0]
-    return "Outros"
-
 def fetch_macro_pnl_products(date_str: str) -> pd.DataFrame:
     """Daily PnL per LIVRO × PRODUCT from REPORT_ALPHA_ATRIBUTION."""
     livros = ", ".join(f"'{v}'" for v in _PM_LIVRO.values())
@@ -597,10 +589,6 @@ def fetch_macro_pnl_products(date_str: str) -> pd.DataFrame:
           AND "LIVRO" IN ({livros})
         GROUP BY "LIVRO", "PRODUCT"
     """)
-
-def _prev_bday(date_str: str) -> str:
-    d = pd.Timestamp(date_str)
-    return (d - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
 
 def fetch_albatroz_alpha_series(date_str: str = DATA_STR, window_days: int = 252) -> np.ndarray:
     """Realized daily alpha vs CDI (bps of NAV) for Albatroz, last `window_days`
@@ -1089,59 +1077,6 @@ def compute_distribution_stats(w_series, actual_bps=None):
         out["percentile"] = pct
         out["nvols"]      = actual_bps / sd if sd > 1e-9 else None
     return out
-
-# Module-level cache for latest-NAV lookups; populated by fetch_all_latest_navs
-# or on-demand by _latest_nav. Key: (desk, date_str).
-_NAV_CACHE: dict = {}
-
-
-def fetch_all_latest_navs(date_str: str) -> dict:
-    """Bulk-fetch latest NAV (on or before date_str) for all known funds in one query.
-       Side effect: populates the module-level _NAV_CACHE so subsequent _latest_nav
-       calls hit memory instead of the DB. Returns the {desk: nav} dict as well.
-    """
-    desks = list(ALL_FUNDS.keys())
-    # Include MACRO family names that aren't in ALL_FUNDS under the desk key we use at call sites
-    extras = ["Galapagos Macro FIM", "GALAPAGOS ALBATROZ FIRF LP",
-              "Frontier A\u00e7\u00f5es FIC FI"]
-    desks = list({*desks, *extras})
-    tds = ", ".join(f"'{d}'" for d in desks)
-    df = read_sql(f"""
-        SELECT DISTINCT ON ("TRADING_DESK") "TRADING_DESK", "NAV"
-        FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" IN ({tds})
-          AND "VAL_DATE" <= DATE '{date_str}'
-        ORDER BY "TRADING_DESK", "VAL_DATE" DESC
-    """)
-    out = {}
-    for r in df.itertuples(index=False):
-        v = float(r.NAV) if pd.notna(r.NAV) else None
-        _NAV_CACHE[(r.TRADING_DESK, date_str)] = v
-        out[r.TRADING_DESK] = v
-    # Ensure every requested desk has a sentinel entry (avoids re-querying on misses)
-    for d in desks:
-        _NAV_CACHE.setdefault((d, date_str), None)
-    return out
-
-
-def _latest_nav(desk: str, date_str: str):
-    """
-    Most recent NAV on or before `date_str` for `desk`. Hits _NAV_CACHE first;
-    falls back to a direct query only for desks/dates not warmed up.
-    """
-    key = (desk, date_str)
-    if key in _NAV_CACHE:
-        return _NAV_CACHE[key]
-    df = read_sql(f"""
-        SELECT "NAV" FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = '{desk}'
-          AND "VAL_DATE" <= DATE '{date_str}'
-        ORDER BY "VAL_DATE" DESC LIMIT 1
-    """)
-    v = float(df["NAV"].iloc[0]) if not df.empty else None
-    _NAV_CACHE[key] = v
-    return v
-
 
 def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
     """Returns (df_expo, df_var, aum) for the given date."""
