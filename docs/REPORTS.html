@@ -658,37 +658,82 @@ ANO_EQ = AMOUNT × DV01 × 10000 / AUM<br>
 <section id="structure">
   <h2>5 · Estrutura de código</h2>
 
-  <h3>5.1 Arquivo único</h3>
-  <p>Todo o generator vive em <code>generate_risk_report.py</code> (~7900 linhas, ~66 funções). Mono-arquivo por design — simples de executar, de ler, de versionar. Split em módulos pode vir se chegar a 10k+.</p>
+  <h3>5.1 Arquitetura modular</h3>
+  <p>O kit é 12 módulos Python especializados. O orquestrador <code>generate_risk_report.py</code> (4.3k linhas) só registra deps, dispara os fetches em paralelo e concatena os HTML fragments produzidos pelos renderers.</p>
+  <p>Refactorado 2026-04-22/23 (ver <code>CLAUDE.md</code> Fase 4 — refactor L1+L2+3). Antes: 1 arquivo de 13k linhas.</p>
 
-  <h3>5.2 Layout interno</h3>
-<pre>imports + config
-FUNDS / RAW_FUNDS / IDKA_FUNDS / ALL_FUNDS  <span class="com"># mandatos provisórios</span>
-REPORTS list                                 <span class="com"># registra tipos de report</span>
-FUND_ORDER, FUND_LABELS, _FUND_PA_KEY
+  <h3>5.2 Layout por módulo</h3>
+  <table>
+    <thead><tr><th>Módulo</th><th>Linhas</th><th>Responsabilidade</th></tr></thead>
+    <tbody>
+      <tr><td><code>risk_runtime.py</code></td><td>40</td><td>Valores computados de CLI args (<code>DATA_STR</code>, <code>DATA</code>, <code>DATE_1Y</code>, <code>OUT_DIR</code>) + <code>fmt_br_num</code>. Leaf — todos os outros importam daqui</td></tr>
+      <tr><td><code>risk_config.py</code></td><td>391</td><td>Pure data: mandatos (<code>FUNDS</code>, <code>RAW_FUNDS</code>, <code>IDKA_FUNDS</code>), thresholds, dicts de domínio (<code>_RF_*</code>, <code>_PM_LIVRO</code>, <code>_EVO_*</code>, <code>_QUANT_*</code>, <code>_PA_ORDER_*</code>, <code>_FUND_DESK_FOR_EXPO</code>, etc.)</td></tr>
+      <tr><td><code>html_assets.py</code></td><td>110</td><td>Blob inline <code>UEXPO_JS</code> (sort+toggle da tabela de exposure)</td></tr>
+      <tr><td><code>svg_renderers.py</code></td><td>256</td><td><code>make_sparkline</code> (matplotlib PNG), <code>range_bar_svg</code>, <code>stop_bar_svg</code>, <code>range_line_svg</code>, <code>evo_spark_svg</code></td></tr>
+      <tr><td><code>db_helpers.py</code></td><td>96</td><td><code>_parse_rf</code>, <code>_parse_pm</code>, <code>_prev_bday</code>, <code>_NAV_CACHE</code>, <code>fetch_all_latest_navs</code>, <code>_latest_nav</code></td></tr>
+      <tr><td><code>data_fetch.py</code></td><td>1602</td><td>36 <code>fetch_*</code> públicos + 8 helpers privados. Toda a camada de SQL. Zero HTML</td></tr>
+      <tr><td><code>metrics.py</code></td><td>363</td><td>6 <code>compute_*</code>: PM HS VaR, Frontier BVaR, IDKA BVaR, vol regime, distribution stats, PA outliers</td></tr>
+      <tr><td><code>pa_renderers.py</code></td><td>499</td><td>12 helpers de Performance Attribution: tree builder, lazy-render JSON, bench decomposition, section assembler</td></tr>
+      <tr><td><code>evo_renderers.py</code></td><td>654</td><td>8 helpers das 4 camadas do EVOLUTION diversification + matriz direcional</td></tr>
+      <tr><td><code>expo_renderers.py</code></td><td>2424</td><td>9 builders de exposure: MACRO, QUANT, EVOLUTION, IDKA, ALBATROZ, FRONTIER + RF exposure map. <code>_build_expo_unified_table</code> é o core</td></tr>
+      <tr><td><code>fund_renderers.py</code></td><td>2726</td><td>18 itens: stop monitor, Budget vs VaR, single-names, vol regime, distribution, Frontier LO, data quality, briefings, stop-history cluster (<code>carry_step</code> + overrides)</td></tr>
+      <tr><td><code>generate_risk_report.py</code></td><td>4359</td><td>Orquestrador: imports + <code>build_html</code> (assembly) + <code>main</code> (fetch paralelo)</td></tr>
+    </tbody>
+  </table>
 
-fetch_* functions                            <span class="com"># todas as queries</span>
-compute_* functions                          <span class="com"># BVaR, vol regime, outliers, etc.</span>
-build_* functions                            <span class="com"># montam cada card/section</span>
+  <h3>5.3 Grafo de dependências (bottom-up)</h3>
+<pre>                    risk_runtime.py   <span class="com"># DATA_STR, OUT_DIR — leaf module</span>
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+       risk_config  html_assets  svg_renderers
+              │          │          │
+              └─────┬────┘          │
+                    ▼               │
+               db_helpers           │
+                    │               │
+                    ▼               │
+              data_fetch.py ────────┤
+                    │               │
+                    ▼               ▼
+              metrics.py ──► pa_renderers ──► evo_renderers
+                    │               │               │
+                    └──────┬────────┴───────┬───────┘
+                           ▼                ▼
+                    expo_renderers   fund_renderers
+                           │                │
+                           └────────┬───────┘
+                                    ▼
+                        generate_risk_report.py
+                          (build_html + main)</pre>
+  <p>Regras:</p>
+  <ul>
+    <li><strong>Runtime state</strong> (<code>risk_runtime</code>) fica na base — quebra ciclos quando outros módulos importam <code>DATA_STR</code> como default arg</li>
+    <li><strong>Pure data</strong> (<code>risk_config</code>) não depende de nada — seguro pra importar de qualquer lugar</li>
+    <li><strong>Renderers importam de cima pra baixo</strong> — fund_renderers pode usar svg_renderers mas não o contrário</li>
+    <li><strong>Nenhum módulo importa do orquestrador</strong> — <code>generate_risk_report.py</code> é folha de saída</li>
+  </ul>
 
-<span class="kw">def</span> build_html(...):                          <span class="com"># main orchestrator</span>
-    <span class="com"># loop por FUND_ORDER → monta cards por fundo</span>
-    <span class="com"># monta cards cross-fund (Risco Agregado, Breakdown, Top Posições, etc.)</span>
+  <h3>5.4 Main flow</h3>
+<pre><span class="kw">def</span> main():                                   <span class="com"># CLI entrypoint</span>
+    <span class="com"># 1. ThreadPoolExecutor(12) paralelo pra todos os fetches</span>
+    <span class="com">#    (ex.submit(fetch_macro_exposure, DATA_STR), etc.)</span>
+    <span class="com"># 2. Pré-warmup do _NAV_CACHE via fetch_all_latest_navs</span>
+    <span class="com"># 3. Resolve futures sequencialmente com fallback D-1</span>
+    <span class="com"># 4. Monta data_manifest</span>
+    <span class="com"># 5. Chama build_html(series, stop_hist, df_today, ...)</span>
+    <span class="com"># 6. Escreve HTML em data/morning-calls/</span>
+
+<span class="kw">def</span> build_html(...):                          <span class="com"># section assembly</span>
+    <span class="com"># loop por FUND_ORDER → monta cards por fundo via *_renderers</span>
+    <span class="com"># monta cards cross-fund (Risco Agregado, Breakdown, Top Posições)</span>
     <span class="com"># concatena em section-wrap divs (summary / fund / quality)</span>
-    <span class="com"># injeta CSS + JS no &lt;head&gt; + &lt;body&gt;</span>
+    <span class="com"># injeta CSS + JS no &lt;head&gt; + &lt;body&gt;</span></pre>
 
-<span class="kw">def</span> main():                                   <span class="com"># CLI entrypoint</span>
-    <span class="com"># ThreadPoolExecutor paralelo pra todos os fetches</span>
-    <span class="com"># Pré-warmup do _NAV_CACHE</span>
-    <span class="com"># Resolve futures sequencialmente com fallback D-1</span>
-    <span class="com"># Monta data_manifest</span>
-    <span class="com"># Chama build_html</span>
-    <span class="com"># Escreve arquivo + abre no browser</span></pre>
+  <h3>5.5 Cache em memória</h3>
+  <p><code>_NAV_CACHE: dict[(desk, date_str), float]</code> em <code>db_helpers.py</code>. Populado em bulk via <code>fetch_all_latest_navs</code> antes do <code>build_html</code>. <code>_latest_nav()</code> consulta cache primeiro, fallback ao DB se miss. Compartilhado por import — todos os callers acessam o mesmo dict.</p>
 
-  <h3>5.3 Cache em memória</h3>
-  <p><code>_NAV_CACHE: dict[(desk, date_str), float]</code>. Populado em bulk via <code>fetch_all_latest_navs</code> antes do <code>build_html</code>. <code>_latest_nav()</code> consulta cache primeiro, fallback ao DB se miss. ~6 chamadas dentro de <code>build_html</code> economizam ~500–800ms de round-trips.</p>
-
-  <h3>5.4 Skills</h3>
+  <h3>5.6 Skills</h3>
   <p>9 skills em <code>.claude/skills/</code>, cada uma foca num ângulo distinto:</p>
   <table>
     <thead><tr><th>Skill</th><th>Função</th></tr></thead>
@@ -706,7 +751,7 @@ build_* functions                            <span class="com"># montam cada car
     </tbody>
   </table>
 
-  <h3>5.5 Memory</h3>
+  <h3>5.7 Memory</h3>
   <p>Em <code>~/.claude/projects/.../memory/</code>:</p>
   <ul>
     <li><code>MEMORY.md</code> — índice</li>
@@ -757,25 +802,34 @@ build_* functions                            <span class="com"># montam cada car
   <h3>7.1 Adicionar um novo fundo</h3>
   <ol>
     <li><strong>Mandato</strong>: criar <code>data/mandatos/mandato-{SHORT}.json</code> com soft/hard limits de VaR e Stress</li>
-    <li><strong>Dict</strong>: adicionar entrada em <code>FUNDS</code> (<code>LEVEL=2/3</code> em RPM), <code>RAW_FUNDS</code> (product-level), ou <code>IDKA_FUNDS</code> (parametric BVaR)</li>
-    <li><strong>FUND_ORDER</strong>: adicionar o short em ordem desejada</li>
-    <li><strong>FUND_LABELS</strong>: adicionar display name</li>
-    <li><strong>_FUND_PA_KEY</strong>: adicionar pa_key (nome em <code>REPORT_ALPHA_ATRIBUTION.FUNDO</code>)</li>
-    <li><strong>Reports específicos</strong>: se precisar de algo além do default (Risk Monitor, PA, Análise), adicionar builder + registrar em <code>sections.append((SHORT, "report-id", html))</code></li>
+    <li><strong>Dict</strong> (<code>risk_config.py</code>): adicionar entrada em <code>FUNDS</code> (<code>LEVEL=2/3</code> em RPM), <code>RAW_FUNDS</code> (product-level), ou <code>IDKA_FUNDS</code> (parametric BVaR)</li>
+    <li><strong>FUND_ORDER, FUND_LABELS, _FUND_PA_KEY</strong> (<code>risk_config.py</code>): adicionar short, display name, pa_key (nome em <code>REPORT_ALPHA_ATRIBUTION.FUNDO</code>)</li>
+    <li><strong>_FUND_DESK_FOR_EXPO</strong> (<code>risk_config.py</code>): mapa SHORT → TRADING_DESK canônico pra <code>LOTE_PRODUCT_EXPO</code></li>
+    <li><strong>Reports específicos</strong>: se precisar de algo além do default (Risk Monitor, PA, Análise), adicionar builder no renderer apropriado (<code>expo_renderers.py</code> pra exposure, <code>fund_renderers.py</code> pra stop/vol/dist/briefing, <code>pa_renderers.py</code> pra PA) e registrar em <code>generate_risk_report.build_html</code>: <code>sections.append((SHORT, "report-id", html))</code></li>
   </ol>
 
   <h3>7.2 Adicionar um novo report cross-fund</h3>
   <ol>
-    <li><strong>Fetch</strong>: adicionar <code>fetch_*</code> + <code>ex.submit</code> no bloco paralelo</li>
-    <li><strong>Resolve</strong>: resolver o future com fallback</li>
-    <li><strong>Pass</strong>: passar como kwarg para <code>build_html</code></li>
-    <li><strong>Build</strong>: criar <code>build_*</code> function que gera o HTML do card</li>
-    <li><strong>Register</strong>: injetar via f-string no <code>summary_html</code></li>
+    <li><strong>Fetch</strong> (<code>data_fetch.py</code>): adicionar <code>fetch_*</code> + import/export</li>
+    <li><strong>Orquestrador</strong> (<code>generate_risk_report.py</code>): <code>ex.submit</code> no bloco paralelo + resolver future com fallback + passar como kwarg para <code>build_html</code></li>
+    <li><strong>Build</strong>: criar <code>build_*</code> function no renderer do domínio (<code>expo_renderers</code> pra exposure, <code>fund_renderers</code> pra tudo o mais). Importar no orquestrador</li>
+    <li><strong>Register</strong>: injetar via f-string no <code>summary_html</code> dentro de <code>build_html</code></li>
   </ol>
+
+  <h3>7.3 Adicionar uma nova constante de domínio</h3>
+  <ol>
+    <li>Pura data (dict, list, set): <strong>adicionar em <code>risk_config.py</code></strong> no grupo apropriado</li>
+    <li>Valor computado em runtime: adicionar em <code>risk_runtime.py</code></li>
+    <li>String grande (JS, SQL, CSS): adicionar em <code>html_assets.py</code></li>
+    <li><strong>Nunca</strong> adicionar em <code>generate_risk_report.py</code> — a menos que seja exclusivo do orquestrador</li>
+  </ol>
+
+  <h3>7.4 Extrair módulo novo (refactor)</h3>
+  <p>Ver skill <code>safe-refactor</code> (<code>~/.claude/skills/safe-refactor/</code>). Framework em fases com validação AST + functional diff — é o padrão usado na refatoração L1+L2+3 da Fase 4.</p>
 </section>
 
 <footer>
-  Risk Monitor — documentação gerada 2026-04-19 · Dúvidas: dfainber@gmail.com · Fonte de verdade: <code>CLAUDE.md</code>
+  Risk Monitor — documentação gerada 2026-04-19, atualizada 2026-04-23 (arquitetura modular pós-refactor Fase 3) · Dúvidas: dfainber@gmail.com · Fonte de verdade: <code>CLAUDE.md</code>
 </footer>
 
 </main>

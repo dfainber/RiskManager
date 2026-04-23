@@ -77,7 +77,19 @@
       "Bash(git checkout *)",
       "Read(//c/Windows/Temp/**)",
       "Bash(python smoke_test.py 2026-04-22 --save-snapshot)",
-      "Bash(python smoke_test.py 2026-04-20 --save-snapshot)"
+      "Bash(python smoke_test.py 2026-04-20 --save-snapshot)",
+      "Bash(python smoke_test.py --save-snapshot)",
+      "Bash(awk '/^def make_sparkline/,/^# ── Carry formula/' git show HEAD:generate_risk_report.py)",
+      "Bash(awk '/^def range_bar_svg/,/^# ── Stop monitor bar/' git show HEAD:generate_risk_report.py)",
+      "Bash(awk '/^def stop_bar_svg/,/^# ── MACRO Exposure/' git show HEAD:generate_risk_report.py)",
+      "Bash(awk '/^def range_line_svg/,/^def compute_distribution_stats/' git show HEAD:generate_risk_report.py)",
+      "Bash(awk '/^def _evo_spark_svg/,/^def _evo_pct_color/' cat /tmp/fn_old_1.py /tmp/fn_old_2.py /tmp/fn_old_3.py /tmp/fn_old_4.py /tmp/fn_old_5.py)",
+      "Bash(python smoke_test.py --no-snapshot)",
+      "Bash(python _3d_migrate.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('data_fetch.py', encoding='utf-8'\\).read\\(\\)\\); print\\('data_fetch.py parses OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('generate_risk_report.py', encoding='utf-8'\\).read\\(\\)\\); print\\('generate_risk_report.py parses OK'\\)\")",
+      "Bash(python _3e_migrate.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('metrics.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('generate_risk_report.py', encoding='utf-8'\\).read\\(\\)\\); print\\('both parse'\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

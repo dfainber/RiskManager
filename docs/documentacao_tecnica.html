@@ -155,6 +155,7 @@
   <h2>Índice</h2>
   <ol>
     <li><a href="#contexto">Contexto e objetivo</a></li>
+    <li><a href="#arquitetura">Arquitetura modular</a></li>
     <li><a href="#fontes">Fontes de dados (GLPG-DB01)</a></li>
     <li><a href="#shell">Shell HTML: navegação, tabs, modal</a></li>
     <li><a href="#risk-monitor">Report · Risk Monitor (VaR/Stress)</a></li>
@@ -187,9 +188,99 @@
   </p>
 </section>
 
-<!-- 2. DATA SOURCES -->
+<!-- 2. ARCHITECTURE -->
+<section id="arquitetura">
+  <h2>2. Arquitetura modular</h2>
+  <p class="lede">
+    O kit é 12 módulos Python especializados. Refactorado em 2026-04-22/23
+    (Fase 3) a partir de um monolito de 13k linhas. O orquestrador hoje
+    registra deps, dispara os fetches em paralelo e concatena os HTML
+    fragments produzidos pelos renderers — tudo o mais foi extraído.
+  </p>
+
+  <h3>Grafo de dependências</h3>
+  <p>Bottom-up: runtime state na base, orquestrador no topo. Nenhum módulo importa do orquestrador.</p>
+<pre>                    risk_runtime.py   <span class="com"># DATA_STR, OUT_DIR — leaf module</span>
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+       risk_config  html_assets  svg_renderers
+              │          │          │
+              └─────┬────┘          │
+                    ▼               │
+               db_helpers           │
+                    │               │
+                    ▼               │
+              data_fetch.py ────────┤
+                    │               │
+                    ▼               ▼
+              metrics.py ──► pa_renderers ──► evo_renderers
+                    │               │               │
+                    └──────┬────────┴───────┬───────┘
+                           ▼                ▼
+                    expo_renderers   fund_renderers
+                           │                │
+                           └────────┬───────┘
+                                    ▼
+                        generate_risk_report.py
+                          (build_html + main)</pre>
+
+  <h3>Responsabilidade por módulo</h3>
+  <table>
+    <thead><tr><th>Módulo</th><th>Linhas</th><th>Papel</th></tr></thead>
+    <tbody>
+      <tr><td><code>risk_runtime.py</code></td><td>40</td><td>Valores computados de CLI args (<code>DATA_STR</code>, <code>DATA</code>, <code>DATE_1Y</code>, <code>OUT_DIR</code>) + <code>fmt_br_num</code>. Leaf — todos importam daqui</td></tr>
+      <tr><td><code>risk_config.py</code></td><td>391</td><td>Pure data: mandatos (<code>FUNDS</code>, <code>RAW_FUNDS</code>, <code>IDKA_FUNDS</code>), thresholds, dicts de domínio (<code>_RF_*</code>, <code>_PM_LIVRO</code>, <code>_EVO_*</code>, <code>_QUANT_*</code>, <code>_PA_ORDER_*</code>, <code>_FUND_DESK_FOR_EXPO</code>)</td></tr>
+      <tr><td><code>html_assets.py</code></td><td>110</td><td>Blob inline <code>UEXPO_JS</code> (sort+toggle da tabela de exposure)</td></tr>
+      <tr><td><code>svg_renderers.py</code></td><td>256</td><td><code>make_sparkline</code> (matplotlib PNG), <code>range_bar_svg</code>, <code>stop_bar_svg</code>, <code>range_line_svg</code>, <code>evo_spark_svg</code></td></tr>
+      <tr><td><code>db_helpers.py</code></td><td>96</td><td>Utils compartilhados: <code>_parse_rf</code>, <code>_parse_pm</code>, <code>_prev_bday</code>, <code>_NAV_CACHE</code>, <code>fetch_all_latest_navs</code>, <code>_latest_nav</code></td></tr>
+      <tr><td><code>data_fetch.py</code></td><td>1602</td><td>36 <code>fetch_*</code> públicos + 8 helpers privados. Toda a camada de SQL, zero HTML</td></tr>
+      <tr><td><code>metrics.py</code></td><td>363</td><td>6 <code>compute_*</code>: PM HS VaR, Frontier BVaR, IDKA BVaR, vol regime, distribution stats, PA outliers</td></tr>
+      <tr><td><code>pa_renderers.py</code></td><td>499</td><td>12 helpers de Performance Attribution — tree builder, lazy-render JSON, bench decomposition, section assembler</td></tr>
+      <tr><td><code>evo_renderers.py</code></td><td>654</td><td>8 helpers das 4 camadas do EVOLUTION diversification + matriz direcional + alerta C4</td></tr>
+      <tr><td><code>expo_renderers.py</code></td><td>2424</td><td>9 builders de exposure: MACRO, QUANT, EVOLUTION, IDKA, ALBATROZ, FRONTIER + RF exposure map. <code>_build_expo_unified_table</code> é o core</td></tr>
+      <tr><td><code>fund_renderers.py</code></td><td>2726</td><td>18 itens: stop monitor, Budget vs VaR, single-names, vol regime, distribution, Frontier LO, data quality, briefings, stop-history cluster (<code>carry_step</code> + overrides)</td></tr>
+      <tr><td><code>generate_risk_report.py</code></td><td>4359</td><td>Orquestrador: imports + <code>build_html</code> (section assembly) + <code>main</code> (fetch paralelo com <code>ThreadPoolExecutor(12)</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="box info">
+    <div class="box-head">Regras de import (top-down proibido)</div>
+    <ul>
+      <li><strong>Runtime state</strong> (<code>risk_runtime</code>) fica na base — quebra ciclos quando outros módulos importam <code>DATA_STR</code> como default arg</li>
+      <li><strong>Pure data</strong> (<code>risk_config</code>) não depende de ninguém — seguro pra importar de qualquer lugar</li>
+      <li><strong>Renderers importam de cima pra baixo</strong> — <code>fund_renderers</code> pode usar <code>svg_renderers</code>, mas não o contrário</li>
+      <li><strong>Nenhum módulo importa do orquestrador</strong> — <code>generate_risk_report.py</code> é folha de saída, isola composição</li>
+    </ul>
+  </div>
+
+  <h3>Flow de execução</h3>
+  <ol>
+    <li><code>main()</code> em <code>generate_risk_report.py</code>: recebe <code>DATA_STR</code> via CLI, computa em <code>risk_runtime.py</code></li>
+    <li>Pré-warmup: <code>fetch_all_latest_navs()</code> popula <code>_NAV_CACHE</code> em bulk (economiza ~500-800ms)</li>
+    <li><code>ThreadPoolExecutor(12)</code> dispara 30+ <code>fetch_*</code> em paralelo (fetches em ~3.3s, total ~5.6s)</li>
+    <li>Futures resolvem com fallback D-1 se dado do dia não existir</li>
+    <li>Cálculos: <code>compute_*</code> de <code>metrics.py</code> processam os dataframes</li>
+    <li><code>build_html()</code> monta cada card via <code>*_renderers</code> → concatena em <code>&lt;section-wrap&gt;</code></li>
+    <li>Escreve HTML em <code>data/morning-calls/YYYY-MM-DD_risk_monitor.html</code></li>
+  </ol>
+
+  <h3>Validação após mudanças</h3>
+  <p>
+    Refactors subsequentes seguem a skill <code>safe-refactor</code>
+    (<code>~/.claude/skills/safe-refactor/</code>), que inclui:
+  </p>
+  <ul>
+    <li><code>smoke_test.py</code> com numeric snapshot check (3580 valores pra baseline)</li>
+    <li>AST-level diff via <code>ast.unparse()</code> — prova zero semantic drift byte-a-byte</li>
+    <li>HTML back-to-back: regen com código antigo vs novo em <code>&lt;2min</code> pra isolar refactor vs DB drift</li>
+    <li>Convenção documentada: tabelas PA/NAV/CDI da GLPG-DB01 re-escrevem continuamente; ~30-60 valores mudam a cada 5-10 min mesmo em datas passadas</li>
+  </ul>
+</section>
+
+<!-- 3. DATA SOURCES -->
 <section id="fontes">
-  <h2>2. Fontes de dados (GLPG-DB01)</h2>
+  <h2>3. Fontes de dados (GLPG-DB01)</h2>
   <table>
     <thead><tr><th>Tabela</th><th>Uso</th><th>Colunas-chave</th></tr></thead>
     <tbody>
@@ -214,7 +305,7 @@
 
 <!-- 3. SHELL -->
 <section id="shell">
-  <h2>3. Shell HTML: navegação, tabs, modal</h2>
+  <h2>4. Shell HTML: navegação, tabs, modal</h2>
 
   <h3>Modelo mental de navegação</h3>
   <p>A UI tem 2 eixos: <b>fundos</b> × <b>reports</b>. Cada seção é uma tupla
@@ -237,7 +328,7 @@
 
 <!-- 4. RISK MONITOR -->
 <section id="risk-monitor">
-  <h2>4. Report · Risk Monitor (VaR/Stress)</h2>
+  <h2>5. Report · Risk Monitor (VaR/Stress)</h2>
   <p><span class="tag macro">MACRO</span><span class="tag quant">QUANT</span><span class="tag evo">EVOLUTION</span></p>
 
   <p>Para cada fundo, duas métricas: VaR 95% 1 dia e Stress (cenário "Quant e Macro V").</p>
@@ -279,7 +370,7 @@
 
 <!-- 5. STOP MONITOR -->
 <section id="stop-monitor">
-  <h2>5. Report · Stop Monitor (Risk Budget por PM)</h2>
+  <h2>6. Report · Stop Monitor (Risk Budget por PM)</h2>
   <p><span class="tag macro">MACRO</span></p>
   <p>Orçamento de perda mensal por gestor: CI (Comitê), LF (Luiz Felipe),
   JD (Joca Dib), RJ (Rodrigo Jafet).</p>
@@ -334,7 +425,7 @@
 
 <!-- 6. EXPOSURE -->
 <section id="exposure">
-  <h2>6. Report · Exposição MACRO</h2>
+  <h2>7. Report · Exposição MACRO</h2>
   <p><span class="tag macro">MACRO</span></p>
   <p>Decomposição hierárquica: fator de risco (RF) → produto; com toggle para
   visão POSIÇÕES (por RF) vs PM VaR (por gestor).</p>
@@ -392,7 +483,7 @@
 
 <!-- 7. SINGLE-NAME -->
 <section id="single-name">
-  <h2>7. Report · Single-Name (QUANT, decomposição WIN)</h2>
+  <h2>8. Report · Single-Name (QUANT, decomposição WIN)</h2>
   <p><span class="tag quant">QUANT</span></p>
   <p>Objetivo: mostrar exposição L/S <b>por nome</b>, decompondo o future WIN
   (Ibov) nos seus constituintes.</p>
@@ -454,7 +545,7 @@
 
 <!-- 8. DIST 252d -->
 <section id="dist252">
-  <h2>8. Report · Distribuição 252d (Backward / Forward)</h2>
+  <h2>9. Report · Distribuição 252d (Backward / Forward)</h2>
   <p><span class="tag macro">MACRO</span><span class="tag evo">EVOLUTION</span></p>
 
   <p>Usa a tabela pré-computada <code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code>.
@@ -506,7 +597,7 @@
 
 <!-- 9. UNIVERSAIS -->
 <section id="universais">
-  <h2>9. Regras universais · Sort + CSV</h2>
+  <h2>10. Regras universais · Sort + CSV</h2>
 
   <h3>Sort automático em qualquer <code>&lt;th&gt;</code></h3>
   <p>Função <code>attachUniversalSort()</code> roda em <code>DOMContentLoaded</code>,
@@ -536,7 +627,7 @@
 
 <!-- 10. CALIBRACOES -->
 <section id="calibracoes">
-  <h2>10. Calibrações & armadilhas documentadas</h2>
+  <h2>11. Calibrações & armadilhas documentadas</h2>
 
   <h3>Stress · gap vs Asset_RiscoMercado</h3>
   <table>
@@ -571,7 +662,7 @@
 
 <!-- 11. ROADMAP -->
 <section id="roadmap">
-  <h2>11. Roadmap / pendências</h2>
+  <h2>12. Roadmap / pendências</h2>
 
   <h3>Fase 4 — em andamento</h3>
   <ul>

@@ -18,7 +18,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoDir   = Split-Path -Parent $ScriptDir
 $Python    = "C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe"
 $Script    = Join-Path $RepoDir "generate_risk_report.py"
-$MailTo    = "dfainber@gmail.com"
+$MailTo    = "diego.fainberg@galapagoscapital.com; fabio.guarda@galapagoscapital.com; luiz.laudari@galapagoscapital.com; rodrigo.jafet@galapagoscapital.com; jorge.dib@galapagoscapital.com; rodrigo.fonseca@galapagoscapital.com; pedro.alexandre@galapagoscapital.com; pedro.borges@galapagoscapital.com; luca.esposito@galapagoscapital.com; thiago.veiga@galapagoscapital.com"
 
 # Data-alvo: ultimo dia util
 $d = (Get-Date).AddDays(-1)
