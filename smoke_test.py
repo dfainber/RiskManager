@@ -1,20 +1,35 @@
 """
 smoke_test.py — regression guard for the Risk Monitor report generator.
 
-Run:    python smoke_test.py 2026-04-22
+Usage:
+  python smoke_test.py                             # defaults to 2 business days ago
+  python smoke_test.py 2026-04-20                  # run checks (+ snapshot diff if snapshot exists)
+  python smoke_test.py 2026-04-20 --save-snapshot  # save numeric snapshot to data/.smoke_snapshots/
+  python smoke_test.py 2026-04-20 --no-snapshot    # skip snapshot check even if one exists
+
 Exit:   0 = all checks passed
         1 = one or more checks failed (details printed to stderr)
 
 Typical runtime: ~35 seconds (runs both generators then checks outputs).
+
+Snapshot mode:
+  The snapshot is a sorted multiset of every numeric value visible in the
+  generated HTML — percentages and bps — with PNG base64 and inline scripts
+  stripped out. Two runs with the same code and the same DB state produce
+  identical snapshots. Used to validate refactors: save snapshot before
+  change, diff after change, fail if numeric content diverged.
 """
+import json
 import re
 import sys
 import subprocess
 from pathlib import Path
+from datetime import date, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
 REPO   = Path(__file__).parent
 PYTHON = Path(r"C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe")
+SNAP_DIR = REPO / "data" / ".smoke_snapshots"
 
 # Absolute lower bounds — if either file shrinks past these something big broke.
 MIN_RISK_REPORT_BYTES = 800_000   # normally ~1.7 MB
@@ -132,6 +147,74 @@ def check_vol_card(path: Path) -> None:
         _ok(f"{len(reasonable)} numeric values in plausible vol range")
 
 
+# ── Numeric snapshot ──────────────────────────────────────────────────────────
+def extract_numeric_content(path: Path) -> list[str]:
+    """
+    Extract every numeric value visible in the HTML as a sorted list of strings.
+
+    Strips:
+      - <script>...</script>  (JS array ordering is non-deterministic)
+      - data:image/...;base64,...  (matplotlib PNGs embed a timestamp)
+
+    Captures:
+      - percentages        e.g.  +1.23%, -0.45%, 12.34%
+      - bps values         e.g.  +7 bps, -123 bps, 4.5 bps
+      - bare decimals      e.g.  1.234, -0.56  (for NAV, ratios, etc.)
+    """
+    if not path.exists():
+        return []
+    html = path.read_text(encoding="utf-8", errors="replace")
+    html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    html = re.sub(r"data:image[^\"']+", "", html)
+
+    pcts = re.findall(r"[-+]?\d+\.\d+%", html)
+    bps  = re.findall(r"[-+]?\d+\.?\d*\s*bps", html)
+    return sorted(pcts + bps)
+
+
+def snapshot_path(date_str: str, kind: str) -> Path:
+    """Path for a numeric snapshot. kind is 'risk_report' or 'vol_card'."""
+    return SNAP_DIR / f"{date_str}_{kind}.json"
+
+
+def save_snapshot(path: Path, nums: list[str]) -> None:
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"count": len(nums), "values": nums}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_snapshot(path: Path) -> list[str] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))["values"]
+
+
+def check_snapshot(report_path: Path, date_str: str, kind: str, save: bool) -> None:
+    """Compare current numeric content vs saved snapshot. Fail on any divergence."""
+    snap = snapshot_path(date_str, kind)
+    now  = extract_numeric_content(report_path)
+    if save:
+        save_snapshot(snap, now)
+        _ok(f"snapshot saved ({len(now)} values) -> {snap.relative_to(REPO)}")
+        return
+
+    prev = load_snapshot(snap)
+    if prev is None:
+        print(f"  skip  no snapshot at {snap.relative_to(REPO)} (run with --save-snapshot)")
+        return
+
+    a, b = set(prev), set(now)
+    if prev == now:
+        _ok(f"numeric snapshot matches ({len(now)} values)")
+        return
+    only_prev = sorted(a - b)[:5]
+    only_now  = sorted(b - a)[:5]
+    _fail(
+        f"numeric snapshot diverged: {len(a ^ b)} values differ "
+        f"(sample prev-only={only_prev}, now-only={only_now})"
+    )
+
+
 # ── Generator runner ──────────────────────────────────────────────────────────
 def run(script: str, date_str: str) -> bool:
     print(f"\nRunning {script} {date_str} ...")
@@ -150,19 +233,45 @@ def run(script: str, date_str: str) -> bool:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def main() -> None:
-    date_str = sys.argv[1] if len(sys.argv) > 1 else "2026-04-22"
-    mc_dir   = REPO / "data" / "morning-calls"
+def _default_test_date() -> str:
+    """
+    Default smoke-test date: 2 business days before today (roll back from
+    weekends). Picked so the report uses data that's already settled in the
+    DB, avoiding the intraday churn that makes 'today' flaky as a baseline.
+    """
+    d = date.today() - timedelta(days=2)
+    # If we landed on Saturday, go to Friday; Sunday → Thursday.
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
+
+def main() -> None:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    date_str = args[0] if args else _default_test_date()
+    save_snapshot_mode = "--save-snapshot" in flags
+    no_snapshot_mode   = "--no-snapshot"   in flags
+    mc_dir = REPO / "data" / "morning-calls"
+
+    mode = "save-snapshot" if save_snapshot_mode else ("no-snapshot" if no_snapshot_mode else "check")
     print(f"\n{'='*50}")
-    print(f"  Smoke test — {date_str}")
+    print(f"  Smoke test — {date_str}  [mode: {mode}]")
     print(f"{'='*50}")
 
     run("generate_risk_report.py", date_str)
     run("pm_vol_card.py",          date_str)
 
-    check_risk_report(mc_dir / f"{date_str}_risk_monitor.html")
-    check_vol_card(mc_dir    / f"pm_vol_card_{date_str}.html")
+    risk_path = mc_dir / f"{date_str}_risk_monitor.html"
+    vol_path  = mc_dir / f"pm_vol_card_{date_str}.html"
+
+    check_risk_report(risk_path)
+    check_vol_card(vol_path)
+
+    if not no_snapshot_mode:
+        print(f"\n-- numeric snapshot check")
+        check_snapshot(risk_path, date_str, "risk_report", save=save_snapshot_mode)
+        check_snapshot(vol_path,  date_str, "vol_card",    save=save_snapshot_mode)
 
     print(f"\n{'='*50}")
     if _failures:
@@ -171,8 +280,7 @@ def main() -> None:
             print(f"    x {f}")
         sys.exit(1)
     else:
-        checks_run = 5 * 2   # ~5 checks per report × 2 reports
-        print(f"  ALL CHECKS PASSED  ({checks_run} assertions, {date_str})")
+        print(f"  ALL CHECKS PASSED ({date_str})")
         sys.exit(0)
 
 

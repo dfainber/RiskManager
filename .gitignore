@@ -6,4 +6,5 @@ __pycache__/
 *.pyo
 data/morning-calls/
 data/macro-stops/snapshots/
+data/.smoke_snapshots/
 tmp_*.py

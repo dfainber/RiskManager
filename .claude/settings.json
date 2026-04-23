@@ -75,7 +75,9 @@
       "Bash(sed -n '55,75p')",
       "Bash(sed -n '12,37p' risk_config.py)",
       "Bash(git checkout *)",
-      "Read(//c/Windows/Temp/**)"
+      "Read(//c/Windows/Temp/**)",
+      "Bash(python smoke_test.py 2026-04-22 --save-snapshot)",
+      "Bash(python smoke_test.py 2026-04-20 --save-snapshot)"
     ],
     "additionalDirectories": [
       "\\tmp"
