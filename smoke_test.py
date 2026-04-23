@@ -79,8 +79,9 @@ def check_risk_report(path: Path) -> None:
         _ok(f"all {len(REQUIRED_SECTIONS)} sections present")
 
     # VaR values in plausible range (exclude 99.0 Frontier sentinels)
+    # Negative lookbehind (?<![+\-]) excludes signed %s — those are exposure deltas, not VaR readings.
     blocks = re.findall(r"VaR.{0,300}", clean)
-    pcts   = [float(m) for b in blocks for m in re.findall(r"\b(\d{1,2}\.\d{1,2})%", b)]
+    pcts   = [float(m) for b in blocks for m in re.findall(r"(?<![+\-])\b(\d{1,2}\.\d{1,2})%", b)]
     pcts   = [p for p in pcts if p > 0 and p < 90]   # 99.0 sentinel excluded by < 90
     if not pcts:
         _fail("no VaR % values found in HTML")

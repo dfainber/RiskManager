@@ -81,6 +81,12 @@ ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
 OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _fmt_br_num(s: str) -> str:
+    """Convert en-US number separators to pt-BR (e.g. '1,234.5' → '1.234,5')."""
+    return s.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
 # ── Fetch data ───────────────────────────────────────────────────────────────
 def fetch_pm_pnl_history():
     q = f"""
@@ -1938,12 +1944,12 @@ def _build_expo_unified_table(
     def _money(v_brl):
         if v_brl is None or (isinstance(v_brl, float) and pd.isna(v_brl)):
             return "—"
-        return f'{v_brl/1e6:+,.1f}M'.replace(",", "_").replace(".", ",").replace("_", ".")
+        return _fmt_br_num(f'{v_brl/1e6:+,.1f}M')
 
     def _money_abs(v_brl):
         if v_brl is None or (isinstance(v_brl, float) and pd.isna(v_brl)):
             return "—"
-        return f'{v_brl/1e6:,.1f}M'.replace(",", "_").replace(".", ",").replace("_", ".")
+        return _fmt_br_num(f'{v_brl/1e6:,.1f}M')
 
     def _dv(v):
         return "" if (v is None or (isinstance(v, float) and pd.isna(v))) else f'{v:.6f}'
@@ -2192,7 +2198,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
         + totals_cells + "</tr>"
     )
 
-    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
 
     return f"""
     {_UEXPO_JS}
@@ -2561,7 +2567,7 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         f'</table>'
     )
 
-    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
 
     view_toggle_js = r"""<script>
 if (!window.__evoExpoJSLoaded) {
@@ -3264,7 +3270,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         _liq_row("liq-replication", "TOTAL LÍQUIDO vs Replication", liq_vs_repl_yrs)
     )
 
-    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
     short_label = "IDKA 3Y" if short == "IDKA_3Y" else ("IDKA 10Y" if short == "IDKA_10Y" else short)
     return f"""
     <section class="card">
@@ -3524,7 +3530,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
 
     bench_note = (f"benchmark {bench_label} · constant-maturity {bench_total:.1f}yr, 100% NAV"
                   if not cdi_bench else f"benchmark {bench_label} · duração zero")
-    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
     via_chip = (f'<span class="sn-stat"><span class="sn-lbl">via Albatroz</span>'
                 f'<span class="sn-val mono">{via_alb_total:+.2f}yr</span></span>'
                 if abs(via_alb_total) > 0.005 and short.startswith("IDKA") else "")
@@ -3670,7 +3676,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         return f'<td class="t-num mono" style="color:{color}">{pct:+.2f}%</td>'
 
     def mm(v):
-        return f"{v/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+        return _fmt_br_num(f"{v/1e6:,.1f}")
 
     def mm_cell(v):
         return f'<td class="t-num mono" style="color:var(--muted)">{mm(v)}</td>'
@@ -3748,7 +3754,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         for r in top.itertuples(index=False)
     )
 
-    nav_fmt = f"{nav/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
     return f"""
     <section class="card">
       <div class="card-head">
@@ -4414,7 +4420,7 @@ function toggleDrillPM(id) {
 }
 </script>"""
 
-    nav_fmt = f"{aum/1e6:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    nav_fmt = _fmt_br_num(f"{aum/1e6:,.1f}")
 
     return f"""
     {_UEXPO_JS}
@@ -8262,7 +8268,7 @@ def _build_fund_mini_briefing(
         return ""
 
     def _mm(v):
-        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        try: return _fmt_br_num(f"{v/1e6:,.1f}M")
         except Exception: return "—"
 
     td = td_by_short.get(short)
@@ -8661,7 +8667,7 @@ def _build_executive_briefing(
        that have nothing material to report.
     """
     def _mm(v):
-        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        try: return _fmt_br_num(f"{v/1e6:,.1f}M")
         except Exception: return "—"
     def _pct(v, sign=True):
         try:
@@ -9910,7 +9916,7 @@ def build_html(series_map: dict, stop_hist: dict = None, df_today=None,
     _house_by_short = {r["short"]: r for r in house_rows}
 
     def _mm(v):
-        try: return f"{v/1e6:,.1f}M".replace(",", "_").replace(".", ",").replace("_", ".")
+        try: return _fmt_br_num(f"{v/1e6:,.1f}M")
         except Exception: return "—"
 
     house_rows_html = ""
