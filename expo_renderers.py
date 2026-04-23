@@ -178,8 +178,6 @@ def _build_expo_unified_table(
         tot_gross     += g["gross_pct"]
         tot_net_brl   += g["net_brl"]
         tot_gross_brl += g["gross_brl"]
-        if g["var_pct"] is not None:
-            tot_var += g["var_pct"]; any_var = True
         path = f'{fund_key}-' + f.replace(' ', '_').replace('(', '').replace(')', '')
 
         net_s, net_c = _num(g["net_pct"], 2)
@@ -190,8 +188,11 @@ def _build_expo_unified_table(
         if var_raw is None:
             var_s, var_c = "—", "var(--muted)"
         else:
-            var_s = f'{var_raw:.1f}'
-            var_c = "var(--down)" if var_raw > 0 else "var(--muted)"
+            # Sign: dado (long, net≥0) → negative/green; tomado (short, net<0) → positive/red
+            var_signed = var_raw * (-1 if g["net_pct"] >= 0 else 1)
+            var_s = f'{var_signed:+.1f}'
+            var_c = "var(--up)" if var_signed < 0 else "var(--down)"
+            tot_var += var_signed; any_var = True
         dvar_s, dvar_c = _num(g["d_var"], 1)
 
         body += (
@@ -203,7 +204,7 @@ def _build_expo_unified_table(
             f'data-sort-dexp="{_dv(g["d_expo"])}" '
             f'data-sort-gross="{-g["gross_pct"]:.6f}" '
             f'data-sort-sigma="{_dv(g["sigma"])}" '
-            f'data-sort-var="{_dv(var_raw)}" '
+            f'data-sort-var="{_dv(var_signed if var_raw is not None else None)}" '
             f'data-sort-dvar="{_dv(g["d_var"])}">'
             f'<td class="sum-fund" style="font-weight:700"><span class="uexpo-caret">▶</span> {f} '
             f'<span style="color:var(--muted);font-size:10px;font-weight:400">· {g["n_prods"]}</span></td>'
@@ -246,8 +247,9 @@ def _build_expo_unified_table(
             if p_var is None:
                 pvar_s, pvar_c = "—", "var(--muted)"
             else:
-                pvar_s = f'{p_var:.1f}'
-                pvar_c = "var(--down)" if p_var > 0 else "var(--muted)"
+                p_var_signed = p_var * (-1 if p_net >= 0 else 1)
+                pvar_s = f'{p_var_signed:+.1f}'
+                pvar_c = "var(--up)" if p_var_signed < 0 else "var(--down)"
             pdexp_s, pdexp_c = _num(p_dexp, 2)
             pdvar_s, pdvar_c = _num(p_dvar, 1)
             p_sig_s = _abs_num(p_sig, 1, unit="")
@@ -278,8 +280,8 @@ def _build_expo_unified_table(
         + '<td></td>'
         + _cell(f'{tot_gross:.1f}%', "var(--text)", "font-weight:700")
         + '<td></td>'
-        + _cell(f'{tot_var:.1f}' if any_var else '—',
-                "var(--down)" if (any_var and tot_var > 0) else "var(--muted)",
+        + _cell(f'{tot_var:+.1f}' if any_var else '—',
+                ("var(--up)" if tot_var < 0 else "var(--down)") if any_var else "var(--muted)",
                 "font-weight:700")
         + '<td></td>'
         + '</tr>'
