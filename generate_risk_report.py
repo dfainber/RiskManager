@@ -1167,7 +1167,29 @@ def build_html(d: ReportData) -> str:
 
     changes_html = build_changes_card(df_expo, df_expo_d1, position_changes)
 
-    comments_html = build_comments_card(df_pa_daily)
+    # Δ VaR commentary: flag fund-level changes ≥ 5 bps, show top-1 driver
+    def _top1_var_delta(df_today, df_d1, key_col):
+        if df_today is None or df_today.empty or df_d1 is None or df_d1.empty:
+            return None
+        tot = float(df_today["var_pct"].sum()) - float(df_d1["var_pct"].sum())
+        if abs(tot) < 5.0:
+            return None
+        t = df_today.groupby(key_col)["var_pct"].sum()
+        d = df_d1.groupby(key_col)["var_pct"].sum()
+        all_keys = set(t.index) | set(d.index)
+        deltas = {k: float(t.get(k, 0.0)) - float(d.get(k, 0.0)) for k in all_keys}
+        top1 = max(deltas, key=lambda k: abs(deltas[k]))
+        return {"delta": tot, "driver": top1, "driver_delta": deltas[top1]}
+
+    _var_commentary: dict = {}
+    _r = _top1_var_delta(df_var,       df_var_d1,       "rf")
+    if _r: _var_commentary["MACRO"] = _r
+    _r = _top1_var_delta(df_quant_var, df_quant_var_d1, "BOOK")
+    if _r: _var_commentary["QUANT"] = _r
+    _r = _top1_var_delta(df_evo_var,   df_evo_var_d1,   "BOOK")
+    if _r: _var_commentary["EVOLUTION"] = _r
+
+    comments_html = build_comments_card(df_pa_daily, _var_commentary or None)
 
     # Data Quality section
     dq_full_html, dq_compact_html = build_data_quality_section(

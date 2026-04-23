@@ -296,7 +296,14 @@ def build_changes_card(df_expo, df_expo_d1, position_changes) -> str:
 
 # ── PA Outlier Comments ──────────────────────────────────────────────────────
 
-def build_comments_card(df_pa_daily: pd.DataFrame) -> str:
+_VAR_DELTA_MIN_BPS = 5.0  # minimum fund-level |Δ VaR| to emit a VaR bullet
+
+
+def build_comments_card(
+    df_pa_daily: pd.DataFrame,
+    var_commentary: dict | None = None,
+) -> str:
+    """var_commentary: {short → {"delta": float, "driver": str, "driver_delta": float}}"""
     if df_pa_daily is None or df_pa_daily.empty:
         return ""
     try:
@@ -308,15 +315,26 @@ def build_comments_card(df_pa_daily: pd.DataFrame) -> str:
                 continue
             sub = outliers[outliers["FUNDO"] == pa_key] if not outliers.empty else outliers
             label = FUND_LABELS.get(short, short)
-            if sub is None or sub.empty:
-                body_chunks.append(
-                    f'<div class="comment-fund">'
-                    f'<div class="comment-title">{label}</div>'
-                    f'<div class="comment-empty">— sem eventos significativos</div>'
-                    f'</div>'
+
+            items = ""
+            # ── VaR delta bullet (top-1 driver) ──────────────────────────────
+            vc = (var_commentary or {}).get(short)
+            if vc:
+                delta    = vc["delta"]
+                dd       = vc["driver_delta"]
+                delta_c  = "var(--up)" if delta < 0 else "var(--down)"
+                dd_c     = "var(--up)" if dd < 0 else "var(--down)"
+                items += (
+                    f'<li style="border-left:2px solid var(--border);padding-left:6px">'
+                    f'<span style="color:var(--muted)">VaR </span>'
+                    f'<span class="mono" style="color:{delta_c};font-weight:700">{delta:+.1f} bps</span>'
+                    f'<span style="color:var(--muted)"> vs D-1 · driver: </span>'
+                    f'<span class="mono">{vc["driver"]}</span>'
+                    f' <span class="mono" style="color:{dd_c}">({dd:+.1f} bps)</span>'
+                    f'</li>'
                 )
-            else:
-                items = ""
+            # ── PA outlier bullets ────────────────────────────────────────────
+            if sub is not None and not sub.empty:
                 for r in sub.itertuples(index=False):
                     color = "var(--up)" if r.today_bps > 0 else "var(--down)"
                     livro_disp = _pa_render_name(r.LIVRO)
@@ -328,6 +346,14 @@ def build_comments_card(df_pa_daily: pd.DataFrame) -> str:
                         f'&nbsp;·&nbsp; <span style="color:var(--muted)">{livro_disp}</span>'
                         f'</li>'
                     )
+            if not items:
+                body_chunks.append(
+                    f'<div class="comment-fund">'
+                    f'<div class="comment-title">{label}</div>'
+                    f'<div class="comment-empty">— sem eventos significativos</div>'
+                    f'</div>'
+                )
+            else:
                 body_chunks.append(
                     f'<div class="comment-fund">'
                     f'<div class="comment-title">{label}</div>'
@@ -338,7 +364,7 @@ def build_comments_card(df_pa_daily: pd.DataFrame) -> str:
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Comments — Outliers do dia</span>
-                <span class="card-sub">— produtos com |z| ≥ 2σ (vs. 90d) e |contrib| ≥ 3 bps · ignora Caixa/Custos</span>
+                <span class="card-sub">— produtos com |z| ≥ 2σ (vs. 90d) e |contrib| ≥ 3 bps · VaR Δ ≥ {_VAR_DELTA_MIN_BPS:.0f} bps vs D-1</span>
               </div>
               <div class="comments-grid">{''.join(body_chunks)}</div>
             </section>"""
