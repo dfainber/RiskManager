@@ -330,6 +330,15 @@ dashboards originais.
 - **smoke_test.py** — script de regressão novo (11 assertions, ~35s): verifica exit code, tamanho de arquivo, ausência de NaN/None em células, nomes de fundos, seções presentes, VaR em range plausível. **Capturou 2 regressões durante o sweep de iterrows.**
 - **iterrows sweep em generate_risk_report.py** — 29 conversões para `itertuples(index=False)`. 13 intencionalmente puladas com comentário inline explicando o motivo.
 
+**Fase 4 — entregues (sessão 2026-04-22 noite tardia: refactor L1+L2 parcial):**
+- **Nível 1 — quick wins** — helper `_fmt_br_num(s)` extraído para `risk_runtime.py`, substitui 12 cópias do padrão `.replace(",", "_").replace(".", ",").replace("_", ".")`. `tmp_carry2.py` órfão removido. Smoke test regex (`re.findall(r"VaR.{0,300}", ...)`) ajustado com negative lookbehind `(?<![+\-])` para ignorar `+X.Y% NAV` de exposições (flakiness quando briefing tinha commodity > 15%).
+- **Nível 2 — extração de módulos (parcial)** — 3 módulos novos, sem mudança de comportamento:
+  - `risk_runtime.py` (40 linhas) — `DATA_STR`, `DATA`, `DATE_1Y`, `DATE_60D`, `OUT_DIR`, `_parse_date_arg`, `fmt_br_num`. Fica abaixo de tudo para quebrar ciclos quando outros módulos importam `DATA_STR` como default arg.
+  - `risk_config.py` (108 linhas) — `FUNDS`, `RAW_FUNDS`, `IDKA_FUNDS`, `ALL_FUNDS`, thresholds (`ALERT_THRESHOLD`, `UTIL_WARN`, `UTIL_HARD`), stops (`STOP_BASE`, `STOP_SEM`, `STOP_ANO`, `ALBATROZ_STOP_BPS`), navegação (`REPORTS`, `FUND_ORDER`, `FUND_LABELS`), PA keys (`_FUND_PA_KEY`, `_PA_BENCH_LIVROS`).
+  - `html_assets.py` (110 linhas) — blob `UEXPO_JS` (~100 linhas de JS inline) usado pelas seções de exposure.
+- **Não extraído (deliberado):** `fetch_*` / `compute_*` / `build_*`. Motivo: acoplamento com helpers internos (`_latest_nav`, `_prev_bday`, `_parse_rf`, `_parse_pm`, `_NAV_CACHE`) e domain dicts (`_PM_LIVRO`, `_PA_*`, `_RF_*`, `_EVO_*`, `_QUANT_*`) que ainda estão inline em `generate_risk_report.py`. Mover sem moves-coordenados desses helpers criaria imports circulares ou ciclos de `from generate_risk_report import …`. Próxima etapa de refactor precisa primeiro decidir o mapa desses helpers (geral/SVG/PA) para ter módulo-destino certo.
+- `generate_risk_report.py`: 13071 → 12874 linhas (−197); 3 módulos novos com 258 linhas organizadas. Smoke test verde em todos os 4 commits (`049a888 → 5ceb018 → 0e43c1f → 139e263`).
+
 **Fase 4 — pendente (consolidado e priorizado):**
 - **Exposição MACRO ↔ QUANT — harmonização de layout** (user 2026-04-19, noite):
   - Unificar formatação visual: migrar MACRO do layout inline atual pra `.summary-table` (mesmo estilo do QUANT)
