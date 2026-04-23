@@ -27,6 +27,7 @@ from risk_config import (
     _RF_FACTOR_MAP, _RF_BUCKETS,
     _EVO_LIVRO_EXTRA_STRATEGY,
     _FUND_DESK_FOR_EXPO,
+    _PRODCLASS_TO_FACTOR,
 )
 from db_helpers import _parse_rf, _parse_pm, _prev_bday, _NAV_CACHE, _latest_nav
 
