@@ -136,17 +136,19 @@ def _evo_render_camada2(d: dict) -> str:
             f"<td class='mono' style='text-align:right'>{vstr}</td>"
             f"<td class='mono' style='text-align:right;color:var(--muted)'>{share}</td></tr>"
         )
+    _soma_raw_s  = _fmt_br_num(f"{d['var_soma_bps']:,.1f}")
     strat_rows_html += (
         "<tr style='border-top:1.5px solid var(--line-2);font-weight:600'>"
         f"<td>Σ VaR estratégias <span style='color:var(--muted);font-weight:400'>(raw)</span></td>"
-        f"<td class='mono' style='text-align:right'>{_fmt_br_num(f\"{d['var_soma_bps']:,.1f}\")}</td>"
+        f"<td class='mono' style='text-align:right'>{_soma_raw_s}</td>"
         f"<td class='mono' style='text-align:right;color:var(--muted)'>100%</td></tr>"
     )
     if abs(d['var_soma_bps'] - d['var_soma_wins_bps']) > 0.01:
+        _soma_wins_s = _fmt_br_num(f"{d['var_soma_wins_bps']:,.1f}")
         strat_rows_html += (
             "<tr style='font-weight:700'>"
             f"<td>Σ VaR estratégias <span style='color:var(--up);font-weight:400'>(winsorizado)</span></td>"
-            f"<td class='mono' style='text-align:right;color:var(--up)'>{_fmt_br_num(f\"{d['var_soma_wins_bps']:,.1f}\")}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--up)'>{_soma_wins_s}</td>"
             f"<td class='mono' style='text-align:right;color:var(--muted)'>—</td></tr>"
         )
 

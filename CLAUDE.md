@@ -129,6 +129,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 **Fixes entregues 2026-04-23:**
 - `_liquido_scale` corrigido: `abs(bench)/abs(total)` — IDKA agora mostra exposição ativa correta no toggle Líquido (commit `69bda13`)
 - BRL formatter aplicado em IDKA/ALBATROZ/Frontier; return type hints em 5 funções `data_fetch.py` (commit `c385c5d`)
+- BRL formatter concluído: `pa_renderers`, `evo_renderers` (7 sites), `evolution_diversification_card`, `fund_renderers` (commit `6994064`)
 - VaR commentary nos Comments confirmado implementado (commit `6f463bb`) — dispara quando |ΔVaR| ≥ 5 bps
 
 ---
