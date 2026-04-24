@@ -32,7 +32,7 @@ from risk_config import (
 from db_helpers import _parse_rf, _parse_pm, _prev_bday, _NAV_CACHE, _latest_nav
 
 
-def fetch_pm_pnl_history():
+def fetch_pm_pnl_history() -> pd.DataFrame:
     q = f"""
     SELECT DATE_TRUNC('month', "DATE") AS mes,
            "LIVRO",
@@ -78,7 +78,7 @@ def fetch_macro_pm_pnl_daily(date_str: str = DATA_STR) -> pd.DataFrame:
     return df
 
 
-def fetch_risk_history():
+def fetch_risk_history() -> pd.DataFrame:
     level_clause = " OR ".join([
         f"(\"TRADING_DESK\" = '{td}' AND \"LEVEL\" = {cfg['level']})"
         for td, cfg in FUNDS.items()
@@ -99,7 +99,7 @@ def fetch_risk_history():
     return df
 
 
-def fetch_risk_history_raw():
+def fetch_risk_history_raw() -> pd.DataFrame:
     """Fetch VaR/stress from LOTE_FUND_STRESS (product-level) for RAW_FUNDS, summed to fund level."""
     tds = ", ".join(f"'{td}'" for td in RAW_FUNDS)
     q = f"""
@@ -118,7 +118,7 @@ def fetch_risk_history_raw():
     return df
 
 
-def fetch_risk_history_idka():
+def fetch_risk_history_idka() -> pd.DataFrame:
     """BVaR (RELATIVE_VAR_PCT) + VaR (ABSOLUTE_VAR_PCT) history for IDKA funds.
        Source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE. Values are decimal fractions
        (0.029 = 2.9% of NAV). Positions summed to fund level.
@@ -201,7 +201,7 @@ def fetch_frontier_exposure_data() -> tuple:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 
-def fetch_aum_history():
+def fetch_aum_history() -> pd.DataFrame:
     tds = ", ".join(f"'{t}'" for t in ALL_FUNDS)
     q = f"""
     SELECT "TRADING_DESK", "VAL_DATE", "NAV"

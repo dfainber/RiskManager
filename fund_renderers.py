@@ -1105,12 +1105,12 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str,
 
     def fmt_brl(v):
         try:
-            return f"R$ {float(v)/1e6:.1f}M"
+            return f"R$ {_fmt_br_num(f'{float(v)/1e6:,.1f}')}M"
         except Exception:
             return "—"
 
     stale_badge = ' <span style="color:var(--warn);font-size:10px">D-1</span>' if stale else ""
-    nav_fmt = f"{nav_brl/1e6:.1f}M" if nav_brl else "—"
+    nav_fmt = (_fmt_br_num(f"{nav_brl/1e6:,.1f}") + "M") if nav_brl else "—"
     beta_fmt = f"{w_beta:.2f}" if w_beta is not None else "—"
 
     # ── Header metrics ─────────────────────────────────────────────────────────

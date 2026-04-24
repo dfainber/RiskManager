@@ -1028,7 +1028,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         if v_brl is None or pd.isna(v_brl) or abs(v_brl) < 10:
             return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
         col = "var(--up)" if v_brl >= 0 else "var(--down)"
-        return f'<td class="mono" style="text-align:right;color:{col}">{v_brl/1e3:+,.1f}k</td>'
+        return f'<td class="mono" style="text-align:right;color:{col}">{_fmt_br_num(f"{v_brl/1e3:+,.1f}")}k</td>'
 
     def _dur_cell(d, y):
         # If we have mod_dur use it; else show yrs_to_mat as proxy
@@ -1648,7 +1648,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         if abs(v) < 1:
             return '<td class="t-num mono" style="color:var(--muted)">—</td>'
         color = "var(--up)" if v >= 0 else "var(--down)"
-        return f'<td class="t-num mono" style="color:{color}">{v/1e3:+,.1f}</td>'
+        return f'<td class="t-num mono" style="color:{color}">{_fmt_br_num(f"{v/1e3:+,.1f}")}</td>'
 
     def dur_cell(v):
         if v is None or abs(v) < 0.01:
@@ -1696,7 +1696,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
         + f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{mm(abs_delta)}</td>'
         + (f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{dur_w:.2f}</td>'
            if dur_w else '<td class="t-num mono" style="color:var(--muted)">—</td>')
-        + (f'<td class="t-num mono" style="font-weight:700; color:{"var(--up)" if total_dv01>=0 else "var(--down)"}">{total_dv01/1e3:+,.1f}</td>'
+        + (f'<td class="t-num mono" style="font-weight:700; color:{"var(--up)" if total_dv01>=0 else "var(--down)"}">{_fmt_br_num(f"{total_dv01/1e3:+,.1f}")}</td>'
            if abs(total_dv01) >= 1 else '<td class="t-num mono" style="color:var(--muted)">—</td>')
         + "</tr>"
     )
@@ -1718,11 +1718,12 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
     )
 
     nav_fmt = _fmt_br_num(f"{nav/1e6:,.1f}")
+    dv01_fmt = _fmt_br_num(f"{total_dv01/1e3:+,.1f}")
     return f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Exposure RF</span>
-        <span class="card-sub">— ALBATROZ · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {total_dv01/1e3:+,.1f}k R$/bp</span>
+        <span class="card-sub">— ALBATROZ · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {dv01_fmt}k R$/bp</span>
       </div>
 
       <div class="sn-inline-stats mono" style="margin-bottom:8px; display:flex; align-items:center; gap:10px">
