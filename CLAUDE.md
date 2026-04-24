@@ -132,6 +132,9 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - BRL formatter concluído: `pa_renderers`, `evo_renderers` (7 sites), `evolution_diversification_card`, `fund_renderers` (commit `6994064`)
 - VaR commentary nos Comments confirmado implementado (commit `6f463bb`) — dispara quando |ΔVaR| ≥ 5 bps
 
+**Fixes entregues 2026-04-24:**
+- `_top1_var_delta` para EVOLUTION: key corrigida de `"BOOK"` → `"rf"` — `fetch_evolution_var` renomeia a coluna antes de retornar; crash só ocorria quando |ΔVaR EVOLUTION| ≥ 5 bps, por isso não foi capturado no sanity check do wrap-up anterior
+
 ---
 
 ## 8. Armadilhas conhecidas

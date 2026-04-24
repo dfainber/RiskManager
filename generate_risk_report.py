@@ -1186,7 +1186,7 @@ def build_html(d: ReportData) -> str:
     if _r: _var_commentary["MACRO"] = _r
     _r = _top1_var_delta(df_quant_var, df_quant_var_d1, "BOOK")
     if _r: _var_commentary["QUANT"] = _r
-    _r = _top1_var_delta(df_evo_var,   df_evo_var_d1,   "BOOK")
+    _r = _top1_var_delta(df_evo_var,   df_evo_var_d1,   "rf")
     if _r: _var_commentary["EVOLUTION"] = _r
 
     comments_html = build_comments_card(df_pa_daily, _var_commentary or None)
