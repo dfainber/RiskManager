@@ -498,9 +498,11 @@ def _liquido_scale(
     total = fund_factor_gross.get((fund_label, factor_label), 0.0)
     if abs(total) < 1e-6 or abs(bench) < 1e-6:
         return 1.0
-    # Clamp to [0, 1]: bench e total podem ter sinais opostos (convenção)
-    # o que causaria scale > 1 e Líquido > Bruto.
-    return max(0.0, min(1.0, 1.0 - bench / total))
+    # bench_matrix usa convenção DV01 (long bond = negativo); agg_rows usa
+    # ano_eq_brl (long bond = positivo). Usar |bench|/|total| para ser
+    # agnóstico à convenção de sinal — ambos representam a mesma direção.
+    # Residual Líquido > Bruto em posições opostas cross-fund é aceito.
+    return max(0.0, min(1.0, 1.0 - abs(bench) / abs(total)))
 
 
 def _render_top_rows(
