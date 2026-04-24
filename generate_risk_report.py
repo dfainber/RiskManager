@@ -145,7 +145,8 @@ class ReportData:
     alb_nav:          Optional[float]           = None
     # FRONTIER
     df_frontier:      Optional[pd.DataFrame]    = None
-    frontier_bvar:    Optional[float]           = None
+    frontier_bvar:    Optional[dict]            = None
+    frontier_bvar_d1: Optional[dict]            = None
     df_frontier_ibov: Optional[pd.DataFrame]    = None
     df_frontier_smll: Optional[pd.DataFrame]    = None
     df_frontier_sectors: Optional[pd.DataFrame] = None
@@ -252,7 +253,7 @@ def build_html(d: ReportData) -> str:
      df_quant_sn, quant_nav, quant_legs,
      df_evo_sn, evo_nav, evo_legs, df_evo_direct,
      df_alb_expo, alb_nav,
-     df_frontier, frontier_bvar, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
+     df_frontier, frontier_bvar, frontier_bvar_d1, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
      df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
      position_changes, dist_map, dist_map_prev, dist_actuals,
      vol_regime_map, pm_book_var, expo_date_label, data_manifest,
@@ -264,7 +265,7 @@ def build_html(d: ReportData) -> str:
         d.df_quant_sn, d.quant_nav, d.quant_legs,
         d.df_evo_sn, d.evo_nav, d.evo_legs, d.df_evo_direct,
         d.df_alb_expo, d.alb_nav,
-        d.df_frontier, d.frontier_bvar, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
+        d.df_frontier, d.frontier_bvar, d.frontier_bvar_d1, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
         d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
         d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
         d.vol_regime_map, d.pm_book_var, d.expo_date_label, d.data_manifest,
@@ -801,8 +802,9 @@ def build_html(d: ReportData) -> str:
             dvar = None  # no D-1 series for HS BVaR yet
 
         stop_util = None
+        _stop_tip = ""
         if short == "MACRO" and pm_margem and stop_hist:
-            utils = []
+            pm_utils: dict[str, float] = {}
             cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
             for pm, margem in pm_margem.items():
                 hist = stop_hist.get(pm)
@@ -812,19 +814,25 @@ def build_html(d: ReportData) -> str:
                 budget = float(cur_row["budget_abs"].iloc[0])
                 if budget <= 0: continue
                 consumed = budget - margem
-                utils.append(max(consumed, 0) / budget * 100)
-            if utils: stop_util = max(utils)
+                pm_utils[pm] = max(consumed, 0) / budget * 100
+            if pm_utils:
+                stop_util  = max(pm_utils.values())
+                _worst_pm  = max(pm_utils, key=pm_utils.get)
+                _stop_tip  = f"Stop: {_worst_pm} {pm_utils[_worst_pm]:.0f}% consumido"
         elif short == "ALBATROZ":
             stop_util = (abs(a_mtd) / ALBATROZ_STOP_BPS * 100) if a_mtd < 0 else 0.0
+            if stop_util:
+                _stop_tip = f"Stop budget: {stop_util:.0f}% consumido"
 
         worst = max(x for x in (var_util, stop_util, 0) if x is not None)
         if worst >= 100:   status = "🔴"
         elif worst >= 70:  status = "🟡"
         else:              status = "🟢"
 
+        _title_attr = f' title="{_stop_tip}"' if _stop_tip else ""
         summary_rows_html += (
             "<tr>"
-            f'<td class="sum-status">{status}</td>'
+            f'<td class="sum-status"{_title_attr}>{status}</td>'
             f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
             + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
             + _sum_var_cell(var_today) + _sum_util_cell(var_util)
@@ -889,25 +897,31 @@ def build_html(d: ReportData) -> str:
         if not nav_k:
             continue
         last = s_avail.iloc[-1]
+        prev = s_avail.iloc[-2] if len(s_avail) >= 2 else None
         if cfg_.get("primary") == "bvar":          # IDKAs
-            abs_var_pct = abs(float(last.get("stress_pct", 0.0)))
-            rel_var_pct = abs(float(last.get("var_pct",    0.0)))
+            abs_var_pct    = abs(float(last.get("stress_pct", 0.0)))
+            rel_var_pct    = abs(float(last.get("var_pct",    0.0)))
+            abs_var_pct_d1 = abs(float(prev.get("stress_pct", 0.0))) if prev is not None else None
+            bvar_pct_d1    = abs(float(prev.get("var_pct",    0.0))) if prev is not None else None
         else:
-            abs_var_pct = abs(float(last.get("var_pct", 0.0)))
-            # Frontier: use HS BVaR vs. IBOV when we have it
+            abs_var_pct    = abs(float(last.get("var_pct", 0.0)))
+            abs_var_pct_d1 = abs(float(prev.get("var_pct", 0.0))) if prev is not None else None
             if short == "FRONTIER" and frontier_bvar:
                 rel_var_pct = float(frontier_bvar["bvar_pct"])
+                bvar_pct_d1 = float(frontier_bvar_d1["bvar_pct"]) if frontier_bvar_d1 else None
             else:
-                # CDI-benchmarked: BVaR ≈ absolute VaR since CDI vol ≈ 0
                 rel_var_pct = abs_var_pct
-        var_brl = abs_var_pct / 100.0 * nav_k
+                bvar_pct_d1 = abs_var_pct_d1
+        var_brl  = abs_var_pct / 100.0 * nav_k
         bvar_brl = rel_var_pct / 100.0 * nav_k
         house_rows.append({
-            "short":     short, "label": FUND_LABELS.get(short, short),
-            "bench":     _BENCH_BY_FUND.get(short, "—"),
-            "nav":       nav_k,
-            "var_pct":   abs_var_pct, "var_brl":  var_brl,
-            "bvar_pct":  rel_var_pct, "bvar_brl": bvar_brl,
+            "short":       short, "label": FUND_LABELS.get(short, short),
+            "bench":       _BENCH_BY_FUND.get(short, "—"),
+            "nav":         nav_k,
+            "var_pct":     abs_var_pct,  "var_brl":   var_brl,
+            "bvar_pct":    rel_var_pct,  "bvar_brl":  bvar_brl,
+            "var_pct_d1":  abs_var_pct_d1,
+            "bvar_pct_d1": bvar_pct_d1,
         })
 
     # Per-fund mini briefing — registered as "briefing" report (first tab)
@@ -3433,10 +3447,12 @@ def main():  # noqa: C901
         df_frontier = None
 
     try:
-        frontier_bvar = compute_frontier_bvar_hs(df_frontier, DATA_STR) if df_frontier is not None else None
+        frontier_bvar    = compute_frontier_bvar_hs(df_frontier, DATA_STR) if df_frontier is not None else None
+        frontier_bvar_d1 = compute_frontier_bvar_hs(df_frontier, d1_str)   if df_frontier is not None else None
     except Exception as e:
         print(f"  Frontier BVaR (HS) failed ({e})")
-        frontier_bvar = None
+        frontier_bvar    = None
+        frontier_bvar_d1 = None
 
     try:
         df_frontier_ibov, df_frontier_smll, df_frontier_sectors = fut_frontier_expo.result()
@@ -3523,7 +3539,7 @@ def main():  # noqa: C901
         df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav, df_evo_expo_d1=df_evo_expo_d1,
         df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1, df_evo_pnl_prod=df_evo_pnl_prod,
         df_alb_expo=df_alb_expo, alb_nav=alb_nav,
-        df_frontier=df_frontier, frontier_bvar=frontier_bvar,
+        df_frontier=df_frontier, frontier_bvar=frontier_bvar, frontier_bvar_d1=frontier_bvar_d1,
         df_frontier_ibov=df_frontier_ibov, df_frontier_smll=df_frontier_smll,
         df_frontier_sectors=df_frontier_sectors,
         df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,

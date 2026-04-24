@@ -632,54 +632,72 @@ def build_var_bvar_card(house_rows: list) -> str:
     top5_abs = set(r["short"] for r in sorted(house_rows, key=lambda r: r["var_brl"],  reverse=True)[:5])
     top5_rel = set(r["short"] for r in sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)[:5])
 
+    def _delta_cell(today: float | None, d1: float | None) -> str:
+        if d1 is None or today is None:
+            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        bps = (today - d1) * 100
+        if abs(bps) < 0.5:
+            return '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
+        color = "var(--down)" if bps > 0 else "var(--up)"
+        arrow = "▲" if bps > 0 else "▼"
+        return f'<td class="mono" style="text-align:right; color:{color}">{arrow}{abs(bps):.0f}bp</td>'
+
     rows_html = ""
     for r in house_rows:
-        rank_abs = "🔺" if r["short"] in top5_abs else ""
-        rank_rel = "🔷" if r["short"] in top5_rel else ""
+        rank_abs = ' <span style="color:#facc15;font-size:11px">★</span>' if r["short"] in top5_abs else ""
+        rank_rel = ' <span style="color:#60a5fa;font-size:11px">◆</span>' if r["short"] in top5_rel else ""
         rows_html += (
             "<tr>"
             f'<td class="sum-fund">{r["label"]}</td>'
             f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}% {rank_abs}</td>'
-            f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}% {rank_rel}</td>'
-            f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
-            "</tr>"
+            f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}%{rank_abs}</td>'
+            + _delta_cell(r["var_pct"], r.get("var_pct_d1"))
+            + f'<td class="mono" style="text-align:right; font-weight:600">{r["bvar_pct"]:.2f}%{rank_rel}</td>'
+            + _delta_cell(r["bvar_pct"], r.get("bvar_pct_d1"))
+            + f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
+            + "</tr>"
         )
     tot_nav      = sum(r["nav"]      for r in house_rows)
     tot_var_brl  = sum(r["var_brl"]  for r in house_rows)
     tot_bvar_brl = sum(r["bvar_brl"] for r in house_rows)
     tot_var_pct  = (tot_var_brl  / tot_nav * 100) if tot_nav else 0.0
     tot_bvar_pct = (tot_bvar_brl / tot_nav * 100) if tot_nav else 0.0
+    _dash = '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
     total_row = (
         '<tr class="house-total-row">'
         '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
-        '<td></td>'
+        + _dash
+        + f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
+        + _dash
+        + '<td></td>'
         '</tr>'
     )
     return f"""
     <section class="card">
       <div class="card-head">
         <span class="card-title">Risco VaR e BVaR por fundo</span>
-        <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (🔺 absoluto · 🔷 relativo)</span>
+        <span class="card-sub">— {DATA_STR} · VaR 95% 1d absoluto e vs. benchmark · top-5 destacados (<span style="color:#facc15">★</span> absoluto · <span style="color:#60a5fa">◆</span> relativo)</span>
       </div>
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
           <th style="text-align:left">Fundo</th>
           <th style="text-align:right">NAV</th>
           <th style="text-align:right"><span class="kc">VaR</span></th>
+          <th style="text-align:right">Δ D-1</th>
           <th style="text-align:right"><span class="kc">BVaR</span></th>
+          <th style="text-align:right">Δ D-1</th>
           <th style="text-align:center">Bench</th>
         </tr></thead>
         <tbody>{rows_html}</tbody>
         <tfoot>{total_row}</tfoot>
       </table>
       <div class="bar-legend" style="margin-top:10px">
-        🔺 top-5 por risco absoluto (R$) &nbsp;·&nbsp;
-        🔷 top-5 por risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
-        <span style="color:var(--muted)">ranking por R$ (não exibido); BVaR para fundos contra CDI ≈ VaR abs (CDI tem vol ≈ 0); Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico do engine. Total = soma simples ponderada por NAV (sem benefício de diversificação).</span>
+        <span style="color:#facc15">★</span> top-5 risco absoluto (R$) &nbsp;·&nbsp;
+        <span style="color:#60a5fa">◆</span> top-5 risco ativo vs. benchmark (R$) &nbsp;·&nbsp;
+        <b>Δ D-1</b>: variação do VaR/BVaR vs. dia anterior em bps (▲ = risco subiu · ▼ = risco caiu) &nbsp;·&nbsp;
+        <span style="color:var(--muted)">BVaR vs CDI ≈ VaR abs; Frontier usa HS BVaR vs. IBOV; IDKAs usam BVaR paramétrico. Total = soma ponderada por NAV.</span>
       </div>
     </section>"""
 

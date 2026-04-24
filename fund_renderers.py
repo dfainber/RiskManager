@@ -2711,7 +2711,8 @@ def build_stop_history(df_pnl: pd.DataFrame) -> dict[str, pd.DataFrame]:
                 ytd    = 0.0
             prev_year = mes.year
             # apply management override for START of this month (PMs only)
-            key = (livro, mes)
+            # normalize() strips any sub-day time component that can result from DB timezone drift
+            key = (livro, mes.normalize())
             if key in overrides:
                 budget = overrides[key]
             rows.append({"mes": mes, "budget_abs": budget, "pnl": pnl, "ytd": ytd,
