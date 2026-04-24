@@ -135,6 +135,13 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 **Fixes entregues 2026-04-24:**
 - `_top1_var_delta` para EVOLUTION: key corrigida de `"BOOK"` → `"rf"` — `fetch_evolution_var` renomeia a coluna antes de retornar; crash só ocorria quando |ΔVaR EVOLUTION| ≥ 5 bps, por isso não foi capturado no sanity check do wrap-up anterior
 
+**Features entregues 2026-04-24 (segunda sessão):**
+- **Daily Monitor** (`daily_monitor.html` + `pnl_server.py` + `start_monitor.bat`) — live P&L + Peers no browser via localhost:5050; `/api/pnl` busca DB ao vivo; `/api/peers` lê JSON do share
+- **Peers charts** — bar chart (horizontal, sorted desc) + scatter (Vol vs Retorno 12M), SVG puro, portado de `GLPG_Fetch/app.js`; vista padrão = Gráficos; toggles de período MTD/YTD/12M/24M/36M
+- **`risk_config._FUND_PEERS_GROUP`** — dict canônico fundo → peer group; QUANT→MACRO, MACRO_Q→EVOLUTION
+- **VaR/BVaR table rows** — clicáveis (`selectFund`) via `summary_renderers.py`
+- **Market tab parked** — `fetch_market_snapshot()` em `data_fetch.py`, seção HTML pronta; parkeado por 3 bugs de query (ver `memory/project_todo_market_tab_fixes.md`)
+
 ---
 
 ## 8. Armadilhas conhecidas

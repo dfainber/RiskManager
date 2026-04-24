@@ -11,7 +11,8 @@ html_builders modules) import the fetches they need from here.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -1601,3 +1602,258 @@ def fetch_cdi_returns(date_str: str = DATA_STR) -> dict:
     r = df.iloc[0]
     return {"dia": float(r["dia_bps"]), "mtd": float(r["mtd_bps"]),
             "ytd": float(r["ytd_bps"]), "m12": float(r["m12_bps"])}
+
+
+# ── Book PnL + Peers ──────────────────────────────────────────────────────────
+
+_BOOK_PNL_FUND_MAP: dict[str, str] = {
+    "Galapagos Macro FIM":            "Macro",
+    "Galapagos Evolution FIC FIM CP": "Evolution",
+    "Galapagos Quantitativo FIM":     "Quantitativo",
+    "Galapagos Global Macro Q":       "Macro Q",
+    "Frontier Ações FIC FI":          "Frontier",
+    "FRONTIER LONG BIAS":             "Frontier LB",
+    "GALAPAGOS ALBATROZ FIRF LP":     "Albatroz",
+}
+
+_PEERS_FILE = Path(os.environ.get(
+    "PEERS_DATA_PATH",
+    r"\\fs02\FS_GALAPAGOS\Bloomberg\Quant\Claude_GLPG_Fetch\peers_data.json",
+))
+
+
+def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
+    """Daily PnL by book / class / position for a specific date.
+
+    Returns {generated_at, val_date, funds} where funds maps display name →
+    {desk, total_pl, total_pl_pct, total_trade_pl, books[{book, pl, pl_pct,
+    classes[{class, pl, pl_pct, positions[...]}]}]}.
+    """
+    fund_in = ", ".join(f"'{n}'" for n in _BOOK_PNL_FUND_MAP)
+    q = f"""
+        SELECT "TRADING_DESK","BOOK","PRODUCT_CLASS","DESCRIPTION",
+               "PL","PL_PCT","POSITION_PL","TRADES_PL",
+               "POSITION","AMOUNT","VAL_DATE"
+        FROM "LOTE45"."LOTE_PRODUCT_BOOK_POSITION_PL"
+        WHERE "TRADING_DESK" IN ({fund_in})
+          AND "VAL_DATE" = DATE '{date_str}'
+        ORDER BY "TRADING_DESK","BOOK","PRODUCT_CLASS","PL" DESC
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+            "val_date": date_str,
+            "funds": {},
+        }
+
+    val_date_str = str(df["VAL_DATE"].iloc[0])
+    funds: dict[str, dict] = {}
+    for desk, fdf in df.groupby("TRADING_DESK", sort=False):
+        short = _BOOK_PNL_FUND_MAP.get(desk, desk)
+        books: list[dict] = []
+        for book, bdf in fdf.groupby("BOOK", sort=False):
+            classes: list[dict] = []
+            for cls, cdf in bdf.groupby("PRODUCT_CLASS", sort=False):
+                positions = sorted(
+                    [
+                        {
+                            "desc":     str(r.DESCRIPTION or ""),
+                            "pl":       round(float(r.PL or 0),          2),
+                            "pl_pct":   round(float(r.PL_PCT or 0),      8),
+                            "pos_pl":   round(float(r.POSITION_PL or 0), 2),
+                            "trade_pl": round(float(r.TRADES_PL or 0),   2),
+                            "position": round(float(r.POSITION or 0),    2),
+                            "amount":   round(float(r.AMOUNT or 0),      2),
+                        }
+                        for r in cdf.itertuples(index=False)
+                    ],
+                    key=lambda x: abs(x["pl"]), reverse=True,
+                )
+                classes.append({
+                    "class":     cls,
+                    "pl":        round(float(cdf["PL"].sum()),     2),
+                    "pl_pct":    round(float(cdf["PL_PCT"].sum()), 8),
+                    "positions": positions,
+                })
+            classes.sort(key=lambda x: abs(x["pl"]), reverse=True)
+            books.append({
+                "book":    book,
+                "pl":      round(float(bdf["PL"].sum()),     2),
+                "pl_pct":  round(float(bdf["PL_PCT"].sum()), 8),
+                "classes": classes,
+            })
+        books.sort(key=lambda x: abs(x["pl"]), reverse=True)
+        funds[short] = {
+            "desk":          desk,
+            "total_pl":      round(float(fdf["PL"].sum()),       2),
+            "total_pl_pct":  round(float(fdf["PL_PCT"].sum()),   8),
+            "total_trade_pl":round(float(fdf["TRADES_PL"].sum()), 2),
+            "books":         books,
+        }
+
+    return {
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "val_date": val_date_str,
+        "funds": funds,
+    }
+
+
+def fetch_market_snapshot(date_str: str) -> dict:
+    """Market snapshot for the risk report Market tab.
+
+    Returns {val_date, sections:[{label, rows:[{label,value,chg,chg_pct,unit,fmt,decimals,history}]}]}.
+    Every instrument fails gracefully — bad queries return a null row.
+    """
+    from datetime import datetime, timedelta
+    start = (pd.Timestamp(date_str) - timedelta(days=50)).strftime("%Y-%m-%d")
+
+    def _row(label, df, val_col="value", unit="", fmt="price", decimals=2, n=21):
+        base = dict(label=label, value=None, chg=None, chg_pct=None,
+                    unit=unit, fmt=fmt, decimals=decimals, history=[])
+        if df is None or df.empty:
+            return base
+        df = df.dropna(subset=[val_col])
+        if df.empty:
+            return base
+        vals = df[val_col].astype(float)
+        tail = vals.tail(n)
+        base["history"] = [None if pd.isna(v) else float(v) for v in tail.values]
+        base["value"]   = float(vals.iloc[-1])
+        if len(vals) >= 2:
+            prev = float(vals.iloc[-2])
+            chg  = base["value"] - prev
+            base["chg"]     = round(chg, max(decimals + 2, 4))
+            base["chg_pct"] = round(chg / prev, 6) if prev else None
+        return base
+
+    def _eco(instrument, field, label, unit="% a.a.", fmt="rate", decimals=2, scale=1.0):
+        try:
+            df = read_sql(f"""
+                SELECT "DATE", "VALUE" * {scale} AS value FROM public."ECO_INDEX"
+                WHERE "INSTRUMENT" = '{instrument}' AND "FIELD" = '{field}'
+                  AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
+                  AND "VALUE" IS NOT NULL ORDER BY "DATE"
+            """)
+            return _row(label, df, unit=unit, fmt=fmt, decimals=decimals)
+        except Exception as e:
+            log.warning("market ECO_INDEX %s: %s", instrument, e)
+            return _row(label, None, unit=unit, fmt=fmt, decimals=decimals)
+
+    def _fx(instrument, label, unit, decimals=4):
+        try:
+            df = read_sql(f"""
+                SELECT "DATE", "CLOSE" AS value FROM public."FX_PRICES_SPOT"
+                WHERE "INSTRUMENT" = '{instrument}'
+                  AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
+                  AND "CLOSE" IS NOT NULL ORDER BY "DATE"
+            """)
+            return _row(label, df, unit=unit, fmt="price", decimals=decimals)
+        except Exception as e:
+            log.warning("market FX %s: %s", instrument, e)
+            return _row(label, None, unit=unit, fmt="price", decimals=decimals)
+
+    def _ibov():
+        try:
+            df = read_sql(f"""
+                SELECT "DATE", "CLOSE" AS value FROM public."EQUITIES_PRICES"
+                WHERE "INSTRUMENT" = 'IBOV'
+                  AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
+                  AND "CLOSE" IS NOT NULL ORDER BY "DATE"
+            """)
+            return _row("IBOV", df, unit="pts", fmt="index", decimals=0)
+        except Exception as e:
+            log.warning("market IBOV: %s", e)
+            return _row("IBOV", None, unit="pts", fmt="index", decimals=0)
+
+    def _di(label, target_bdays, lo, hi):
+        try:
+            raw = read_sql(f"""
+                SELECT "DATE", "CLOSE" AS rate, "BDAYS" FROM public."FUTURES_PRICES"
+                WHERE "INSTRUMENT" ~ '^DI1'
+                  AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
+                  AND "CLOSE" IS NOT NULL AND "BDAYS" BETWEEN {lo} AND {hi}
+                ORDER BY "DATE", "BDAYS"
+            """)
+            if raw.empty:
+                return _row(label, None, unit="% a.a.", fmt="rate", decimals=2)
+            raw["dist"] = (raw["BDAYS"] - target_bdays).abs()
+            best = (raw.loc[raw.groupby("DATE")["dist"].idxmin()]
+                      [["DATE", "rate"]].rename(columns={"rate": "value"}))
+            return _row(label, best, unit="% a.a.", fmt="rate", decimals=2)
+        except Exception as e:
+            log.warning("market DI %s: %s", label, e)
+            return _row(label, None, unit="% a.a.", fmt="rate", decimals=2)
+
+    def _us10y():
+        try:
+            df = read_sql(f"""
+                SELECT yc."DATE", yc."YIELD" AS value
+                FROM public."YIELDS_GLOBAL_CURVES" yc
+                JOIN public."MAPS_GLOBAL_CURVES" mc
+                  ON mc."GLOBAL_CURVES_KEY" = yc."GLOBAL_CURVES_KEY"
+                WHERE mc."CURVE_NAME" ILIKE '%US_TREASURY%'
+                  AND mc."TENOUR" IN ('10Y','DGS10')
+                  AND yc."DATE" >= DATE '{start}' AND yc."DATE" <= DATE '{date_str}'
+                  AND yc."YIELD" IS NOT NULL ORDER BY yc."DATE"
+            """)
+            return _row("US 10Y", df, unit="% a.a.", fmt="rate", decimals=3)
+        except Exception as e:
+            log.warning("market US10Y: %s", e)
+            return _row("US 10Y", None, unit="% a.a.", fmt="rate", decimals=3)
+
+    def _global_eq(ticker_prefix, label, unit):
+        try:
+            df = read_sql(f"""
+                SELECT e."DATE", e."CLOSE" AS value
+                FROM public."PRICES_GLOBAL_EQUITIES" e
+                JOIN public."MAPS_GLOBAL_EQUITIES" m
+                  ON m."GLOBAL_EQUITIES_KEY" = e."GLOBAL_EQUITIES_KEY"
+                WHERE m."TICKER_RT" ILIKE '{ticker_prefix}%' AND m."COUNTRY"='US'
+                  AND m."SOURCE"='BBG'
+                  AND e."DATE" >= DATE '{start}' AND e."DATE" <= DATE '{date_str}'
+                  AND e."CLOSE" IS NOT NULL ORDER BY e."DATE" LIMIT 500
+            """)
+            return _row(label, df, unit=unit, fmt="index", decimals=2)
+        except Exception as e:
+            log.warning("market %s: %s", label, e)
+            return _row(label, None, unit=unit, fmt="index", decimals=2)
+
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    brasil = [
+        _fx("BRL", "USD/BRL", "R$/USD", decimals=4),
+        _ibov(),
+        _di("DI 1Y",  252,  60,  504),
+        _di("DI 5Y", 1260, 756, 2016),
+        _eco("IMA-B",    "YIELD", "IMA-B",    scale=100),
+        _eco("IMA-B_5+", "YIELD", "IMA-B 5+", scale=100),
+        _eco("CDI",      "YIELD", "CDI",       scale=252*100),
+    ]
+    global_ = [
+        _fx("EUR", "EUR/USD", "EUR/USD", decimals=4),
+        _us10y(),
+        _global_eq("SPY", "S&P 500 (SPY)", "USD"),
+        _global_eq("GLD", "Gold (GLD)",    "USD"),
+    ]
+    return {
+        "val_date": date_str,
+        "sections": [
+            {"label": "Brasil", "rows": brasil},
+            {"label": "Global", "rows": global_},
+        ],
+    }
+
+
+def fetch_peers_data() -> dict:
+    """Latest peers snapshot from the shared JSON file.
+
+    Returns {val_date, benchmarks, groups}. Handles both the legacy
+    wrapped format ({latest: {...}}) and the current flat format.
+    Empty dict if file is not accessible.
+    """
+    data = json.loads(_PEERS_FILE.read_text(encoding="utf-8"))
+    if "val_date" in data:
+        return data
+    return data.get("latest", {})

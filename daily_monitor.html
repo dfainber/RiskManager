@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daily Monitor — Galapagos</title>
+<style>
+:root{
+  --bg:#0d0f14;--panel:#151820;--panel-2:#1c2030;--bdr:#252940;
+  --text:#e2e8f0;--muted:#64748b;--accent:#5aa3e8;
+  --bg2:#131720;--bg3:#1c2030;--row-hover:rgba(90,163,232,.06);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh}
+
+/* ── Header ── */
+header{
+  position:sticky;top:0;z-index:100;
+  background:var(--panel);border-bottom:1px solid var(--bdr);
+  display:flex;align-items:center;gap:0;height:44px;padding:0 16px;
+}
+.site-title{font-size:14px;font-weight:700;color:var(--accent);margin-right:20px;letter-spacing:.5px}
+.tab-btn{
+  height:44px;padding:0 16px;border:none;background:none;color:var(--muted);
+  font-size:13px;cursor:pointer;border-bottom:2px solid transparent;
+  transition:color .15s,border-color .15s;white-space:nowrap;
+}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--text);border-bottom-color:var(--accent)}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.refresh-btn{
+  background:none;border:1px solid var(--bdr);border-radius:5px;
+  color:var(--muted);font-size:12px;padding:4px 10px;cursor:pointer;
+  transition:color .15s,border-color .15s;
+}
+.refresh-btn:hover{color:var(--text);border-color:var(--accent)}
+.refresh-btn.loading{opacity:.5;pointer-events:none}
+.meta-label{font-size:11px;color:var(--muted)}
+
+/* ── Tab pages ── */
+.tab-page{display:none;padding:16px}
+.tab-page.active{display:block}
+
+/* ═══ PnL tab ═══ */
+.pnl-pos{color:#26a65b}
+.pnl-neg{color:#e74c3c}
+.pnl-zero{color:var(--muted)}
+
+.bpnl-fund{margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--bdr)}
+.bpnl-fund-hdr{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 14px;cursor:pointer;user-select:none;
+  background:var(--panel);transition:background .15s;
+}
+.bpnl-fund-hdr:hover{background:var(--row-hover)}
+.bpnl-chevron{font-size:10px;transition:transform .15s;flex-shrink:0;color:var(--muted)}
+.bpnl-fund.open>.bpnl-fund-hdr .bpnl-chevron{transform:rotate(90deg)}
+.bpnl-fund-name{font-weight:600;font-size:13px;flex:1}
+.bpnl-books{display:none}
+.bpnl-fund.open>.bpnl-books{display:block}
+
+.bpnl-table{width:100%;border-collapse:collapse;font-size:12px}
+.bpnl-table th{
+  background:var(--bg2);padding:6px 10px;text-align:right;
+  border-bottom:1px solid var(--bdr);font-size:11px;color:var(--muted);font-weight:500;
+}
+.bpnl-table th:first-child{text-align:left}
+.bpnl-table td{padding:5px 10px;border-bottom:1px solid var(--bdr);white-space:nowrap;text-align:right}
+.bpnl-table tr:last-child td{border-bottom:none}
+.bpnl-table td:first-child{text-align:left}
+
+.bpnl-row-bgrp>td{background:var(--bg2);padding:5px 10px;border-top:1px solid var(--bdr);cursor:pointer;user-select:none;font-size:12px}
+.bpnl-row-bgrp:hover>td{background:var(--bg3)}
+.bpnl-row-book-grouped td:first-child{padding-left:28px}
+.bpnl-row-book td:first-child{padding-left:14px}
+.bpnl-row-class td:first-child{padding-left:28px}
+.bpnl-row-pos td:first-child{padding-left:42px;color:var(--muted);font-size:11px}
+.bpnl-row-pos td{color:var(--muted);font-size:11px}
+.bpnl-row-book,.bpnl-row-class{cursor:pointer}
+.bpnl-row-book:hover td,.bpnl-row-class:hover td{background:var(--row-hover)}
+
+.bpnl-toggle{display:inline-block;width:12px;font-size:10px;color:var(--muted);transition:transform .12s}
+.bpnl-row-book.open .bpnl-toggle,.bpnl-row-class.open .bpnl-toggle{transform:rotate(90deg)}
+
+.bpnl-drag-handle{
+  display:inline-block;cursor:grab;margin-right:4px;color:var(--muted);
+  font-size:14px;line-height:1;opacity:.5;user-select:none;
+}
+.bpnl-row-book.dragging{opacity:.4;background:var(--row-hover)}
+.bpnl-row-book.drag-over td{box-shadow:inset 0 2px 0 var(--accent)}
+
+/* ═══ Peers tab ═══ */
+.peers-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.peers-group-sel{
+  background:var(--panel-2);border:1px solid var(--bdr);border-radius:5px;
+  color:var(--text);font-size:12px;padding:5px 10px;cursor:pointer;
+}
+.peers-mode-btn{
+  background:none;border:1px solid var(--bdr);border-radius:5px;
+  color:var(--muted);font-size:12px;padding:5px 10px;cursor:pointer;
+}
+.peers-mode-btn.active{border-color:var(--accent);color:var(--text)}
+
+#t-peers{width:100%;border-collapse:collapse;font-size:12px}
+#t-peers th{
+  background:var(--bg2);padding:7px 12px;text-align:right;
+  border-bottom:1px solid var(--bdr);font-size:11px;color:var(--muted);
+  font-weight:500;white-space:nowrap;
+}
+#t-peers th.l{text-align:left}
+#t-peers td{padding:6px 12px;border-bottom:1px solid var(--bdr);white-space:nowrap}
+#t-peers tr:last-child td{border-bottom:none}
+#t-peers td.name{text-align:left;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+tr.peers-fund-row td{background:rgba(255,209,102,.06)}
+tr.peers-fund-row td:first-child{border-left:3px solid rgba(255,193,7,.55)}
+tr.peers-bench-row td{background:rgba(255,255,255,.012);opacity:.82}
+
+.ret-cell{padding:6px 12px;min-width:110px}
+.ret{position:relative;display:flex;align-items:center;justify-content:flex-end;min-width:80px;height:20px}
+.ret .axis{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--bdr)}
+.ret .bar{position:absolute;top:3px;bottom:3px;border-radius:2px;opacity:.35}
+.ret.up .bar{background:#26a65b}.ret.down .bar{background:#e74c3c}
+.ret .val{position:relative;font-size:11px;font-weight:600}
+.ret.up .val{color:#26a65b}.ret.down .val{color:#e74c3c}.ret.na .val{color:var(--muted)}
+.sorted-col{background:rgba(90,163,232,.04)}
+th.sorted{color:var(--accent)!important}
+th[data-pkey]{cursor:pointer}
+th[data-pkey]:hover{color:var(--text)!important}
+.mono{font-family:monospace}
+
+/* empty state */
+.empty-state{padding:40px;text-align:center;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="site-title">GLPG Monitor</span>
+  <button class="tab-btn active" data-tab="pnl" onclick="switchTab('pnl')">Daily P&amp;L</button>
+  <button class="tab-btn" data-tab="peers" onclick="switchTab('peers')">Peers</button>
+  <div class="header-right">
+    <span class="meta-label" id="meta-label"></span>
+    <button class="refresh-btn" id="refresh-btn" onclick="refreshActive()">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- ═══ PnL tab ═══ -->
+<div class="tab-page active" id="tab-pnl">
+  <div id="book-pnl-container"><div class="empty-state">Click Refresh to load P&amp;L data.</div></div>
+</div>
+
+<!-- ═══ Peers tab ═══ -->
+<div class="tab-page" id="tab-peers">
+  <div class="peers-toolbar">
+    <select class="peers-group-sel" id="peers-group-sel" onchange="onGroupChange()"></select>
+    <button class="peers-mode-btn active" id="btn-abs" onclick="setPeersMode('abs')">Absoluto</button>
+    <button class="peers-mode-btn" id="btn-alpha" onclick="setPeersMode('alpha')">Alpha vs CDI</button>
+    <span class="meta-label" id="peers-val-date"></span>
+  </div>
+  <div style="overflow-x:auto">
+    <table id="t-peers"><tbody><tr><td class="empty-state">Click Refresh to load Peers data.</td></tr></tbody></table>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+let _activeTab   = 'pnl';
+let _pnlData     = null;   // raw funds object
+let _peersData   = null;
+let _peersGroup  = 'EVOLUTION';
+let _peersMode   = 'abs';         // 'abs' | 'alpha'
+let _peersSortKey = 'YTD';
+let _peersSortDir = 'desc';
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(tab) {
+  _activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+  document.getElementById('meta-label').textContent = '';
+}
+
+function refreshActive() {
+  if (_activeTab === 'pnl') loadPnl();
+  else loadPeers();
+}
+
+// ── PnL helpers ────────────────────────────────────────────────────────────
+function fmtPnl(v) {
+  if (v == null || isNaN(v)) return '<span class="pnl-zero">—</span>';
+  const cls  = v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero';
+  const sign = v >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0})}</span>`;
+}
+function fmtBps(pct) {
+  if (pct == null || isNaN(pct)) return '<span class="pnl-zero">—</span>';
+  const bps = pct * 10000;
+  const cls  = bps > 0 ? 'pnl-pos' : bps < 0 ? 'pnl-neg' : 'pnl-zero';
+  const sign = bps >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${bps.toFixed(1)}bp</span>`;
+}
+
+// ── Book grouping ──────────────────────────────────────────────────────────
+const BOOK_GROUP_DEFS = [
+  { id:'RJ',     label:'RJ',          pfx:'RJ'                                          },
+  { id:'JD',     label:'JD',          pfx:'JD'                                          },
+  { id:'LF',     label:'LF',          pfx:'LF'                                          },
+  { id:'CI',     label:'CI',          pfx:'CI'                                          },
+  { id:'quant',  label:'Quant',       pfx:'SIST', names:['BRACCO','QUANT_PA']           },
+  { id:'eqbr',   label:'Equities BR', names:['FLO'], contains:['AÇÕES','ACOES','FMN']  },
+  { id:'credit', label:'Credit',      contains:['CRED']                                 },
+];
+function bookGroupDef(name) {
+  if (!name) return null;
+  const up = name.toUpperCase();
+  for (const d of BOOK_GROUP_DEFS) {
+    if (d.pfx      && up.startsWith(d.pfx))                return d;
+    if (d.names    && d.names.some(n => up === n))          return d;
+    if (d.contains && d.contains.some(k => up.includes(k))) return d;
+  }
+  return null;
+}
+
+// ── BPNL expand/order state (localStorage) ─────────────────────────────────
+const BPNL_LS_KEY   = 'rm_bpnl_state';
+const BPNL_LS_ORDER = 'rm_bpnl_order';
+let BPNL_STATE = { expanded: {}, order: {} };
+
+function bpnlLoadState() {
+  try { BPNL_STATE = JSON.parse(localStorage.getItem(BPNL_LS_KEY) || '{}'); } catch(e) {}
+  if (!BPNL_STATE.expanded) BPNL_STATE.expanded = {};
+  if (!BPNL_STATE.order)    BPNL_STATE.order    = {};
+}
+function bpnlSaveState() {
+  try { localStorage.setItem(BPNL_LS_KEY, JSON.stringify(BPNL_STATE)); } catch(e) {}
+}
+
+// ── renderBookPnl ──────────────────────────────────────────────────────────
+const FUND_ORDER = ['Macro','Evolution','Albatroz','Quantitativo','Macro Q','Frontier','Frontier LB'];
+
+function renderBookPnl(container, funds) {
+  const fundKeys = FUND_ORDER.filter(k => funds[k])
+    .concat(Object.keys(funds).filter(k => !FUND_ORDER.includes(k)));
+
+  container.innerHTML = '';
+  fundKeys.forEach(fk => {
+    const fd  = funds[fk];
+    const fSt = BPNL_STATE.expanded[fk] || (BPNL_STATE.expanded[fk] = { open: false, books: {}, bgroups: {} });
+    if (!fSt.bgroups) fSt.bgroups = {};
+    const fDiv = document.createElement('div');
+    fDiv.className = 'bpnl-fund' + (fSt.open ? ' open' : '');
+    fDiv.dataset.fund = fk;
+
+    fDiv.innerHTML = `
+      <div class="bpnl-fund-hdr">
+        <span class="bpnl-chevron">▶</span>
+        <span class="bpnl-fund-name">${fk}</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto;padding-right:16px">
+          P&amp;L: ${fmtPnl(fd.total_pl)} &nbsp;|&nbsp; ${fmtBps(fd.total_pl_pct)}
+        </span>
+      </div>`;
+    fDiv.querySelector('.bpnl-fund-hdr').addEventListener('click', () => {
+      fSt.open = !fSt.open;
+      fDiv.classList.toggle('open', fSt.open);
+      bpnlSaveState();
+    });
+
+    const booksWrap = document.createElement('div');
+    booksWrap.className = 'bpnl-books';
+    const table  = document.createElement('table');
+    table.className = 'bpnl-table';
+    table.innerHTML = `<thead><tr>
+      <th style="text-align:left;min-width:220px">Book / Classe / Posição</th>
+      <th>P&amp;L (BRL)</th><th>P&amp;L (bp)</th><th>Pos P&amp;L</th><th>Trade P&amp;L</th>
+    </tr></thead>`;
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+
+    const books      = fd.books || [];
+    const nameOrder  = BPNL_STATE.order[fk];
+    const ordered    = nameOrder
+      ? nameOrder.map(n => books.find(b => b.book === n)).filter(Boolean)
+               .concat(books.filter(b => !nameOrder.includes(b.book)))
+      : books;
+    const activeBooks = ordered.filter(b => b.pl !== 0 && b.pl != null);
+
+    const grpMap    = new Map();
+    const ungrouped = [];
+    activeBooks.forEach(book => {
+      const def = bookGroupDef(book.book);
+      if (def) {
+        if (!grpMap.has(def.id)) grpMap.set(def.id, { def, books: [] });
+        grpMap.get(def.id).books.push(book);
+      } else {
+        ungrouped.push(book);
+      }
+    });
+
+    function appendBook(book, grpId) {
+      const origIdx      = books.indexOf(book);
+      const bKey         = `${fk}|${book.book}`;
+      if (!fSt.books[bKey]) fSt.books[bKey] = { open: false, classes: {} };
+      const bSt          = fSt.books[bKey];
+      const parentGrpOpen = grpId ? (fSt.bgroups[grpId] ?? true) : true;
+
+      const bookRow = document.createElement('tr');
+      bookRow.className   = 'bpnl-row-book' + (bSt.open ? ' open' : '') + (grpId ? ' bpnl-row-book-grouped' : '');
+      bookRow.dataset.fundKey  = fk;
+      bookRow.dataset.bookIdx  = origIdx;
+      bookRow.dataset.bookKey  = bKey;
+      if (grpId) bookRow.dataset.parentGrp = grpId;
+      bookRow.style.display = parentGrpOpen ? '' : 'none';
+      bookRow.draggable = true;
+      bookRow.innerHTML = `
+        <td>
+          <span class="bpnl-drag-handle" title="Arrastar para reordenar">⠿</span>
+          <span class="bpnl-toggle">▶</span>
+          <strong>${book.book}</strong>
+        </td>
+        <td style="text-align:right">${fmtPnl(book.pl)}</td>
+        <td style="text-align:right">${fmtBps(book.pl_pct)}</td>
+        <td style="text-align:right">—</td>
+        <td style="text-align:right">—</td>`;
+      bookRow.addEventListener('click', e => {
+        if (e.target.closest('.bpnl-drag-handle')) return;
+        bSt.open = !bSt.open;
+        bookRow.classList.toggle('open', bSt.open);
+        let sib = bookRow.nextElementSibling;
+        while (sib && sib.dataset.parentBook === bKey) {
+          sib.style.display = bSt.open ? '' : 'none';
+          if (!bSt.open && sib.classList.contains('bpnl-row-class')) {
+            sib.classList.remove('open');
+            let csib = sib.nextElementSibling;
+            while (csib && csib.dataset.parentClass) { csib.style.display = 'none'; csib = csib.nextElementSibling; }
+          }
+          sib = sib.nextElementSibling;
+        }
+        bpnlSaveState();
+      });
+      tbody.appendChild(bookRow);
+
+      (book.classes || []).forEach((cls, ci) => {
+        const cKey  = `${bKey}|${ci}`;
+        if (!bSt.classes[cKey]) bSt.classes[cKey] = false;
+        const cOpen = bSt.classes[cKey];
+        const classRow = document.createElement('tr');
+        classRow.className = 'bpnl-row-class' + (cOpen ? ' open' : '');
+        classRow.dataset.parentBook = bKey;
+        classRow.dataset.classKey   = cKey;
+        classRow.style.display      = (bSt.open && parentGrpOpen) ? '' : 'none';
+        classRow.innerHTML = `
+          <td><span class="bpnl-toggle">▶</span>${cls.class}</td>
+          <td style="text-align:right">${fmtPnl(cls.pl)}</td>
+          <td style="text-align:right">${fmtBps(cls.pl_pct)}</td>
+          <td style="text-align:right">—</td>
+          <td style="text-align:right">—</td>`;
+        classRow.addEventListener('click', () => {
+          bSt.classes[cKey] = !bSt.classes[cKey];
+          classRow.classList.toggle('open', bSt.classes[cKey]);
+          let sib = classRow.nextElementSibling;
+          while (sib && sib.dataset.parentClass === cKey) {
+            sib.style.display = bSt.classes[cKey] ? '' : 'none';
+            sib = sib.nextElementSibling;
+          }
+          bpnlSaveState();
+        });
+        tbody.appendChild(classRow);
+
+        (cls.positions || []).forEach(pos => {
+          const posRow = document.createElement('tr');
+          posRow.className = 'bpnl-row-pos';
+          posRow.dataset.parentClass = cKey;
+          posRow.dataset.parentBook  = bKey;
+          posRow.style.display       = (bSt.open && cOpen && parentGrpOpen) ? '' : 'none';
+          posRow.innerHTML = `
+            <td title="${pos.desc}">${pos.desc.length > 45 ? pos.desc.slice(0, 44) + '…' : pos.desc}</td>
+            <td style="text-align:right">${fmtPnl(pos.pl)}</td>
+            <td style="text-align:right">${fmtBps(pos.pl_pct)}</td>
+            <td style="text-align:right">${fmtPnl(pos.pos_pl)}</td>
+            <td style="text-align:right">${fmtPnl(pos.trade_pl)}</td>`;
+          tbody.appendChild(posRow);
+        });
+      });
+    }
+
+    // Group header rows
+    BOOK_GROUP_DEFS.forEach(def => {
+      const bucket = grpMap.get(def.id);
+      if (!bucket || bucket.books.length === 0) return;
+      const gOpen  = fSt.bgroups[def.id] ?? true;
+      const grpPl  = bucket.books.reduce((s, b) => s + (b.pl || 0), 0);
+      const grpPct = bucket.books.length > 0 ? bucket.books.reduce((s, b) => s + (b.pl_pct || 0), 0) / bucket.books.length : null;
+
+      const grpRow = document.createElement('tr');
+      grpRow.className = 'bpnl-row-bgrp' + (gOpen ? ' open' : '');
+      grpRow.dataset.grpId   = def.id;
+      grpRow.dataset.fundKey = fk;
+      grpRow.innerHTML = `
+        <td><span class="bpnl-toggle" style="margin-right:5px">${gOpen ? '▼' : '▶'}</span><b>${def.label}</b>
+          <span style="font-size:10px;opacity:.5;margin-left:6px">${bucket.books.length} books</span></td>
+        <td style="text-align:right">${fmtPnl(grpPl)}</td>
+        <td style="text-align:right">${fmtBps(grpPct)}</td>
+        <td></td><td></td>`;
+      grpRow.addEventListener('click', () => {
+        fSt.bgroups[def.id] = !gOpen;
+        bpnlSaveState();
+        // Re-render this fund block only
+        const ctr = document.getElementById('book-pnl-container');
+        try {
+          const fd2 = _pnlData;
+          const old = ctr.querySelector(`[data-fund="${fk}"]`);
+          if (old && fd2 && fd2[fk]) {
+            const tmp = document.createElement('div');
+            renderBookPnl(tmp, { [fk]: fd2[fk] });
+            old.replaceWith(tmp.firstChild);
+          }
+        } catch (e) { console.warn('group re-render:', e); }
+      });
+      tbody.appendChild(grpRow);
+      bucket.books.forEach(book => appendBook(book, def.id));
+    });
+
+    ungrouped.forEach(book => appendBook(book, null));
+
+    booksWrap.appendChild(table);
+    fDiv.appendChild(booksWrap);
+    container.appendChild(fDiv);
+    bpnlInitDrag(fDiv, fk, books);
+  });
+}
+
+function bpnlInitDrag(fDiv, fundKey, books) {
+  let dragSrc = null;
+  fDiv.addEventListener('dragstart', e => {
+    const row = e.target.closest('.bpnl-row-book');
+    if (!row) return;
+    dragSrc = row;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', row.dataset.bookKey || '');
+  });
+  fDiv.addEventListener('dragend', () => {
+    if (dragSrc) dragSrc.classList.remove('dragging');
+    fDiv.querySelectorAll('.bpnl-row-book').forEach(r => r.classList.remove('drag-over'));
+  });
+  fDiv.addEventListener('dragover', e => {
+    const row = e.target.closest('.bpnl-row-book');
+    if (!row || row === dragSrc) return;
+    e.preventDefault();
+    fDiv.querySelectorAll('.bpnl-row-book').forEach(r => r.classList.remove('drag-over'));
+    row.classList.add('drag-over');
+  });
+  fDiv.addEventListener('drop', e => {
+    const targetRow = e.target.closest('.bpnl-row-book');
+    if (!targetRow || !dragSrc || targetRow === dragSrc) return;
+    e.preventDefault();
+    const srcName = dragSrc.dataset.bookKey?.split('|')[1];
+    const tgtName = targetRow.dataset.bookKey?.split('|')[1];
+    if (!srcName || !tgtName) return;
+    const allNames = books.map(b => b.book);
+    const curOrder = BPNL_STATE.order[fundKey] || [...allNames];
+    const si = curOrder.indexOf(srcName), ti = curOrder.indexOf(tgtName);
+    if (si === -1 || ti === -1) return;
+    curOrder.splice(si, 1);
+    curOrder.splice(ti, 0, srcName);
+    BPNL_STATE.order[fundKey] = curOrder;
+    bpnlSaveState();
+    const container = document.getElementById('book-pnl-container');
+    try {
+      const fDiv2 = container.querySelector(`[data-fund="${fundKey}"]`);
+      if (fDiv2 && _pnlData && _pnlData[fundKey]) {
+        const newDiv = document.createElement('div');
+        renderBookPnl(newDiv, { [fundKey]: _pnlData[fundKey] });
+        fDiv2.replaceWith(newDiv.firstChild);
+      }
+    } catch (e) { console.warn('drag re-render:', e); }
+  });
+}
+
+// ── loadPnl ────────────────────────────────────────────────────────────────
+async function loadPnl() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.classList.add('loading'); btn.textContent = '…'; }
+  try {
+    const resp = await fetch('/api/pnl?' + Date.now());
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    if (json.error) throw new Error(json.error);
+
+    _pnlData = json.funds || {};
+    bpnlLoadState();
+
+    const genAt   = json.generated_at ? new Date(json.generated_at) : null;
+    const minsAgo = genAt ? Math.floor((Date.now() - genAt.getTime()) / 60000) : null;
+    const timeTxt = genAt ? genAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+    const ageTxt  = minsAgo == null ? '' : minsAgo < 2 ? ' · just now' : minsAgo < 60 ? ` · ${minsAgo}m ago` : ` · ${Math.floor(minsAgo / 60)}h ago`;
+    const src     = json._source === 'db' ? ' · DB' : '';
+    document.getElementById('meta-label').textContent = `${json.val_date || '—'} · ${timeTxt}${ageTxt}${src}`;
+
+    const container = document.getElementById('book-pnl-container');
+    if (!Object.keys(_pnlData).length) {
+      container.innerHTML = '<div class="empty-state">Sem dados P&amp;L para hoje (mercado fechado?).</div>';
+    } else {
+      renderBookPnl(container, _pnlData);
+    }
+  } catch (e) {
+    document.getElementById('meta-label').textContent = 'Erro: ' + e.message;
+    console.error('loadPnl:', e);
+  } finally {
+    if (btn) { btn.classList.remove('loading'); btn.textContent = '↻ Refresh'; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Peers ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+function _peersSnapshot() {
+  if (_peersData?.latest) return _peersData[_peersDateMode] ?? _peersData.latest;
+  return _peersData;
+}
+let _peersDateMode = 'latest';
+
+function _isGlpgFund(r, groupFundName) {
+  if (r.is_fund) return true;
+  if (groupFundName) return (r.name || '').toUpperCase() === groupFundName.toUpperCase();
+  return false;
+}
+
+function _cleanPeerName(name) {
+  if (!name) return '—';
+  return name.replace(/^GALAPAGOS\s+/i, 'GLPG ').replace(/\s+FIC\s+FIM\b/gi, '').replace(/\s+FIM\b/gi, '').replace(/\s+FIRF\s+LP\b/gi, '');
+}
+
+function onGroupChange() {
+  _peersGroup = document.getElementById('peers-group-sel').value;
+  renderPeers();
+}
+
+function setPeersMode(mode) {
+  _peersMode = mode;
+  document.getElementById('btn-abs').classList.toggle('active', mode === 'abs');
+  document.getElementById('btn-alpha').classList.toggle('active', mode === 'alpha');
+  renderPeers();
+}
+
+function renderPeers() {
+  const snap = _peersSnapshot();
+  if (!snap) return;
+  const g = snap?.groups?.[_peersGroup];
+  if (!g) return;
+
+  const dateEl = document.getElementById('peers-val-date');
+  if (dateEl && snap.val_date) dateEl.textContent = snap.val_date;
+
+  const groupFundName = (g.fund_name || '').toUpperCase();
+  const retCols = ['MTD', 'YTD', '12M', '24M'].concat(_peersGroup === 'FRONTIER' ? ['36M'] : []);
+  const benches = (g.benchmarks || ['CDI'])
+    .map(k => snap.benchmarks?.[k]).filter(Boolean).map(b => ({ ...b, is_bench: true }));
+
+  const alphaBmKey = g.alpha_bench || (_peersGroup === 'FRONTIER' ? 'IBOVESPA' : 'CDI');
+  const bmForAlpha = snap.benchmarks?.[alphaBmKey];
+
+  const dv = (row, col) => {
+    const raw = row[col];
+    if (_peersMode !== 'alpha' || !bmForAlpha) return raw;
+    const bm = bmForAlpha[col];
+    return (raw != null && !isNaN(raw) && bm != null && !isNaN(bm)) ? raw - bm : null;
+  };
+
+  const allRows = [...(g.peers || []), ...benches];
+  const colMax  = {};
+  retCols.forEach(c => {
+    const vals = allRows.map(r => dv(r, c)).filter(v => v != null && !isNaN(v));
+    colMax[c]  = Math.max(...vals.map(Math.abs), 0.001);
+  });
+
+  const sk = _peersSortKey, sd = _peersSortDir;
+  const cmpVal = (r, k) => { const v = dv(r, k); return (v != null && !isNaN(v)) ? v : (sd === 'desc' ? -Infinity : Infinity); };
+  const peers  = [...(g.peers || [])].sort((a, b) => sd === 'desc' ? cmpVal(b, sk) - cmpVal(a, sk) : cmpVal(a, sk) - cmpVal(b, sk));
+
+  const retCell = (row, k) => {
+    const v   = dv(row, k);
+    const sc  = k === sk ? ' sorted-col' : '';
+    if (v == null || isNaN(v)) return `<td class="ret-cell${sc}"><div class="ret na"><span class="val">—</span></div></td>`;
+    const pct = v * 100;
+    const cls = v >= 0 ? 'up' : 'down';
+    const w   = Math.min((Math.abs(v) / colMax[k]) * 50, 50);
+    const bar = v >= 0 ? `left:50%;width:${w}%` : `right:50%;width:${w}%`;
+    const lbl = (v >= 0 ? '+' : '') + pct.toFixed(2) + (_peersMode === 'alpha' ? 'pp' : '%');
+    return `<td class="ret-cell${sc}"><div class="ret ${cls}"><div class="axis"></div><div class="bar" style="${bar}"></div><span class="val">${lbl}</span></div></td>`;
+  };
+  const volCell = (v, k) => {
+    const sc = k === sk ? ' sorted-col' : '';
+    return `<td class="mono${sc}" style="text-align:right;font-size:11px;color:var(--muted)">${v != null && !isNaN(v) ? (v * 100).toFixed(1) + '%' : '—'}</td>`;
+  };
+  const mkRow = (r, cls) =>
+    `<tr class="${cls}"><td class="name"><span>${_cleanPeerName(r.name) || '—'}</span></td>${retCols.map(c => retCell(r, c)).join('')}${volCell(r.Vol, 'Vol')}</tr>`;
+  const mkTh = (label, key) => {
+    const is = key === sk;
+    const arrow = is ? (sd === 'desc' ? '▼' : '▲') : '';
+    return `<th class="${is ? 'sorted' : ''} ${key !== 'Vol' ? '' : 'mono'}" data-pkey="${key}">${label}<span>${arrow}</span></th>`;
+  };
+
+  const t = document.getElementById('t-peers');
+  if (!t) return;
+  t.innerHTML =
+    `<thead><tr><th class="l">Fundo</th>${retCols.map(c => mkTh(c, c)).join('')}${mkTh('Vol', 'Vol')}</tr></thead>
+     <tbody>
+       ${peers.map(r => mkRow(r, _isGlpgFund(r, groupFundName) ? 'peers-fund-row' : '')).join('')}
+       ${benches.map(b => mkRow(b, 'peers-bench-row')).join('')}
+     </tbody>`;
+
+  t.querySelectorAll('thead th[data-pkey]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.pkey;
+      if (_peersSortKey === key) _peersSortDir = _peersSortDir === 'desc' ? 'asc' : 'desc';
+      else { _peersSortKey = key; _peersSortDir = 'desc'; }
+      renderPeers();
+    });
+  });
+}
+
+function _populateGroupSel(snap) {
+  const sel = document.getElementById('peers-group-sel');
+  sel.innerHTML = '';
+  const GROUPS_ORDER = ['EVOLUTION','ALBATROZ','FRONTIER','NAZCA','IGUANA','DRAGON','SEA LION','MACRO','GLOBAL','PELICAN'];
+  const available = snap?.groups ? Object.keys(snap.groups) : [];
+  const ordered   = GROUPS_ORDER.filter(g => available.includes(g))
+    .concat(available.filter(g => !GROUPS_ORDER.includes(g)));
+  ordered.forEach(g => {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    if (g === _peersGroup) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (!ordered.includes(_peersGroup) && ordered.length) _peersGroup = ordered[0];
+}
+
+async function loadPeers() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.classList.add('loading'); btn.textContent = '…'; }
+  try {
+    const resp = await fetch('/api/peers?' + Date.now());
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    if (json.error) throw new Error(json.error);
+
+    _peersData = json;
+    const snap = _peersSnapshot();
+    _populateGroupSel(snap);
+
+    const valDate = snap?.val_date || json.val_date || '';
+    document.getElementById('peers-val-date').textContent = valDate;
+    document.getElementById('meta-label').textContent = valDate;
+
+    renderPeers();
+  } catch (e) {
+    document.getElementById('meta-label').textContent = 'Erro: ' + e.message;
+    const t = document.getElementById('t-peers');
+    if (t) t.innerHTML = `<tbody><tr><td class="empty-state">⚠ ${e.message}</td></tr></tbody>`;
+    console.error('loadPeers:', e);
+  } finally {
+    if (btn) { btn.classList.remove('loading'); btn.textContent = '↻ Refresh'; }
+  }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+bpnlLoadState();
+loadPnl();
+</script>
+</body>
+</html>

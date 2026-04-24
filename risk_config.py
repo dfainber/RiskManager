@@ -65,6 +65,7 @@ REPORTS = [
     ("vol-regime",      "Vol Regime"),
     ("stop-monitor",    "Risk Budget"),
     ("briefing",        "Briefing"),
+    ("peers",           "Peers"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
 FUND_LABELS = {
@@ -97,6 +98,19 @@ _FUND_PA_KEY = {
     "FRONTIER":  "GFA",
     "IDKA_3Y":   "IDKAIPCAY3",
     "IDKA_10Y":  "IDKAIPCAY10",
+}
+
+# Peers group key per fund (None = no peers comparison available).
+# QUANT uses the same MACRO peer group; MACRO_Q uses EVOLUTION.
+_FUND_PEERS_GROUP: dict[str, str | None] = {
+    "MACRO":     "MACRO",
+    "QUANT":     "MACRO",
+    "EVOLUTION": "EVOLUTION",
+    "MACRO_Q":   "EVOLUTION",
+    "ALBATROZ":  "ALBATROZ",
+    "FRONTIER":  "FRONTIER",
+    "IDKA_3Y":   None,
+    "IDKA_10Y":  None,
 }
 
 # Livros that are benchmark-tracking (passive replica) per fund PA key.

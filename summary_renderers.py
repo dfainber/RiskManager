@@ -647,7 +647,7 @@ def build_var_bvar_card(house_rows: list) -> str:
         rank_abs = ' <span style="color:#facc15;font-size:11px">★</span>' if r["short"] in top5_abs else ""
         rank_rel = ' <span style="color:#60a5fa;font-size:11px">◆</span>' if r["short"] in top5_rel else ""
         rows_html += (
-            "<tr>"
+            f'<tr onclick="selectFund(\'{r["short"]}\')" style="cursor:pointer">'
             f'<td class="sum-fund">{r["label"]}</td>'
             f'<td class="mono" style="text-align:right; color:var(--muted)">{_mm(r["nav"])}</td>'
             f'<td class="mono" style="text-align:right; font-weight:600">{r["var_pct"]:.2f}%{rank_abs}</td>'

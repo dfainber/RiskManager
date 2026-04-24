@@ -3,6 +3,7 @@ generate_risk_report.py
 Gera o HTML diário de risco MM com barras de range 12m e sparklines 60d.
 Usage: python generate_risk_report.py [YYYY-MM-DD]
 """
+from __future__ import annotations
 import sys
 import json
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from risk_config import (
     _FUND_PA_KEY, _PA_BENCH_LIVROS,
     _PM_LIVRO,
     ALERT_COMMENTS,
+    _FUND_PEERS_GROUP,
 )
 from svg_renderers import make_sparkline, range_bar_svg
 from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav
@@ -101,6 +103,8 @@ from data_fetch import (
     fetch_idka_albatroz_weight,
     fetch_ibov_returns,
     fetch_cdi_returns,
+    fetch_book_pnl,
+    fetch_peers_data,
 )
 
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
@@ -166,6 +170,8 @@ class ReportData:
     pm_book_var:      Optional[dict]            = None
     expo_date_label:  Optional[str]             = None
     data_manifest:    Optional[dict]            = None
+    book_pnl:         Optional[dict]            = None
+    peers_data:       Optional[dict]            = None
 
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
@@ -408,11 +414,12 @@ def build_html(d: ReportData) -> str:
     pa_alert_items_fund = ""
     if df_pa is not None and not df_pa.empty:
         try:
-            # Drop benchmark-replication livros (e.g. CI in IDKAs) — their "alpha"
-            # is just tracking error vs. the index they're paid to replicate, not
-            # a directional bet. Keeps the card focused on active alpha.
+            # Drop benchmark-replication livros and IDKA funds entirely —
+            # IDKA contributions are driven by the index, not active bets.
+            _EXCL_FUNDOS_PA = {"IDKAIPCAY3", "IDKAIPCAY10"}
             _df_alpha = _pa_filter_alpha(df_pa)
             _pa_filt = _df_alpha[
+                ~_df_alpha["FUNDO"].isin(_EXCL_FUNDOS_PA) &
                 ~_df_alpha["LIVRO"].isin(_PA_EXCL_LIVROS) &
                 ~_df_alpha["CLASSE"].isin(_PA_EXCL_CLASSES) &
                 (_df_alpha["dia_bps"].abs() >= PA_ALERT_MIN_BPS)
@@ -831,7 +838,7 @@ def build_html(d: ReportData) -> str:
 
         _title_attr = f' title="{_stop_tip}"' if _stop_tip else ""
         summary_rows_html += (
-            "<tr>"
+            f'<tr onclick="selectFund(\'{short}\')" style="cursor:pointer">'
             f'<td class="sum-status"{_title_attr}>{status}</td>'
             f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
             + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
@@ -1089,8 +1096,24 @@ def build_html(d: ReportData) -> str:
     if "briefing" not in reports_with_data:
         reports_with_data = list(reports_with_data) + ["briefing"]
 
+    # Resolve P&L and Peers data early — needed both here and in section HTML
+    _book_pnl       = d.book_pnl   or {}
+    _peers          = d.peers_data or {}
+    _peers_val_date = _peers.get("val_date", "—")
+    _has_peers      = bool(_peers)
+
+    # Register per-fund peers sections for funds that have a peers group
+    _has_peers = bool(_peers)
+    for _f, _pg in _FUND_PEERS_GROUP.items():
+        if _pg and _has_peers:
+            available_pairs.add((_f, "peers"))
+    if any(_FUND_PEERS_GROUP.get(f) for f in FUND_ORDER) and _has_peers:
+        if "peers" not in reports_with_data:
+            reports_with_data = list(reports_with_data) + ["peers"]
+
     # Rebuild sections_html: briefing comes LAST per fund (user parked it here
     # while its quality is validated — tab stays accessible but not the default).
+    # Peers section appended after briefing (bottom of each fund view).
     _sections_by_fund = {}
     for f, r, h in sections:
         _sections_by_fund.setdefault(f, []).append((r, h))
@@ -1104,6 +1127,23 @@ def build_html(d: ReportData) -> str:
             _reordered_html += (
                 f'<div id="sec-{f}-briefing" class="section-wrap" '
                 f'data-fund="{f}" data-report="briefing">{_briefing_by_short[f]}</div>'
+            )
+        _pg = _FUND_PEERS_GROUP.get(f)
+        if _pg and _has_peers:
+            _reordered_html += (
+                f'<div id="sec-{f}-peers" class="section-wrap" data-fund="{f}" data-report="peers">'
+                f'<section class="card">'
+                f'<div class="card-head">'
+                f'<span class="card-title">Peers — {FUND_LABELS.get(f, f)}</span>'
+                f'<span class="card-sub">— {_peers_val_date} · grupo {_pg}</span>'
+                f'<div class="pa-view-toggle" style="margin-left:auto">'
+                f'<button class="pa-tgl active" onclick="rptSetPeersMode(\'abs\')">Absoluto</button>'
+                f'<button class="pa-tgl"        onclick="rptSetPeersMode(\'alpha\')">Alpha</button>'
+                f'</div></div>'
+                f'<div style="overflow-x:auto">'
+                f'<table class="summary-table rpt-peers-fund-tbl" data-no-sort="1" data-peers-group="{_pg}">'
+                f'<tbody></tbody></table>'
+                f'</div></section></div>'
             )
     sections_html = _reordered_html
 
@@ -1268,6 +1308,62 @@ def build_html(d: ReportData) -> str:
     # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
     alerts_html = ""
 
+    # ── Market tab — parked (IMA-B scale, US10Y col name, SPY/GLD ticker format) ──
+    market_section_html = ""
+
+    # ── P&L tab section (house-level) ─────────────────────────────────────────
+    _book_pnl_json = json.dumps(_book_pnl, separators=(",", ":"), ensure_ascii=False)
+    _peers_json    = json.dumps(_peers,    separators=(",", ":"), ensure_ascii=False)
+
+    _pnl_baked_date = _book_pnl.get("val_date") or str(_prev_bday(DATA))
+    pnl_section_html = f"""<div class="section-wrap" data-view="pnl">
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">Daily P&amp;L</span>
+      <span class="card-sub" id="rpt-pnl-meta">— {_pnl_baked_date} · por book, classe e posição</span>
+      <button id="rpt-pnl-refresh-btn" onclick="refreshRptPnl()"
+              style="margin-left:auto;padding:4px 12px;font-size:12px;border-radius:4px;
+                     background:var(--panel-2);border:1px solid var(--line-2);
+                     color:var(--text);cursor:pointer">↻ Atualizar</button>
+    </div>
+    <div id="rpt-pnl-container"><div style="padding:24px;color:var(--muted)">Sem dados P&amp;L para {_pnl_baked_date}.</div></div>
+  </section>
+</div>"""
+
+    # ── Peers tab section (house-level, group selector) ───────────────────────
+    peers_section_html = f"""<div class="section-wrap" data-view="peers">
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">Peers</span>
+      <span class="card-sub">— {_peers_val_date} · comparativo vs. pares</span>
+      <div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">
+        <select id="rpt-peers-grp-sel" onchange="rptOnGroupChange()"
+                style="background:var(--panel-2);border:1px solid var(--line-2);border-radius:4px;
+                       color:var(--text);font-size:12px;padding:4px 8px;cursor:pointer"></select>
+        <button class="pa-tgl active" id="rpt-btn-abs"   onclick="rptSetPeersMode('abs')">Absoluto</button>
+        <button class="pa-tgl"        id="rpt-btn-alpha" onclick="rptSetPeersMode('alpha')">Alpha</button>
+        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
+        <button class="pa-tgl"        id="rpt-per-mtd"  onclick="rptSetPeriod('MTD')">MTD</button>
+        <button class="pa-tgl"        id="rpt-per-ytd"  onclick="rptSetPeriod('YTD')">YTD</button>
+        <button class="pa-tgl active" id="rpt-per-12m"  onclick="rptSetPeriod('12M')">12M</button>
+        <button class="pa-tgl"        id="rpt-per-24m"  onclick="rptSetPeriod('24M')">24M</button>
+        <button class="pa-tgl"        id="rpt-per-36m"  onclick="rptSetPeriod('36M')">36M</button>
+        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
+        <button class="pa-tgl"        id="rpt-view-tbl" onclick="rptSetView('table')">Tabela</button>
+        <button class="pa-tgl active" id="rpt-view-chrt" onclick="rptSetView('charts')">Gráficos</button>
+      </div>
+    </div>
+    <div id="rpt-peers-charts-wrap">
+      <div id="rpt-peers-charts" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;min-height:80px;padding:4px 0"></div>
+    </div>
+    <div id="rpt-peers-tbl-wrap" style="display:none;overflow-x:auto">
+      <table class="summary-table" id="rpt-peers-tbl" data-no-sort="1">
+        <tbody><tr><td class="sum-fund" style="color:var(--muted)">Sem dados de peers disponíveis.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</div>"""
+
     # (Análise helpers and per-fund loop were relocated above `sections_html`; see earlier block.)
 
     # Mode switcher + sub-tabs
@@ -1276,6 +1372,10 @@ def build_html(d: ReportData) -> str:
         '<button class="mode-tab" data-mode="fund"    onclick="selectMode(\'fund\')">Por Fundo</button>'
         '<button class="mode-tab" data-mode="report"  onclick="selectMode(\'report\')">Por Report</button>'
         '<button class="mode-tab" data-mode="quality" onclick="selectMode(\'quality\')" style="opacity:0.55;font-size:11px">Qualidade</button>'
+        '<button class="mode-tab" data-mode="pnl"     onclick="selectMode(\'pnl\')">P&amp;L</button>'
+        '<button class="mode-tab" data-mode="peers"   onclick="selectMode(\'peers\')">Peers</button>'
+        # Market tab parked — data queries need fixing before re-enabling
+        # '<button class="mode-tab" data-mode="market"  onclick="selectMode(\'market\')">Market</button>'
     )
     report_subtabs_html = "".join(
         f'<button class="tab" data-target="{rid}" onclick="selectReport(\'{rid}\')">{label}</button>'
@@ -1566,6 +1666,25 @@ def build_html(d: ReportData) -> str:
     .card-title {{ font-size: 13px; }}
     .mono {{ font-size: 10px; }}
   }}
+  /* ── Market tab ── */
+  .mkt-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; }}
+  .mkt-panel {{ border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
+  .mkt-panel-hdr {{ padding:8px 14px; background:var(--panel-2); font-size:10px; font-weight:700;
+                    letter-spacing:.8px; text-transform:uppercase; color:var(--muted);
+                    border-bottom:1px solid var(--line); }}
+  .mkt-tbl {{ width:100%; border-collapse:collapse; font-size:12px; }}
+  .mkt-tbl th {{ background:var(--panel-2); padding:5px 10px; text-align:right;
+                 border-bottom:1px solid var(--line); font-size:10px; color:var(--muted); font-weight:500; }}
+  .mkt-tbl th:first-child {{ text-align:left; }}
+  .mkt-tbl td {{ padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:middle; }}
+  .mkt-tbl tr:last-child td {{ border-bottom:none; }}
+  .mkt-tbl tr:hover td {{ background:var(--panel-2); }}
+  .mkt-lbl {{ color:var(--text); font-weight:500; min-width:110px; }}
+  .mkt-val {{ text-align:right; font-variant-numeric:tabular-nums; min-width:80px; }}
+  .mkt-chg {{ text-align:right; min-width:70px; }}
+  .mkt-pct {{ text-align:right; min-width:55px; }}
+  .mkt-spark {{ text-align:right; width:80px; padding-right:12px; }}
+
   .empty-view {{ padding:28px; text-align:center; color:var(--muted); font-size:12px; }}
   #empty-state {{
     padding:40px 16px; text-align:center; color:var(--muted); font-size:13px;
@@ -2098,6 +2217,9 @@ def build_html(d: ReportData) -> str:
     if ((m = h.match(/^fund=(.*)$/)))   return {{ mode: 'fund',   sel: m[1] ? decodeURIComponent(m[1]) : '' }};
     if ((m = h.match(/^report=(.*)$/))) return {{ mode: 'report', sel: m[1] ? decodeURIComponent(m[1]) : '' }};
     if ((m = h.match(/^quality$/)))     return {{ mode: 'quality', sel: '' }};
+    if ((m = h.match(/^pnl$/)))         return {{ mode: 'pnl',     sel: '' }};
+    if ((m = h.match(/^peers$/)))       return {{ mode: 'peers',   sel: '' }};
+    if ((m = h.match(/^market$/)))      return {{ mode: 'market',  sel: '' }};
     return {{ mode: 'summary' }};
   }}
   function setHash(mode, sel) {{
@@ -2182,6 +2304,9 @@ def build_html(d: ReportData) -> str:
       var show = false;
       if (mode === 'summary')      show = el.dataset.view === 'summary';
       else if (mode === 'quality') show = el.dataset.view === 'quality';
+      else if (mode === 'pnl')     show = el.dataset.view === 'pnl';
+      else if (mode === 'peers')   show = el.dataset.view === 'peers';
+      else if (mode === 'market')  show = el.dataset.view === 'market';
       else if (mode === 'fund')    show = el.dataset.fund === sel;
       else if (mode === 'report')  show = el.dataset.report === sel;
       el.style.display = show ? '' : 'none';
@@ -2246,6 +2371,8 @@ def build_html(d: ReportData) -> str:
     injectFundNavChips();
     syncHeaderH();
     window.addEventListener('resize', syncHeaderH);
+    if (typeof initRptPnl   === 'function') initRptPnl();
+    if (typeof initRptPeers === 'function') initRptPeers();
   }});
   // --- Wrap fund shortnames in card-sub elements with an accent chip ---
   function highlightFundNames() {{
@@ -3079,12 +3206,489 @@ def build_html(d: ReportData) -> str:
 <main>
   {summary_html}
   {quality_html}
+  {market_section_html}
+  {pnl_section_html}
+  {peers_section_html}
   <div id="sections-container">
     {sections_html}
   </div>
   <div id="empty-state" style="display:none">Sem dados para essa combinação de fundo × report.</div>
   {alerts_html}
 </main>
+<script>
+// ── P&L + Peers data (baked at report generation time) ──────────────────────
+const _RPT_PNL   = {_book_pnl_json};
+const _RPT_PEERS = {_peers_json};
+
+// ── PnL helpers ──────────────────────────────────────────────────────────────
+(function() {{
+  function fmtPnl(v) {{
+    if (v == null || isNaN(v)) return '<span style="color:var(--muted)">—</span>';
+    var cls = v > 0 ? 'var(--up)' : v < 0 ? 'var(--down)' : 'var(--muted)';
+    return '<span style="color:' + cls + ';font-family:monospace">' + (v>=0?'+':'') +
+           v.toLocaleString('pt-BR',{{minimumFractionDigits:0,maximumFractionDigits:0}}) + '</span>';
+  }}
+  function fmtBps(pct) {{
+    if (pct == null || isNaN(pct)) return '<span style="color:var(--muted)">—</span>';
+    var bps = pct * 10000;
+    var cls = bps > 0 ? 'var(--up)' : bps < 0 ? 'var(--down)' : 'var(--muted)';
+    return '<span style="color:' + cls + ';font-family:monospace">' + (bps>=0?'+':'') + bps.toFixed(1) + 'bp</span>';
+  }}
+  var BOOK_GROUPS = [
+    {{id:'RJ',    label:'RJ',         pfx:'RJ'}},
+    {{id:'JD',    label:'JD',         pfx:'JD'}},
+    {{id:'LF',    label:'LF',         pfx:'LF'}},
+    {{id:'CI',    label:'CI',         pfx:'CI'}},
+    {{id:'quant', label:'Quant',      pfx:'SIST', names:['BRACCO','QUANT_PA']}},
+    {{id:'eqbr',  label:'Equities BR',names:['FLO'], contains:['AÇÕES','ACOES','FMN']}},
+    {{id:'credit',label:'Credit',     contains:['CRED']}},
+  ];
+  function bookGroup(name) {{
+    if (!name) return null;
+    var up = name.toUpperCase();
+    for (var i=0; i<BOOK_GROUPS.length; i++) {{
+      var d = BOOK_GROUPS[i];
+      if (d.pfx      && up.startsWith(d.pfx))                return d;
+      if (d.names    && d.names.some(function(n){{return up===n;}}))           return d;
+      if (d.contains && d.contains.some(function(k){{return up.includes(k);}})) return d;
+    }}
+    return null;
+  }}
+  var FUND_ORDER_PNL = ['Macro','Evolution','Albatroz','Quantitativo','Macro Q','Frontier','Frontier LB'];
+  var _pnlState = {{}};
+
+  function renderPnlFund(container, fk, fd) {{
+    var st = _pnlState[fk] || (_pnlState[fk] = {{open:false, books:{{}}, bgroups:{{}}}});
+    var fDiv = document.createElement('div');
+    fDiv.style.cssText = 'margin-bottom:10px;border-radius:6px;overflow:hidden;border:1px solid var(--line)';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:var(--panel);user-select:none';
+    hdr.innerHTML = '<span style="font-size:10px;color:var(--muted);transition:transform .15s">' + (st.open?'▼':'▶') + '</span>' +
+      '<span style="font-weight:600;flex:1">' + fk + '</span>' +
+      '<span style="font-size:11px;color:var(--muted)">' + fmtPnl(fd.total_pl) + ' &nbsp;|&nbsp; ' + fmtBps(fd.total_pl_pct) + '</span>';
+    hdr.onclick = function() {{
+      st.open = !st.open;
+      hdr.querySelector('span').textContent = st.open ? '▼' : '▶';
+      body.style.display = st.open ? '' : 'none';
+    }};
+    var body = document.createElement('div');
+    body.style.display = st.open ? '' : 'none';
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px';
+    tbl.innerHTML = '<thead><tr style="background:var(--bg-2)">' +
+      '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;min-width:220px">Book / Classe / Posição</th>' +
+      '<th style="padding:6px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;text-align:right">P&L (BRL)</th>' +
+      '<th style="padding:6px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;text-align:right">P&L (bp)</th>' +
+      '<th style="padding:6px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;text-align:right">Pos P&L</th>' +
+      '<th style="padding:6px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500;text-align:right">Trade P&L</th>' +
+      '</tr></thead>';
+    var tbody = document.createElement('tbody');
+    tbl.appendChild(tbody);
+    var books = fd.books || [];
+    var grpMap = {{}}, ungrouped = [];
+    books.filter(function(b){{return b.pl!==0&&b.pl!=null;}}).forEach(function(b) {{
+      var g = bookGroup(b.book);
+      if (g) {{ if (!grpMap[g.id]) grpMap[g.id]={{def:g,books:[]}}; grpMap[g.id].books.push(b); }}
+      else ungrouped.push(b);
+    }});
+    function tdStyle(extra) {{ return 'style="padding:5px 10px;border-bottom:1px solid var(--line);' + (extra||'') + '"'; }}
+    function appendBook(b, grpOpen) {{
+      var bSt = st.books[b.book] || (st.books[b.book] = {{open:false,classes:{{}}}});
+      var bRow = document.createElement('tr');
+      bRow.style.cursor = 'pointer';
+      bRow.style.display = (grpOpen===false) ? 'none' : '';
+      bRow.dataset.bookKey = fk+'|'+b.book;
+      bRow.innerHTML = '<td '+tdStyle()+'><span style="display:inline-block;width:12px;font-size:10px;color:var(--muted)">' + (bSt.open?'▼':'▶') + '</span> <strong>' + b.book + '</strong></td>' +
+        '<td '+tdStyle('text-align:right')+'>' + fmtPnl(b.pl) + '</td>' +
+        '<td '+tdStyle('text-align:right')+'>' + fmtBps(b.pl_pct) + '</td>' +
+        '<td '+tdStyle('text-align:right;color:var(--muted)')+'> — </td><td '+tdStyle('text-align:right;color:var(--muted)')+'> — </td>';
+      bRow.onclick = function() {{
+        bSt.open = !bSt.open;
+        bRow.querySelector('span').textContent = bSt.open ? '▼' : '▶';
+        tbody.querySelectorAll('[data-parent-book="' + fk+'|'+b.book + '"]').forEach(function(r) {{
+          r.style.display = bSt.open ? '' : 'none';
+          if (!bSt.open && r.classList.contains('cls-row')) {{
+            r.querySelector('span').textContent = '▶';
+            var ck = r.dataset.classKey;
+            if (ck) {{ bSt.classes[ck]=false; tbody.querySelectorAll('[data-parent-class="'+ck+'"]').forEach(function(pr){{pr.style.display='none';}}); }}
+          }}
+        }});
+      }};
+      tbody.appendChild(bRow);
+      (b.classes||[]).forEach(function(cls,ci) {{
+        var ck = fk+'|'+b.book+'|'+ci;
+        var cOpen = bSt.classes[ck]||false;
+        var cRow = document.createElement('tr');
+        cRow.className = 'cls-row';
+        cRow.dataset.parentBook = fk+'|'+b.book;
+        cRow.dataset.classKey   = ck;
+        cRow.style.cssText = 'cursor:pointer;display:' + (bSt.open?(grpOpen===false?'none':''):'none');
+        cRow.innerHTML = '<td '+tdStyle('padding-left:28px')+'><span style="display:inline-block;width:12px;font-size:10px;color:var(--muted)">'+(cOpen?'▼':'▶')+'</span> '+cls['class']+'</td>' +
+          '<td '+tdStyle('text-align:right')+'>' + fmtPnl(cls.pl) + '</td>' +
+          '<td '+tdStyle('text-align:right')+'>' + fmtBps(cls.pl_pct) + '</td>' +
+          '<td '+tdStyle('text-align:right;color:var(--muted)')+'> — </td><td '+tdStyle('text-align:right;color:var(--muted)')+'> — </td>';
+        cRow.onclick = function() {{
+          bSt.classes[ck] = !bSt.classes[ck];
+          cRow.querySelector('span').textContent = bSt.classes[ck] ? '▼' : '▶';
+          tbody.querySelectorAll('[data-parent-class="'+ck+'"]').forEach(function(pr) {{ pr.style.display = bSt.classes[ck] ? '' : 'none'; }});
+        }};
+        tbody.appendChild(cRow);
+        (cls.positions||[]).forEach(function(pos) {{
+          var pRow = document.createElement('tr');
+          pRow.dataset.parentClass = ck;
+          pRow.dataset.parentBook  = fk+'|'+b.book;
+          pRow.style.display = 'none';
+          pRow.innerHTML = '<td '+tdStyle('padding-left:42px;color:var(--muted);font-size:11px')+' title="'+pos.desc+'">'+(pos.desc.length>45?pos.desc.slice(0,44)+'…':pos.desc)+'</td>' +
+            '<td '+tdStyle('text-align:right')+'>' + fmtPnl(pos.pl) + '</td>' +
+            '<td '+tdStyle('text-align:right')+'>' + fmtBps(pos.pl_pct) + '</td>' +
+            '<td '+tdStyle('text-align:right')+'>' + fmtPnl(pos.pos_pl) + '</td>' +
+            '<td '+tdStyle('text-align:right')+'>' + fmtPnl(pos.trade_pl) + '</td>';
+          tbody.appendChild(pRow);
+        }});
+      }});
+    }}
+    BOOK_GROUPS.forEach(function(def) {{
+      var bucket = grpMap[def.id];
+      if (!bucket||!bucket.books.length) return;
+      var gOpen = st.bgroups[def.id]!==undefined ? st.bgroups[def.id] : true;
+      var grpPl = bucket.books.reduce(function(s,b){{return s+(b.pl||0);}},0);
+      var grpPct = bucket.books.length ? bucket.books.reduce(function(s,b){{return s+(b.pl_pct||0);}},0)/bucket.books.length : null;
+      var gRow = document.createElement('tr');
+      gRow.style.cssText = 'cursor:pointer;background:var(--bg-2)';
+      gRow.innerHTML = '<td style="padding:5px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">' +
+        '<span style="display:inline-block;width:12px;font-size:10px;color:var(--muted)">'+(gOpen?'▼':'▶')+'</span> <b>'+def.label+'</b> ' +
+        '<span style="font-size:10px;opacity:.5;margin-left:4px">'+bucket.books.length+' books</span></td>' +
+        '<td style="padding:5px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);text-align:right">' + fmtPnl(grpPl) + '</td>' +
+        '<td style="padding:5px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);text-align:right">' + fmtBps(grpPct) + '</td>' +
+        '<td></td><td></td>';
+      gRow.onclick = function() {{
+        st.bgroups[def.id] = !gOpen;
+        // re-render this fund block
+        var ctr = document.getElementById('rpt-pnl-container');
+        var oldDiv = ctr && ctr.querySelector('[data-fund-pnl="'+fk+'"]');
+        if (oldDiv && _RPT_PNL.funds && _RPT_PNL.funds[fk]) {{
+          var tmp = document.createElement('div'); renderPnlFund(tmp,fk,_RPT_PNL.funds[fk]); oldDiv.replaceWith(tmp.firstChild);
+        }}
+      }};
+      tbody.appendChild(gRow);
+      bucket.books.forEach(function(b) {{ appendBook(b, gOpen); }});
+    }});
+    ungrouped.forEach(function(b) {{ appendBook(b, true); }});
+    body.appendChild(tbl);
+    fDiv.dataset.fundPnl = fk;
+    fDiv.appendChild(hdr);
+    fDiv.appendChild(body);
+    container.appendChild(fDiv);
+  }}
+
+  function renderAll(data) {{
+    var ctr = document.getElementById('rpt-pnl-container');
+    if (!ctr) return;
+    var funds = (data && data.funds) || {{}};
+    if (!Object.keys(funds).length) {{
+      ctr.innerHTML = '<div style="padding:24px;color:var(--muted)">Sem dados P&L.</div>';
+      return;
+    }}
+    _pnlState = {{}};
+    ctr.innerHTML = '';
+    var keys = FUND_ORDER_PNL.filter(function(k){{return funds[k];}})
+               .concat(Object.keys(funds).filter(function(k){{return !FUND_ORDER_PNL.includes(k);}}));
+    keys.forEach(function(fk) {{ renderPnlFund(ctr, fk, funds[fk]); }});
+  }}
+  window.initRptPnl = function() {{ renderAll(_RPT_PNL); }};
+  window.rptPnlRender = renderAll;
+}})();
+
+window.refreshRptPnl = function() {{
+  var btn  = document.getElementById('rpt-pnl-refresh-btn');
+  var meta = document.getElementById('rpt-pnl-meta');
+  if (btn) {{ btn.disabled = true; btn.textContent = '↻ …'; }}
+  fetch('http://localhost:5050/api/pnl')
+    .then(function(r) {{ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }})
+    .then(function(data) {{
+      if (meta) meta.textContent = '— ' + (data.val_date || '') + ' · ao vivo (' + data._source + ')';
+      if (window.rptPnlRender) window.rptPnlRender(data);
+    }})
+    .catch(function(e) {{
+      if (meta) meta.textContent = '— erro ao atualizar: ' + e.message;
+    }})
+    .finally(function() {{
+      if (btn) {{ btn.disabled = false; btn.textContent = '↻ Atualizar'; }}
+    }});
+}};
+
+// ── Peers helpers ─────────────────────────────────────────────────────────────
+(function() {{
+  var _mode    = 'abs';
+  var _sortKey = '12M', _sortDir = 'desc';
+  var _rptWin  = '12M';   // period for charts (independent of table sort)
+  var _rptView = 'charts'; // 'charts' | 'table'
+
+  function cleanName(n) {{
+    if (!n) return '—';
+    var tokens = /\b(FIC|FIF|FIM|FICFIM|FICFIA|FIA|FII|FIP|Feeder|Multimercado|Resp(?:onsabilidade)?\s*Limitada|R\.?L\.?|S\.?A\.?|Crédito\s*Privado|CP|IE|Invest(?:imento)?s?|Fundo\s*de\s*Investimento)\b\.?/gi;
+    return n.replace(tokens,'').replace(/^GALAPAGOS\s+/i,'GLPG ').replace(/\s{{2,}}/g,' ').trim() || n;
+  }}
+  function truncName(s, maxLen) {{
+    return s.length <= maxLen ? s : s.slice(0, maxLen-1) + '…';
+  }}
+  function _isGlpgFundRpt(r, groupFundName) {{
+    if (r.is_fund) return true;
+    if (groupFundName) return (r.name||'').toUpperCase() === groupFundName.toUpperCase();
+    return false;
+  }}
+
+  // dv: display value (absolute or alpha-adjusted)
+  function dv(row, col, bm) {{
+    var raw = row[col];
+    if (_mode !== 'alpha' || !bm || bm[col] == null || raw == null) return raw;
+    return raw - bm[col];
+  }}
+
+  function retCell(row, col, colMax, isSort, bm) {{
+    var v  = dv(row, col, bm);
+    var sc = isSort ? ' background:rgba(90,163,232,.04)' : '';
+    if (v==null||isNaN(v)) return '<td class="mono" style="text-align:right;padding:7px 12px;white-space:nowrap'+sc+'">—</td>';
+    var pct  = v*100;
+    var w    = Math.min((Math.abs(v)/(colMax||0.001))*50,50);
+    var bar  = v>=0 ? 'left:50%;width:'+w+'%' : 'right:50%;width:'+w+'%';
+    var col2 = v>=0 ? '#26a65b' : '#e74c3c';
+    var lbl  = (v>=0?'+':'')+pct.toFixed(2)+(_mode==='alpha'?'pp':'%');
+    return '<td class="ret-cell" style="padding:6px 12px;min-width:110px'+sc+'">' +
+      '<div style="position:relative;display:flex;align-items:center;justify-content:flex-end;min-width:80px;height:20px">' +
+      '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)"></div>' +
+      '<div style="position:absolute;top:3px;bottom:3px;border-radius:2px;opacity:.35;background:'+col2+';'+bar+'"></div>' +
+      '<span style="position:relative;font-size:11px;font-weight:600;font-family:monospace;color:'+col2+'">'+lbl+'</span>' +
+      '</div></td>';
+  }}
+  function volCell(v, isSort) {{
+    var sc = isSort ? ' background:rgba(90,163,232,.04)' : '';
+    return '<td class="mono" style="text-align:right;font-size:11px;color:var(--muted);padding:6px 12px'+sc+'">' +
+      (v!=null&&!isNaN(v) ? (v*100).toFixed(1)+'%' : '—') + '</td>';
+  }}
+
+  function renderTable(tbl, groupKey) {{
+    if (!tbl||!_RPT_PEERS||!_RPT_PEERS.groups) return;
+    var g = _RPT_PEERS.groups[groupKey];
+    if (!g) {{ tbl.innerHTML='<tbody><tr><td style="padding:16px;color:var(--muted)">Grupo não disponível.</td></tr></tbody>'; return; }}
+    var retCols    = ['MTD','YTD','12M','24M'].concat(groupKey==='FRONTIER'?['36M']:[]);
+    var alphaBmKey = g.alpha_bench || (groupKey==='FRONTIER'?'IBOVESPA':'CDI');
+    var bm         = (_RPT_PEERS.benchmarks||{{}})[alphaBmKey];
+    var peers      = (g.peers||[]).slice().sort(function(a,b) {{
+      function val(r) {{ var v=dv(r,_sortKey,bm); return (v!=null&&!isNaN(v))?v:(_sortDir==='desc'?-Infinity:Infinity); }}
+      return _sortDir==='desc' ? val(b)-val(a) : val(a)-val(b);
+    }});
+    var benches    = (g.benchmarks||['CDI']).map(function(k){{return _RPT_PEERS.benchmarks&&_RPT_PEERS.benchmarks[k];}}).filter(Boolean);
+    var colMax     = {{}};
+    retCols.forEach(function(c) {{
+      var vals = peers.concat(benches).map(function(r){{return dv(r,c,bm);}}).filter(function(v){{return v!=null&&!isNaN(v);}});
+      colMax[c] = Math.max.apply(null, vals.map(Math.abs).concat([0.001]));
+    }});
+    function mkTh(label,key) {{
+      var is=key===_sortKey, arrow=is?(_sortDir==='desc'?'▼':'▲'):'';
+      return '<th style="background:var(--bg-2);padding:7px 12px;text-align:right;border-bottom:1px solid var(--line);font-size:11px;color:'+(is?'var(--accent)':'var(--muted)')+';font-weight:500;white-space:nowrap;cursor:pointer" data-sort-key="'+key+'">'+label+'<span>'+arrow+'</span></th>';
+    }}
+    var head = '<thead><tr><th style="background:var(--bg-2);padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted);font-weight:500">Fundo</th>' +
+      retCols.map(function(c){{return mkTh(c,c);}}).join('') + mkTh('Vol','Vol') + '</tr></thead>';
+    var groupFundName = (g.fund_name||'').toUpperCase();
+    function mkRow(r,isFund) {{
+      var bg = isFund ? 'background:rgba(255,209,102,.06);' : '';
+      var bl = isFund ? 'border-left:3px solid rgba(255,193,7,.55);' : '';
+      return '<tr style="'+bg+'"><td style="text-align:left;padding:6px 12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+bl+'">'+cleanName(r.name||'—')+'</td>' +
+        retCols.map(function(c){{return retCell(r,c,colMax[c],c===_sortKey,bm);}}).join('') + volCell(r.Vol,'Vol'===_sortKey) + '</tr>';
+    }}
+    var rows = peers.map(function(r){{return mkRow(r,_isGlpgFundRpt(r,groupFundName));}}).join('') +
+               benches.map(function(r){{return mkRow(r,false);}}).join('');
+    tbl.innerHTML = head + '<tbody>' + rows + '</tbody>';
+    tbl.querySelectorAll('th[data-sort-key]').forEach(function(th) {{
+      th.addEventListener('click', function() {{
+        var k = th.dataset.sortKey;
+        if (_sortKey===k) _sortDir=_sortDir==='desc'?'asc':'desc';
+        else {{ _sortKey=k; _sortDir='desc'; }}
+        renderAllPeersTables();
+      }});
+    }});
+  }}
+
+  function _renderPeersCharts(groupKey) {{
+    var wrap = document.getElementById('rpt-peers-charts');
+    if (!wrap||!_RPT_PEERS||!_RPT_PEERS.groups) return;
+    var g = _RPT_PEERS.groups[groupKey];
+    if (!g) {{ wrap.innerHTML=''; return; }}
+    var alphaBmKey   = g.alpha_bench || (groupKey==='FRONTIER'?'IBOVESPA':'CDI');
+    var bmForAlpha   = (_RPT_PEERS.benchmarks||{{}})[alphaBmKey];
+    var groupFundName= (g.fund_name||'').toUpperCase();
+    var isAlpha      = _mode === 'alpha';
+    var win          = _rptWin;
+    var suffix       = isAlpha ? 'pp' : '%';
+    var benches      = (g.benchmarks||['CDI']).map(function(k){{return _RPT_PEERS.benchmarks&&_RPT_PEERS.benchmarks[k];}}).filter(Boolean).map(function(b){{return Object.assign({{}},b,{{is_bench:true}});}});
+    var allRows      = (g.peers||[]).concat(benches);
+
+    function dvChart(row, col) {{
+      var raw = row[col];
+      if (!isAlpha||!bmForAlpha||bmForAlpha[col]==null||raw==null) return raw;
+      return raw - bmForAlpha[col];
+    }}
+
+    /* ── Bar chart ── */
+    var barRows = allRows.map(function(r){{return Object.assign({{}},r,{{_dv:dvChart(r,win)}});}})
+                         .filter(function(r){{return r._dv!=null&&!isNaN(r._dv);}});
+    barRows.sort(function(a,b){{return (b._dv??-999)-(a._dv??-999);}});
+
+    var BAR_H=24, BAR_GAP=4, NAME_W=160, BAR_HALF=160, PAD_T=22, PAD_B=10, PAD_R=52;
+    var svgH1 = barRows.length*(BAR_H+BAR_GAP)+PAD_T+PAD_B;
+    var svgW1 = NAME_W+BAR_HALF*2+PAD_R;
+    var zeroX = NAME_W+BAR_HALF;
+    var maxAbs= Math.max.apply(null, barRows.map(function(r){{return Math.abs(r._dv);}}).concat([0.001]));
+    var scale = BAR_HALF/maxAbs;
+    var barTitle= (isAlpha?'Alpha ':'Retorno ')+win;
+    var barSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+svgW1+' '+svgH1+'" width="100%" style="font-family:inherit;overflow:visible;display:block">';
+    barSvg += '<text x="'+zeroX+'" y="'+(PAD_T-6)+'" font-size="10" fill="var(--muted)" text-anchor="middle" font-weight="500">'+barTitle+'</text>';
+    barSvg += '<line x1="'+zeroX+'" y1="'+PAD_T+'" x2="'+zeroX+'" y2="'+(svgH1-PAD_B)+'" stroke="var(--line-2)" stroke-width="0.6"/>';
+    barRows.forEach(function(r,i) {{
+      var y       = PAD_T+i*(BAR_H+BAR_GAP);
+      var mid     = y+BAR_H/2;
+      var isFund  = _isGlpgFundRpt(r, groupFundName);
+      var isBench = !!r.is_bench;
+      var barFill = isFund ? 'rgba(255,193,7,.82)' : isBench ? 'rgba(150,160,175,.4)' : 'rgba(100,140,210,.55)';
+      var nameCol = isFund ? 'var(--accent)' : isBench ? 'var(--muted)' : 'var(--text)';
+      var pxW     = Math.abs(r._dv)*scale;
+      var barX    = r._dv>=0 ? zeroX : zeroX-pxW;
+      var label   = (r._dv>=0?'+':'')+(r._dv*100).toFixed(1)+suffix;
+      var labelX  = r._dv>=0 ? barX+pxW+5 : barX-5;
+      var anchor  = r._dv>=0 ? 'start' : 'end';
+      barSvg += '<text x="'+(NAME_W-4)+'" y="'+(mid+4)+'" font-size="12" fill="'+nameCol+'" text-anchor="end" font-weight="'+(isFund?'600':'400')+'">'+truncName(cleanName(r.name||'—'),28)+'</text>';
+      barSvg += '<rect x="'+barX+'" y="'+(y+4)+'" width="'+Math.max(pxW,1.5)+'" height="'+(BAR_H-8)+'" rx="2" fill="'+barFill+'"/>';
+      barSvg += '<text x="'+labelX+'" y="'+(mid+4)+'" font-size="10" fill="'+nameCol+'" text-anchor="'+anchor+'">'+label+'</text>';
+    }});
+    barSvg += '</svg>';
+
+    /* ── Scatter chart ── */
+    var scBase = allRows.map(function(r){{return Object.assign({{}},r,{{_dv:dvChart(r,win)}});}})
+                        .filter(function(r){{return r.Vol!=null&&!isNaN(r.Vol)&&r._dv!=null&&!isNaN(r._dv);}});
+    var scSvg  = '';
+    if (scBase.length >= 3) {{
+      var SC_SIZE=svgW1, SC_PAD={{l:48,r:16,t:24,b:40}};
+      var plotW=SC_SIZE-SC_PAD.l-SC_PAD.r, plotH=SC_SIZE-SC_PAD.t-SC_PAD.b;
+      var vols=scBase.map(function(r){{return r.Vol;}}), rets=scBase.map(function(r){{return r._dv;}});
+      var minV=Math.min.apply(null,vols), maxV=Math.max.apply(null,vols);
+      var minR=Math.min.apply(null,rets), maxR=Math.max.apply(null,rets);
+      var vRange=(maxV-minV)||0.01, rRange=(maxR-minR)||0.01;
+      var vPad=vRange*0.06, rPad=rRange*0.06;
+      function scX(v)  {{ return SC_PAD.l+((v-(minV-vPad))/(vRange+2*vPad))*plotW; }}
+      function scY(rv) {{ return SC_PAD.t+plotH-((rv-(minR-rPad))/(rRange+2*rPad))*plotH; }}
+      var scTitle=(isAlpha?'Vol vs Alpha ':'Vol vs Retorno ')+win;
+      scSvg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+SC_SIZE+' '+SC_SIZE+'" width="100%" style="font-family:inherit;overflow:visible;display:block">';
+      scSvg+='<text x="'+(SC_PAD.l+plotW/2)+'" y="16" font-size="10" fill="var(--muted)" text-anchor="middle" font-weight="500">'+scTitle+'</text>';
+      scSvg+='<line x1="'+SC_PAD.l+'" y1="'+SC_PAD.t+'" x2="'+SC_PAD.l+'" y2="'+(SC_PAD.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.8"/>';
+      scSvg+='<line x1="'+SC_PAD.l+'" y1="'+(SC_PAD.t+plotH)+'" x2="'+(SC_PAD.l+plotW)+'" y2="'+(SC_PAD.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.8"/>';
+      scSvg+='<text x="'+(SC_PAD.l+plotW/2)+'" y="'+(SC_SIZE-6)+'" font-size="10" fill="var(--muted)" text-anchor="middle">Volatilidade (anual)</text>';
+      scSvg+='<text x="11" y="'+(SC_PAD.t+plotH/2)+'" font-size="10" fill="var(--muted)" text-anchor="middle" transform="rotate(-90,11,'+(SC_PAD.t+plotH/2)+')">'+(isAlpha?'Alpha':'Retorno')+' '+win+'</text>';
+      if (minR<0&&maxR>0) {{ var zy=scY(0); scSvg+='<line x1="'+SC_PAD.l+'" y1="'+zy+'" x2="'+(SC_PAD.l+plotW)+'" y2="'+zy+'" stroke="var(--line-2)" stroke-width="0.6" stroke-dasharray="4,3"/>'; }}
+      for(var i=0;i<=5;i++) {{
+        var rv=minR+rRange*i/5, ty=scY(rv);
+        scSvg+='<line x1="'+SC_PAD.l+'" y1="'+ty+'" x2="'+(SC_PAD.l+plotW)+'" y2="'+ty+'" stroke="var(--line-2)" stroke-width="0.3" opacity="0.4"/>';
+        scSvg+='<text x="'+(SC_PAD.l-6)+'" y="'+(ty+3)+'" font-size="9" fill="var(--muted)" text-anchor="end">'+(rv>=0?'+':'')+(rv*100).toFixed(0)+suffix+'</text>';
+        var xv=minV+vRange*i/5, tx=scX(xv);
+        scSvg+='<line x1="'+tx+'" y1="'+SC_PAD.t+'" x2="'+tx+'" y2="'+(SC_PAD.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.3" opacity="0.4"/>';
+        scSvg+='<text x="'+tx+'" y="'+(SC_PAD.t+plotH+14)+'" font-size="9" fill="var(--muted)" text-anchor="middle">'+(xv*100).toFixed(0)+'%</text>';
+      }}
+      [
+        scBase.filter(function(r){{return !_isGlpgFundRpt(r,groupFundName)&&!r.is_bench;}}),
+        scBase.filter(function(r){{return !!r.is_bench;}}),
+        scBase.filter(function(r){{return _isGlpgFundRpt(r,groupFundName);}})
+      ].forEach(function(layer) {{
+        layer.forEach(function(r) {{
+          var cx=scX(r.Vol), cy=scY(r._dv);
+          var isFund=_isGlpgFundRpt(r,groupFundName), isBench=!!r.is_bench;
+          var radius    = isFund?7:isBench?5:4.5;
+          var dotFill   = isFund?'rgba(255,193,7,.9)':isBench?'rgba(150,160,175,.65)':'rgba(100,140,210,.65)';
+          var dotStroke = isFund?'#ffc107':isBench?'rgba(180,190,200,.8)':'rgba(120,160,230,.8)';
+          var retLbl    = (r._dv>=0?'+':'')+(r._dv*100).toFixed(2)+suffix;
+          var cn        = truncName(cleanName(r.name||''),18);
+          scSvg+='<circle cx="'+cx+'" cy="'+cy+'" r="'+radius+'" fill="'+dotFill+'" stroke="'+dotStroke+'" stroke-width="1"/>';
+          if(isFund||isBench) scSvg+='<text x="'+cx+'" y="'+(cy-radius-4)+'" font-size="'+(isFund?10:9)+'" fill="'+(isFund?'var(--accent)':'var(--muted)')+'" text-anchor="middle" font-weight="'+(isFund?'600':'400')+'">'+cn+'</text>';
+        }});
+      }});
+      scSvg+='</svg>';
+    }}
+
+    var chartBox=function(title,svg){{return '<div style="min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">'+title+'</div>'+svg+'</div>';}};
+    wrap.innerHTML = barRows.length
+      ? chartBox(barTitle,barSvg)+(scSvg?chartBox(scTitle||'',scSvg):'')
+      : '<div style="color:var(--muted);font-size:12px;padding:16px">Sem dados para '+win+'</div>';
+  }}
+
+  function renderAllPeersTables() {{
+    renderTable(document.getElementById('rpt-peers-tbl'), _rptPeersGrp);
+    document.querySelectorAll('.rpt-peers-fund-tbl').forEach(function(tbl) {{
+      renderTable(tbl, tbl.dataset.peersGroup);
+    }});
+    if (_rptView === 'charts') _renderPeersCharts(_rptPeersGrp);
+  }}
+
+  var _rptPeersGrp = 'EVOLUTION';
+  window._rptPeersGrp = _rptPeersGrp;
+
+  window.rptOnGroupChange = function() {{
+    var sel = document.getElementById('rpt-peers-grp-sel');
+    if (sel) {{ _rptPeersGrp = sel.value; window._rptPeersGrp = _rptPeersGrp; }}
+    renderAllPeersTables();
+  }};
+
+  window.rptSetPeersMode = function(mode) {{
+    _mode = mode;
+    document.getElementById('rpt-btn-abs')  && document.getElementById('rpt-btn-abs').classList.toggle('active',  mode==='abs');
+    document.getElementById('rpt-btn-alpha')&& document.getElementById('rpt-btn-alpha').classList.toggle('active', mode==='alpha');
+    renderAllPeersTables();
+  }};
+
+  window.rptSetPeriod = function(win) {{
+    _rptWin  = win;
+    _sortKey = win;
+    ['mtd','ytd','12m','24m','36m'].forEach(function(k) {{
+      var b = document.getElementById('rpt-per-'+k);
+      if (b) b.classList.toggle('active', k === win.toLowerCase());
+    }});
+    renderAllPeersTables();
+  }};
+
+  window.rptSetView = function(view) {{
+    _rptView = view;
+    var chartsWrap = document.getElementById('rpt-peers-charts-wrap');
+    var tblWrap    = document.getElementById('rpt-peers-tbl-wrap');
+    var btnTbl     = document.getElementById('rpt-view-tbl');
+    var btnChrt    = document.getElementById('rpt-view-chrt');
+    if (chartsWrap) chartsWrap.style.display = view==='charts' ? '' : 'none';
+    if (tblWrap)    tblWrap.style.display    = view==='table'  ? '' : 'none';
+    if (btnTbl)  btnTbl.classList.toggle('active',  view==='table');
+    if (btnChrt) btnChrt.classList.toggle('active', view==='charts');
+    if (view==='charts') _renderPeersCharts(_rptPeersGrp);
+  }};
+
+  window.initRptPeers = function() {{
+    if (!_RPT_PEERS || !_RPT_PEERS.groups) return;
+    var GROUPS_ORDER = ['EVOLUTION','ALBATROZ','FRONTIER','NAZCA','IGUANA','DRAGON','SEA LION','MACRO','GLOBAL','PELICAN'];
+    var available = Object.keys(_RPT_PEERS.groups);
+    var ordered   = GROUPS_ORDER.filter(function(g){{return available.includes(g);}})
+                    .concat(available.filter(function(g){{return !GROUPS_ORDER.includes(g);}}));
+    var sel = document.getElementById('rpt-peers-grp-sel');
+    if (sel) {{
+      sel.innerHTML = '';
+      ordered.forEach(function(g) {{
+        var opt = document.createElement('option');
+        opt.value = g; opt.textContent = g;
+        if (g === _rptPeersGrp) opt.selected = true;
+        sel.appendChild(opt);
+      }});
+      if (!ordered.includes(_rptPeersGrp) && ordered.length) {{
+        _rptPeersGrp = ordered[0]; window._rptPeersGrp = _rptPeersGrp;
+      }}
+    }}
+    renderAllPeersTables();
+  }};
+}})();
+</script>
 <script>
 /* ── iOS touch polyfill ──────────────────────────────────────────────────────
  * Safari Mobile has two quirks that break the report on iPhone/iPad:
@@ -3228,6 +3832,9 @@ def main():  # noqa: C901
             short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
+        _pnl_date      = str(_prev_bday(DATA))
+        fut_book_pnl   = ex.submit(fetch_book_pnl,   _pnl_date)
+        fut_peers_data = ex.submit(fetch_peers_data)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
     df_risk     = fut_risk.result()
@@ -3481,6 +4088,17 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  NAV warmup failed ({e})")
 
+    try:
+        book_pnl = fut_book_pnl.result()
+    except Exception as e:
+        print(f"  Book PnL fetch failed ({e})")
+        book_pnl = {}
+    try:
+        peers_data = fut_peers_data.result()
+    except Exception as e:
+        print(f"  Peers data fetch failed ({e})")
+        peers_data = {}
+
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
     # ── Data manifest: what landed and what is stale/missing ─────────────────
@@ -3548,6 +4166,7 @@ def main():  # noqa: C901
         dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
         vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
         expo_date_label=expo_date_label, data_manifest=data_manifest,
+        book_pnl=book_pnl, peers_data=peers_data,
     )
     html = build_html(report_data)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
