@@ -15,6 +15,7 @@ from __future__ import annotations
 import pandas as pd
 
 from risk_config import _EVO_EXPECTED_STRATS
+from risk_runtime import fmt_br_num as _fmt_br_num
 from svg_renderers import evo_spark_svg as _evo_spark_svg
 from evolution_diversification_card import (
     build_ratio_series          as _evo_build_ratio_series,
@@ -57,7 +58,7 @@ def _evo_render_camada1(rows: list) -> str:
     tr_html = ""
     for r in rows:
         c     = _evo_pct_color(r["pct"])
-        vstr  = "—" if pd.isna(r["var_today"]) else f"{r['var_today']:,.1f}"
+        vstr  = "—" if pd.isna(r["var_today"]) else _fmt_br_num(f"{r['var_today']:,.1f}")
         pstr  = "—" if pd.isna(r["pct"])       else f"P{r['pct']:.0f}"
         badge = _evo_pct_badge(r["pct"])
         tr_html += (
@@ -127,7 +128,7 @@ def _evo_render_camada2(d: dict) -> str:
 
     strat_rows_html = ""
     for s, v in rows:
-        vstr  = "—" if v is None else f"{v:,.1f}"
+        vstr  = "—" if v is None else _fmt_br_num(f"{v:,.1f}")
         share = "—" if (v is None or d["var_soma_bps"] == 0) \
                      else f"{v/d['var_soma_bps']*100:.0f}%"
         strat_rows_html += (
@@ -138,14 +139,14 @@ def _evo_render_camada2(d: dict) -> str:
     strat_rows_html += (
         "<tr style='border-top:1.5px solid var(--line-2);font-weight:600'>"
         f"<td>Σ VaR estratégias <span style='color:var(--muted);font-weight:400'>(raw)</span></td>"
-        f"<td class='mono' style='text-align:right'>{d['var_soma_bps']:,.1f}</td>"
+        f"<td class='mono' style='text-align:right'>{_fmt_br_num(f\"{d['var_soma_bps']:,.1f}\")}</td>"
         f"<td class='mono' style='text-align:right;color:var(--muted)'>100%</td></tr>"
     )
     if abs(d['var_soma_bps'] - d['var_soma_wins_bps']) > 0.01:
         strat_rows_html += (
             "<tr style='font-weight:700'>"
             f"<td>Σ VaR estratégias <span style='color:var(--up);font-weight:400'>(winsorizado)</span></td>"
-            f"<td class='mono' style='text-align:right;color:var(--up)'>{d['var_soma_wins_bps']:,.1f}</td>"
+            f"<td class='mono' style='text-align:right;color:var(--up)'>{_fmt_br_num(f\"{d['var_soma_wins_bps']:,.1f}\")}</td>"
             f"<td class='mono' style='text-align:right;color:var(--muted)'>—</td></tr>"
         )
 
@@ -211,12 +212,12 @@ def _evo_render_camada2(d: dict) -> str:
 
           <div style="margin-top:16px;font-size:13px;line-height:1.7">
             <div><b>VaR real (fundo):</b>
-              <span class="mono">{d['var_real_bps']:,.1f} bps</span></div>
+              <span class="mono">{_fmt_br_num(f"{d['var_real_bps']:,.1f}")} bps</span></div>
             <div><b>Σ estratégias (winsor.):</b>
-              <span class="mono">{d['var_soma_wins_bps']:,.1f} bps</span></div>
+              <span class="mono">{_fmt_br_num(f"{d['var_soma_wins_bps']:,.1f}")} bps</span></div>
             <div><b>Benefício:</b>
               <span class="mono">
-                −{d['var_soma_wins_bps'] - d['var_real_bps']:,.1f} bps
+                −{_fmt_br_num(f"{d['var_soma_wins_bps'] - d['var_real_bps']:,.1f}")} bps
                 ({saving_pct:.0f}% redução)
               </span></div>
             <div style="margin-top:6px"><b>Share CREDITO na Σ:</b>

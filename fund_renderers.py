@@ -978,7 +978,7 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
         elif v >= ref:   col = "#fb923c"        # > Margem (1 VaR)
         elif v >= sigma: col = "var(--warn)"    # > 1σ
         else:            col = "var(--text)"
-        return f'<td class="mono" style="text-align:right;color:{col}">{v:,.1f}</td>'
+        return f'<td class="mono" style="text-align:right;color:{col}">{_fmt_br_num(f"{v:,.1f}")}</td>'
 
     rows = ""
     for pm in pm_order:
@@ -990,7 +990,7 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
         v_21, v_63, v_252 = h.get("v21"), h.get("v63"), h.get("v252")
         worst  = h.get("worst")
         n_obs  = h.get("n", 0)
-        marg_s = f'{margem:,.0f}' if margem is not None else '—'
+        marg_s = _fmt_br_num(f'{margem:,.0f}') if margem is not None else '—'
         marg_html = f'<td class="mono" style="text-align:right;color:var(--accent-2);font-weight:700">{marg_s}</td>'
         rows += (
             f'<tr>'

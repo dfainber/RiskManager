@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from glpg_fetch import read_sql
+from risk_runtime import fmt_br_num as _fmt_br_num
 
 DESK = "Galapagos Evolution FIC FIM CP"
 EXPECTED_STRATS = ["MACRO", "SIST", "FRONTIER", "CREDITO", "EVO_STRAT", "CAIXA"]
@@ -801,7 +802,7 @@ def render_card(d: dict) -> str:
             Camada 2 — Diversification Benefit
           </span>
           <span style="color:#888;font-size:13px">
-            {d['date']} · NAV R$ {nav_m:,.0f}M · CREDITO winsorizado (63d MAD, 3σ)
+            {d['date']} · NAV R$ {_fmt_br_num(f"{nav_m:,.0f}")}M · CREDITO winsorizado (63d MAD, 3σ)
           </span>
         </div>
       </div>

@@ -13,6 +13,7 @@ import json
 
 import pandas as pd
 
+from risk_runtime import fmt_br_num as _fmt_br_num
 from risk_config import (
     _PA_LIVRO_RENAMES,
     _PA_ORDER_BY_LEVEL,
@@ -70,7 +71,7 @@ def _pa_pos_cell(v: float) -> str:
     if abs(v) < 1e5:  # <100k reais
         return '<td class="t-num mono pa-pos" style="color:var(--muted)">—</td>'
     m = v / 1e6
-    return f'<td class="t-num mono pa-pos" style="color:var(--muted)">{m:,.1f}</td>'
+    return f'<td class="t-num mono pa-pos" style="color:var(--muted)">{_fmt_br_num(f"{m:,.1f}")}</td>'
 
 
 def _build_pa_tree(df: pd.DataFrame, levels: list) -> dict:
