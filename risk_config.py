@@ -19,9 +19,11 @@ FUNDS = {
 # Funds in LOTE_FUND_STRESS (product-level, not RPM). Limits provisional — to be calibrated.
 # informative=True → VaR/Stress shown as reference (no limit, no util %). Used for Frontier (LO equity).
 RAW_FUNDS = {
-    "GALAPAGOS ALBATROZ FIRF LP": {"short": "ALBATROZ", "stress_col": "macro", "var_soft": 1.0, "var_hard": 1.5, "stress_soft": 5.0, "stress_hard": 8.0},
-    "Galapagos Global Macro Q":   {"short": "MACRO_Q",  "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
-    "Frontier A\u00e7\u00f5es FIC FI": {"short": "FRONTIER", "stress_col": "macro", "var_soft": 99.0, "var_hard": 99.0, "stress_soft": 99.0, "stress_hard": 99.0, "informative": True},
+    "GALAPAGOS ALBATROZ FIRF LP":                 {"short": "ALBATROZ", "stress_col": "macro", "var_soft": 1.0,  "var_hard": 1.5,  "stress_soft": 5.0,  "stress_hard": 8.0},
+    "Galapagos Global Macro Q":                   {"short": "MACRO_Q",  "stress_col": "spec",  "var_soft": 2.10, "var_hard": 3.00, "stress_soft": 21.0, "stress_hard": 30.0},
+    "Frontier A\u00e7\u00f5es FIC FI":            {"short": "FRONTIER", "stress_col": "macro", "var_soft": 99.0, "var_hard": 99.0, "stress_soft": 99.0, "stress_hard": 99.0, "informative": True},
+    # Limites provis\u00f3rios \u2014 confirmar mandato (fundo prev multimercado, duration real ~3-4 anos)
+    "Galapagos Baltra Icatu Qualif Prev FIM CP":  {"short": "BALTRA",   "stress_col": "macro", "var_soft": 1.75, "var_hard": 2.50, "stress_soft": 12.6, "stress_hard": 18.0},
 }
 # IDKA funds — benchmarked RF. Primary metric = BVaR (relative), secondary = VaR (reference, no limit).
 # Data source: LOTE45.LOTE_PARAMETRIC_VAR_TABLE (RELATIVE_VAR_PCT, ABSOLUTE_VAR_PCT).
@@ -67,11 +69,11 @@ REPORTS = [
     ("briefing",        "Briefing"),
     ("peers",           "Peers"),
 ]
-FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
+FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "BALTRA", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
 FUND_LABELS = {
     "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
-    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "FRONTIER": "Frontier",
-    "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
+    "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "BALTRA": "Baltra",
+    "FRONTIER": "Frontier", "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
 }
 
 
@@ -95,6 +97,7 @@ _FUND_PA_KEY = {
     "EVOLUTION": "EVOLUTION",
     "MACRO_Q":   "GLOBAL",
     "ALBATROZ":  "ALBATROZ",
+    "BALTRA":    "BALTRA",
     "FRONTIER":  "GFA",
     "IDKA_3Y":   "IDKAIPCAY3",
     "IDKA_10Y":  "IDKAIPCAY10",
@@ -108,6 +111,7 @@ _FUND_PEERS_GROUP: dict[str, str | None] = {
     "EVOLUTION": "EVOLUTION",
     "MACRO_Q":   "EVOLUTION",
     "ALBATROZ":  "ALBATROZ",
+    "BALTRA":    None,
     "FRONTIER":  "FRONTIER",
     "IDKA_3Y":   None,
     "IDKA_10Y":  None,
@@ -117,8 +121,9 @@ _FUND_PEERS_GROUP: dict[str, str | None] = {
 # Their dia_bps contribution moves with the index, not with alpha — exclude
 # from "≥ 1% NAV" alerts since the index itself is not a risk event.
 _PA_BENCH_LIVROS = {
-    "IDKAIPCAY3":  {"CI"},   # CI book tracks the IDKA 3Y index
-    "IDKAIPCAY10": {"CI"},   # CI book tracks the IDKA 10Y index
+    "IDKAIPCAY3":  {"CI"},            # CI book tracks the IDKA 3Y index
+    "IDKAIPCAY10": {"CI"},            # CI book tracks the IDKA 10Y index
+    "BALTRA":      {"Benchmark_IDKA", "Caixa", "Caixa USD"},  # passive tracking + cash books
 }
 
 

@@ -475,6 +475,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
           <input class="pa-search" type="search" placeholder="🔍 buscar..." oninput="filterPa(this)" title="Filtrar por nome (busca parcial)"/>
           <button class="pa-btn" onclick="expandAllPa(this)"    title="Expandir tudo">⤢ Expandir</button>
           <button class="pa-btn" onclick="collapseAllPa(this)"  title="Colapsar tudo">⤡ Colapsar</button>
+          <button class="pa-btn" onclick="resetPaSort(this)"    title="Voltar à ordem padrão (YTD desc)">↺ Reset</button>
         </div>
         <div class="pa-view-toggle">
           <button class="pa-tgl {classe_active_cls}" data-pa-view="classe"

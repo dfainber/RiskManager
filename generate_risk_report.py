@@ -105,6 +105,7 @@ from data_fetch import (
     fetch_cdi_returns,
     fetch_book_pnl,
     fetch_peers_data,
+    fetch_market_snapshot,
 )
 
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
@@ -172,6 +173,7 @@ class ReportData:
     data_manifest:    Optional[dict]            = None
     book_pnl:         Optional[dict]            = None
     peers_data:       Optional[dict]            = None
+    market_snap:      Optional[dict]            = None
 
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
@@ -252,6 +254,225 @@ def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
 # cotas-júnior spike — see docs/CREDITO_TREATMENT.md.
 
 
+def _mkt_spark(history: list, up: bool = True, w: int = 80, h: int = 22) -> str:
+    vals = [v for v in history if v is not None]
+    if len(vals) < 2:
+        return ""
+    mn, mx = min(vals), max(vals)
+    rng = mx - mn or 1e-10
+    n = len(vals)
+    pts = " ".join(
+        f"{i/(n-1)*w:.1f},{h - (v-mn)/rng*(h-4) - 2:.1f}"
+        for i, v in enumerate(vals)
+    )
+    color = "#26a65b" if up else "#e74c3c"
+    return (
+        f'<svg width="{w}" height="{h}" style="vertical-align:middle;display:block">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}"'
+        f' stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        f'</svg>'
+    )
+
+
+def _build_market_section(snap: dict) -> str:
+    if not snap or not snap.get("sections"):
+        return ""
+
+    val_date = snap.get("val_date", "")
+    by_label = {s["label"]: s for s in snap["sections"]}
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    _NULL = '<span class="mkt-null">—</span>'
+
+    def _val(row: dict) -> str:
+        v, fmt, dec = row.get("value"), row.get("fmt", "price"), row.get("decimals", 2)
+        if v is None:
+            return _NULL
+        return f'{v:,.{dec}f}' if fmt == "index" else f'{v:.{dec}f}'
+
+    def _dir(row: dict, win: str) -> float | None:
+        rm = row.get("rate_mode", False)
+        if win == "1d":
+            return row.get("chg") if rm else row.get("chg_pct")
+        if win == "5d":
+            return row.get("chg_5d") if rm else row.get("chg_pct_5d")
+        return row.get("chg_1m") if rm else row.get("chg_pct_1m")
+
+    def _delta(row: dict, win: str) -> str:
+        rm = row.get("rate_mode", False)
+        if win == "1d":
+            chg, pct = row.get("chg"), row.get("chg_pct")
+        elif win == "5d":
+            chg, pct = row.get("chg_5d"), row.get("chg_pct_5d")
+        else:
+            chg, pct = row.get("chg_1m"), row.get("chg_pct_1m")
+        if rm:
+            if chg is None:
+                return _NULL
+            c = "#26a65b" if chg >= 0 else "#e74c3c"
+            s = "+" if chg >= 0 else ""
+            return f'<span style="color:{c}">{s}{chg:.1f} bps</span>'
+        else:
+            if pct is None:
+                return _NULL
+            c = "#26a65b" if pct >= 0 else "#e74c3c"
+            s = "+" if pct >= 0 else ""
+            return f'<span style="color:{c}">{s}{pct*100:.2f}%</span>'
+
+    def _arrow(d: float | None) -> str:
+        if d is None:
+            return _NULL
+        c = "#26a65b" if d >= 0 else "#e74c3c"
+        g = "↑" if d >= 0 else "↓"
+        return f'<span style="color:{c}">{g}</span>'
+
+    def _spark(row: dict, win: str = "1d") -> str:
+        d = _dir(row, win)
+        return _mkt_spark(row.get("history", []), up=d >= 0 if d is not None else True)
+
+    def _unit(row: dict) -> str:
+        u = row.get("unit", "")
+        return f'<span class="mkt-unit">{u}</span>' if u else ""
+
+    # ── Janelas panel row (toggle-driven: pre-renders 1D/5D/1M, JS shows one) ─
+    def _row_janelas(row: dict) -> str:
+        d1, d5, dm = _delta(row, "1d"), _delta(row, "5d"), _delta(row, "1m")
+        a1 = _arrow(_dir(row, "1d"))
+        a5 = _arrow(_dir(row, "5d"))
+        am = _arrow(_dir(row, "1m"))
+        spark = _spark(row)
+        return (
+            f'<tr>'
+            f'<td class="mkt-lbl">{row["label"]}</td>'
+            f'<td class="mkt-val">{_val(row)}{_unit(row)}</td>'
+            f'<td class="mkt-chg">'
+            f'<span class="mkt-dw mkt-d1d">{d1}</span>'
+            f'<span class="mkt-dw mkt-d5d" style="display:none">{d5}</span>'
+            f'<span class="mkt-dw mkt-d1m" style="display:none">{dm}</span>'
+            f'</td>'
+            f'<td class="mkt-arr">'
+            f'<span class="mkt-dw mkt-d1d">{a1}</span>'
+            f'<span class="mkt-dw mkt-d5d" style="display:none">{a5}</span>'
+            f'<span class="mkt-dw mkt-d1m" style="display:none">{am}</span>'
+            f'</td>'
+            f'<td class="mkt-spark">{spark}</td>'
+            f'</tr>'
+        )
+
+    # ── Full-table row (all 3 windows as fixed columns) ───────────────────────
+    def _row_full(row: dict) -> str:
+        d1, d5, dm = _delta(row, "1d"), _delta(row, "5d"), _delta(row, "1m")
+        a1 = _arrow(_dir(row, "1d"))
+        a5 = _arrow(_dir(row, "5d"))
+        am = _arrow(_dir(row, "1m"))
+        spark = _spark(row)
+        return (
+            f'<tr>'
+            f'<td class="mkt-lbl">{row["label"]}</td>'
+            f'<td class="mkt-val">{_val(row)}{_unit(row)}</td>'
+            f'<td class="mkt-chg">{d1}</td><td class="mkt-arr">{a1}</td>'
+            f'<td class="mkt-chg">{d5}</td><td class="mkt-arr">{a5}</td>'
+            f'<td class="mkt-chg">{dm}</td><td class="mkt-arr">{am}</td>'
+            f'<td class="mkt-spark">{spark}</td>'
+            f'</tr>'
+        )
+
+    def _panel(group: dict, row_fn) -> str:
+        rows = "".join(row_fn(r) for r in group["rows"])
+        return (
+            f'<div class="mkt-panel">'
+            f'<div class="mkt-panel-hdr">{group["label"]}</div>'
+            f'<table class="mkt-tbl" data-no-sort="1"><tbody>{rows}</tbody></table>'
+            f'</div>'
+        )
+
+    def _full_table(rows: list) -> str:
+        body = "".join(_row_full(r) for r in rows)
+        return (
+            f'<table class="mkt-tbl mkt-full-tbl">'
+            f'<thead><tr>'
+            f'<th style="text-align:left">Instrumento</th>'
+            f'<th>Nível</th>'
+            f'<th>1D</th><th></th>'
+            f'<th>5D</th><th></th>'
+            f'<th>1M</th><th></th>'
+            f'<th></th>'
+            f'</tr></thead>'
+            f'<tbody>{body}</tbody>'
+            f'</table>'
+        )
+
+    # ── Render sub-tabs ───────────────────────────────────────────────────────
+    janelas_sec = by_label.get("Janelas", {})
+    moedas_sec  = by_label.get("Moedas", {})
+    commod_sec  = by_label.get("Commodities", {})
+
+    jan_panels = "".join(
+        _panel(g, _row_janelas) for g in janelas_sec.get("groups", [])
+    )
+    jan_html = (
+        f'<div class="mkt-win-bar">'
+        f'<span class="mkt-win-lbl">Janela:</span>'
+        f'<button class="mkt-win-btn active" data-win="1d" onclick="selectMktWin(\'1d\')">1D</button>'
+        f'<button class="mkt-win-btn" data-win="5d" onclick="selectMktWin(\'5d\')">5D</button>'
+        f'<button class="mkt-win-btn" data-win="1m" onclick="selectMktWin(\'1m\')">1M</button>'
+        f'</div>'
+        f'<div class="mkt-panels-grid">{jan_panels}</div>'
+    ) if jan_panels else ""
+
+    moe_html = (
+        f'<div style="padding:4px 0">{_full_table(moedas_sec.get("rows", []))}</div>'
+    ) if moedas_sec else ""
+
+    com_panels = "".join(
+        _panel(g, _row_full) for g in commod_sec.get("groups", [])
+    )
+    com_html = (
+        f'<div class="mkt-panels-grid">{com_panels}</div>'
+    ) if com_panels else ""
+
+    # ── Assemble ──────────────────────────────────────────────────────────────
+    return f"""<div class="section-wrap" data-view="market">
+  <section class="card">
+    <div class="card-head" style="flex-wrap:wrap;gap:8px">
+      <span class="card-title">Mercado</span>
+      <span class="card-sub">— {val_date}</span>
+      <div class="mkt-subtabs" style="margin-left:auto">
+        <button class="mkt-stab active" data-stab="janelas" onclick="selectMktTab('janelas')">Janelas</button>
+        <button class="mkt-stab" data-stab="moedas"  onclick="selectMktTab('moedas')">Moedas</button>
+        <button class="mkt-stab" data-stab="commodities" onclick="selectMktTab('commodities')">Commodities</button>
+      </div>
+    </div>
+    <div id="mkt-janelas"     class="mkt-view">{jan_html}</div>
+    <div id="mkt-moedas"      class="mkt-view" style="display:none">{moe_html}</div>
+    <div id="mkt-commodities" class="mkt-view" style="display:none">{com_html}</div>
+  </section>
+  <script>
+  (function(){{
+    if (window._mktInit) return; window._mktInit = true;
+    window.selectMktTab = function(name) {{
+      document.querySelectorAll('.mkt-stab').forEach(function(b){{
+        b.classList.toggle('active', b.dataset.stab === name);
+      }});
+      document.querySelectorAll('.mkt-view').forEach(function(v){{
+        v.style.display = v.id === 'mkt-'+name ? '' : 'none';
+      }});
+    }};
+    window.selectMktWin = function(w) {{
+      document.querySelectorAll('.mkt-win-btn').forEach(function(b){{
+        b.classList.toggle('active', b.dataset.win === w);
+      }});
+      ['1d','5d','1m'].forEach(function(ww){{
+        document.querySelectorAll('#mkt-janelas .mkt-d'+ww).forEach(function(el){{
+          el.style.display = ww === w ? '' : 'none';
+        }});
+      }});
+    }};
+  }})();
+  </script>
+</div>"""
+
+
 def build_html(d: ReportData) -> str:
     # Unpack for readability inside this function — no logic changes below this block.
     (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
@@ -278,6 +499,7 @@ def build_html(d: ReportData) -> str:
         d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.df_quant_var, d.df_quant_var_d1,
         d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.df_evo_var, d.df_evo_var_d1,
         d.df_evo_pnl_prod)
+    market_snap = d.market_snap or {}
     alerts = []
     td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
     sections = []  # list of (fund_short, report_id, html)
@@ -285,6 +507,20 @@ def build_html(d: ReportData) -> str:
 
     def util_color(u):
         return "var(--up)" if u < 70 else "var(--warn)" if u < 100 else "var(--down)"
+
+    def _latest_hs_var_bps(short: str) -> float | None:
+        """Latest fund-level HS VaR (bps) — same source as the Risk Monitor card."""
+        td = td_by_short.get(short)
+        if td is None:
+            return None
+        s = series_map.get(td)
+        if s is None or s.empty:
+            return None
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if s_avail.empty:
+            return None
+        return abs(float(s_avail.iloc[-1]["var_pct"])) * 100.0
+
 
     for short in FUND_ORDER:
         td = td_by_short.get(short)
@@ -554,7 +790,8 @@ def build_html(d: ReportData) -> str:
             ) or ""
         sections.append(("MACRO", "stop-monitor", _stop_html + _bvv_html))
     if df_expo is not None:
-        _expo_html = build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem)
+        _expo_html = build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
+                                            diversified_var_bps=_latest_hs_var_bps("MACRO"))
         if expo_date_label:
             _stale_banner = (f'<div style="background:#7c2d12;color:#fca5a5;font-size:11px;padding:4px 12px;'
                              f'border-radius:4px;margin-bottom:6px">⚠ Dados de exposição indisponíveis para '
@@ -637,6 +874,7 @@ def build_html(d: ReportData) -> str:
             df_d1=df_quant_expo_d1,
             df_var=df_quant_var,
             df_var_d1=df_quant_var_d1,
+            diversified_var_bps=_latest_hs_var_bps("QUANT"),
         )
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
@@ -649,6 +887,7 @@ def build_html(d: ReportData) -> str:
             df_var=df_evo_var,
             df_var_d1=df_evo_var_d1,
             df_pnl_prod=df_evo_pnl_prod,
+            diversified_var_bps=_latest_hs_var_bps("EVOLUTION"),
         )
         if e_expo_html:
             sections.append(("EVOLUTION", "exposure", e_expo_html))
@@ -886,6 +1125,7 @@ def build_html(d: ReportData) -> str:
     #   Others  → BVaR vs CDI ≈ abs VaR (CDI has effectively zero daily vol)
     _BENCH_BY_FUND = {
         "MACRO": "CDI", "QUANT": "CDI", "EVOLUTION": "CDI", "MACRO_Q": "CDI", "ALBATROZ": "CDI",
+        "BALTRA": "IPCA+",  # benchmark provisório — fundo prev real rates ~3-4Y duration
         "FRONTIER": "IBOV", "IDKA_3Y": "IDKA 3A", "IDKA_10Y": "IDKA 10A",
     }
     house_rows = []
@@ -1136,11 +1376,17 @@ def build_html(d: ReportData) -> str:
                 f'<div class="card-head">'
                 f'<span class="card-title">Peers — {FUND_LABELS.get(f, f)}</span>'
                 f'<span class="card-sub">— {_peers_val_date} · grupo {_pg}</span>'
-                f'<div class="pa-view-toggle" style="margin-left:auto">'
+                f'<div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">'
                 f'<button class="pa-tgl active" onclick="rptSetPeersMode(\'abs\')">Absoluto</button>'
                 f'<button class="pa-tgl"        onclick="rptSetPeersMode(\'alpha\')">Alpha</button>'
+                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
+                f'<button class="pa-tgl active rpt-fpeers-vw" data-fview="charts" data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'charts\')">Gráficos</button>'
+                f'<button class="pa-tgl rpt-fpeers-vw"        data-fview="table"  data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'table\')">Tabela</button>'
                 f'</div></div>'
-                f'<div style="overflow-x:auto">'
+                f'<div class="rpt-peers-fund-strips" data-peers-group="{_pg}" '
+                f'style="padding:8px 4px"></div>'
+                f'<div class="rpt-peers-fund-tbl-wrap" data-peers-group="{_pg}" '
+                f'style="overflow-x:auto;display:none">'
                 f'<table class="summary-table rpt-peers-fund-tbl" data-no-sort="1" data-peers-group="{_pg}">'
                 f'<tbody></tbody></table>'
                 f'</div></section></div>'
@@ -1308,8 +1554,8 @@ def build_html(d: ReportData) -> str:
     # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
     alerts_html = ""
 
-    # ── Market tab — parked (IMA-B scale, US10Y col name, SPY/GLD ticker format) ──
-    market_section_html = ""
+    # ── Market tab ────────────────────────────────────────────────────────────
+    market_section_html = _build_market_section(market_snap)
 
     # ── P&L tab section (house-level) ─────────────────────────────────────────
     _book_pnl_json = json.dumps(_book_pnl, separators=(",", ":"), ensure_ascii=False)
@@ -1374,8 +1620,7 @@ def build_html(d: ReportData) -> str:
         '<button class="mode-tab" data-mode="quality" onclick="selectMode(\'quality\')" style="opacity:0.55;font-size:11px">Qualidade</button>'
         '<button class="mode-tab" data-mode="pnl"     onclick="selectMode(\'pnl\')">P&amp;L</button>'
         '<button class="mode-tab" data-mode="peers"   onclick="selectMode(\'peers\')">Peers</button>'
-        # Market tab parked — data queries need fixing before re-enabling
-        # '<button class="mode-tab" data-mode="market"  onclick="selectMode(\'market\')">Market</button>'
+        '<button class="mode-tab" data-mode="market"  onclick="selectMode(\'market\')">Markets</button>'
     )
     report_subtabs_html = "".join(
         f'<button class="tab" data-target="{rid}" onclick="selectReport(\'{rid}\')">{label}</button>'
@@ -1667,23 +1912,45 @@ def build_html(d: ReportData) -> str:
     .mono {{ font-size: 10px; }}
   }}
   /* ── Market tab ── */
-  .mkt-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; }}
+  .mkt-subtabs {{ display:flex; gap:4px; }}
+  .mkt-stab {{
+    background:none; border:1px solid var(--line); border-radius:5px;
+    color:var(--muted); font-size:11px; padding:3px 10px; cursor:pointer;
+    transition:color .15s,border-color .15s,background .15s;
+  }}
+  .mkt-stab:hover {{ color:var(--text); border-color:var(--accent); }}
+  .mkt-stab.active {{ color:var(--text); background:var(--panel-2); border-color:var(--accent); }}
+  .mkt-view {{ }}
+  .mkt-win-bar {{ display:flex; align-items:center; gap:4px; padding:10px 14px 0; }}
+  .mkt-win-lbl {{ font-size:10px; color:var(--muted); margin-right:4px; }}
+  .mkt-win-btn {{
+    background:none; border:1px solid var(--line); border-radius:4px;
+    color:var(--muted); font-size:10px; padding:2px 8px; cursor:pointer;
+    transition:color .12s,border-color .12s,background .12s;
+  }}
+  .mkt-win-btn.active {{ color:var(--text); background:var(--panel-2); border-color:var(--accent); }}
+  .mkt-panels-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:10px 14px 14px; }}
   .mkt-panel {{ border:1px solid var(--line); border-radius:8px; overflow:hidden; }}
-  .mkt-panel-hdr {{ padding:8px 14px; background:var(--panel-2); font-size:10px; font-weight:700;
+  .mkt-panel-hdr {{ padding:7px 12px; background:var(--panel-2); font-size:10px; font-weight:700;
                     letter-spacing:.8px; text-transform:uppercase; color:var(--muted);
                     border-bottom:1px solid var(--line); }}
   .mkt-tbl {{ width:100%; border-collapse:collapse; font-size:12px; }}
-  .mkt-tbl th {{ background:var(--panel-2); padding:5px 10px; text-align:right;
-                 border-bottom:1px solid var(--line); font-size:10px; color:var(--muted); font-weight:500; }}
+  .mkt-tbl th {{ background:var(--panel-2); padding:4px 8px; text-align:right;
+                 border-bottom:1px solid var(--line); font-size:10px; color:var(--muted);
+                 font-weight:500; white-space:nowrap; cursor:pointer; user-select:none; }}
   .mkt-tbl th:first-child {{ text-align:left; }}
-  .mkt-tbl td {{ padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:middle; }}
+  .mkt-tbl td {{ padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:middle; }}
   .mkt-tbl tr:last-child td {{ border-bottom:none; }}
-  .mkt-tbl tr:hover td {{ background:var(--panel-2); }}
-  .mkt-lbl {{ color:var(--text); font-weight:500; min-width:110px; }}
-  .mkt-val {{ text-align:right; font-variant-numeric:tabular-nums; min-width:80px; }}
-  .mkt-chg {{ text-align:right; min-width:70px; }}
-  .mkt-pct {{ text-align:right; min-width:55px; }}
-  .mkt-spark {{ text-align:right; width:80px; padding-right:12px; }}
+  .mkt-tbl tr:hover td {{ background:rgba(255,255,255,.03); }}
+  .mkt-full-tbl {{ padding:0 4px; }}
+  .mkt-lbl {{ color:var(--text); font-weight:500; min-width:100px; }}
+  .mkt-val {{ text-align:right; font-variant-numeric:tabular-nums; min-width:72px; }}
+  .mkt-chg {{ text-align:right; min-width:72px; font-variant-numeric:tabular-nums; }}
+  .mkt-arr {{ text-align:center; width:18px; padding:5px 2px; }}
+  .mkt-spark {{ text-align:right; width:84px; padding-right:10px; }}
+  .mkt-unit {{ font-size:9px; color:var(--muted); margin-left:3px; }}
+  .mkt-null {{ color:var(--muted); }}
+  @media (max-width:900px) {{ .mkt-panels-grid {{ grid-template-columns:1fr; }} }}
 
   .empty-view {{ padding:28px; text-align:center; color:var(--muted); font-size:12px; }}
   #empty-state {{
@@ -1719,6 +1986,13 @@ def build_html(d: ReportData) -> str:
   .dist-btn.active, .dist-bench-btn.active {{ color:#fff; background:linear-gradient(180deg,var(--accent-2),var(--accent)); }}
   .dist-bench-btn:disabled {{ opacity:.35; cursor:default; }}
   .dist-view {{ margin-top:10px; }}
+  .dist-top-modal {{ position:fixed; top:0; left:0; right:0; bottom:0; z-index:9998; }}
+  .dist-top-backdrop {{ position:absolute; inset:0; background:rgba(0,0,0,0.55); }}
+  .dist-top-card {{ position:relative; max-width:780px; margin:5vh auto; max-height:85vh; overflow-y:auto;
+                    background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 20px;
+                    box-shadow:0 12px 40px rgba(0,0,0,0.6); }}
+  .dist-top-sec {{ display:none; }}
+  .dist-top-sec.active {{ display:block; }}
 
   /* CSV export button (injected into each card-head) */
   .btn-csv {{
@@ -2587,14 +2861,52 @@ def build_html(d: ReportData) -> str:
       head.appendChild(btn);
     }});
   }}
+  function _applyDistVisibility(card) {{
+    var mode = card.dataset.activeMode   || 'forward';
+    var win  = card.dataset.activeWindow || '1';
+    card.querySelectorAll('.dist-view[data-mode]').forEach(function(v) {{
+      var match = (v.dataset.mode === mode) && ((v.dataset.window || '1') === win);
+      v.style.display = match ? '' : 'none';
+    }});
+    // Show/hide the "5 piores · 5 melhores" button — only relevant on 21d
+    card.querySelectorAll('.dist-top21-btn').forEach(function(b) {{
+      b.style.display = (win === '21') ? '' : 'none';
+    }});
+  }}
   window.setDistMode = function(cardId, mode) {{
     var card = document.getElementById(cardId);
     if (!card) return;
+    card.dataset.activeMode = mode;
     card.querySelectorAll('.dist-btn[data-mode]').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.mode === mode);
     }});
-    card.querySelectorAll('.dist-view[data-mode]').forEach(function(v) {{
-      v.style.display = (v.dataset.mode === mode) ? '' : 'none';
+    _applyDistVisibility(card);
+  }};
+  window.setDistWindow = function(cardId, win) {{
+    var card = document.getElementById(cardId);
+    if (!card) return;
+    card.dataset.activeWindow = win;
+    card.querySelectorAll('.dist-btn[data-window]').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.window === win);
+    }});
+    _applyDistVisibility(card);
+  }};
+  window.openDistTop = function(modalId) {{
+    var m = document.getElementById(modalId);
+    if (m) m.style.display = '';
+  }};
+  window.closeDistTop = function(modalId) {{
+    var m = document.getElementById(modalId);
+    if (m) m.style.display = 'none';
+  }};
+  window.setDistTopSection = function(modalId, sec) {{
+    var m = document.getElementById(modalId);
+    if (!m) return;
+    m.querySelectorAll('.dist-top-sec-btn').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.sec === sec);
+    }});
+    m.querySelectorAll('.dist-top-sec').forEach(function(s) {{
+      s.classList.toggle('active', s.dataset.sec === sec);
     }});
   }};
   window.setDistBench = function(cardId, bench) {{
@@ -3159,6 +3471,59 @@ def build_html(d: ReportData) -> str:
     visit('');
     ordered.forEach(function(tr) {{ tbody.appendChild(tr); }});
   }};
+
+  // PA sort reset — restores server-side default order (YTD desc, Excel-inspired)
+  window.resetPaSort = function(btn) {{
+    var card = btn.closest('.pa-card');
+    if (!card) return;
+    var view = Array.prototype.find.call(card.querySelectorAll('.pa-view'),
+      function(v) {{ return v.style.display !== 'none'; }});
+    if (!view) return;
+    var tbody = view.querySelector('tbody');
+    if (!tbody) return;
+    var data = paDataFor(view);
+    if (!data || !data.byParent) return;
+
+    // Reset state markers
+    view.dataset.userSorted = '0';
+    view.dataset.sortIdx    = '2';
+    view.dataset.sortDesc   = '1';
+
+    // Reset headers: clear all arrows + active class, then mark YTD (idx=2) as default
+    view.querySelectorAll('th.pa-sortable').forEach(function(h) {{
+      h.classList.remove('pa-sort-active');
+      var a = h.querySelector('.pa-sort-arrow');
+      if (a) a.remove();
+    }});
+    var defTh = view.querySelector('th.pa-sortable[data-pa-metric="2"]');
+    if (defTh) {{
+      defTh.classList.add('pa-sort-active');
+      var arrow = document.createElement('span');
+      arrow.className = 'pa-sort-arrow';
+      arrow.textContent = ' ▾';
+      defTh.appendChild(arrow);
+    }}
+
+    // Walk the JSON tree DFS and reorder existing rendered rows
+    // (non-rendered descendants don't exist in DOM yet — no action needed).
+    var rowByPath = {{}};
+    Array.prototype.forEach.call(tbody.children, function(tr) {{
+      rowByPath[tr.dataset.path] = tr;
+    }});
+    var ordered = [];
+    function visitDef(parentPath) {{
+      var kids = data.byParent[parentPath] || [];
+      kids.forEach(function(k) {{
+        var tr = rowByPath[k.pa];
+        if (tr) {{
+          ordered.push(tr);
+          visitDef(k.pa);
+        }}
+      }});
+    }}
+    visitDef('');
+    ordered.forEach(function(tr) {{ tbody.appendChild(tr); }});
+  }};
 }})();
 </script>
 </head>
@@ -3619,10 +3984,256 @@ window.refreshRptPnl = function() {{
       : '<div style="color:var(--muted);font-size:12px;padding:16px">Sem dados para '+win+'</div>';
   }}
 
+  /* ── Per-fund peers panel: 2-col layout ──────────────────────────────────
+   * LEFT column: 4 thin blue range lines (MTD/YTD × ordinal/returns)
+   *   – axis = thin blue line, ticks at P0/P25/P50/P75/P100
+   *   – diamond colour codes the temperature (red worst → green best)
+   * RIGHT column: 2 scatters (MTD + YTD) — Vol vs Retorno
+   * Mode-aware (abs vs alpha). */
+  function _renderFundPeersStrips(container, groupKey) {{
+    if (!container||!_RPT_PEERS||!_RPT_PEERS.groups) return;
+    var g = _RPT_PEERS.groups[groupKey];
+    if (!g) {{ container.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:16px">Grupo não disponível.</div>'; return; }}
+    var alphaBmKey   = g.alpha_bench || (groupKey==='FRONTIER'?'IBOVESPA':'CDI');
+    var bmForAlpha   = (_RPT_PEERS.benchmarks||{{}})[alphaBmKey];
+    var groupFundName= (g.fund_name||'').toUpperCase();
+    var isAlpha      = _mode === 'alpha';
+    var suffix       = isAlpha ? 'pp' : '%';
+    var benches      = (g.benchmarks||['CDI']).map(function(k){{return _RPT_PEERS.benchmarks&&_RPT_PEERS.benchmarks[k];}}).filter(Boolean).map(function(b){{return Object.assign({{}},b,{{is_bench:true}});}});
+    var allRows      = (g.peers||[]).concat(benches);
+
+    function dvWin(row, col) {{
+      var raw = row[col];
+      if (!isAlpha||!bmForAlpha||bmForAlpha[col]==null||raw==null) return raw;
+      return raw - bmForAlpha[col];
+    }}
+
+    function fmtRet(v) {{
+      if (v==null||isNaN(v)) return '—';
+      return (v>=0?'+':'')+(v*100).toFixed(2)+suffix;
+    }}
+
+    function diaColors(pc) {{
+      // Temperature palette: red worst → green best, picked in 5 bands.
+      var fill =
+        pc < 20 ? '#C0392B' :
+        pc < 40 ? '#E67E22' :
+        pc < 60 ? '#F4D03F' :
+        pc < 80 ? '#58D68D' :
+                  '#1E8C45';
+      var stroke =
+        pc < 20 ? '#7a1d12' :
+        pc < 40 ? '#8a4a12' :
+        pc < 60 ? '#8a7a12' :
+        pc < 80 ? '#1f7a3a' :
+                  '#0d4a22';
+      return [fill, stroke];
+    }}
+
+    /* Thin blue range line (axis = single blue stroke with end caps and ticks).
+     * Diamond colour codes the temperature (red→green) by ourPct. */
+    function mkStrip(leftLabel, rightLabel, ourPct, tickLabels, idPrefix, hasFund) {{
+      var W = 560, H = 50;
+      var L = 92, R = 92, T = 6;
+      var lineY  = T + 12;
+      var lineL  = L, lineR = W - R;
+      var lineW  = lineR - lineL;
+      var clamp  = Math.max(0, Math.min(100, ourPct||0));
+      var fundX  = lineL + clamp/100 * lineW;
+      var BLUE   = '#5aa3e8';
+      var BLUE_M = 'rgba(90,163,232,0.35)';
+
+      var s = '<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" width="100%" style="display:block;overflow:visible">';
+      s += '<defs>'+
+             '<filter id="'+idPrefix+'-glow" x="-50%" y="-50%" width="200%" height="200%">'+
+               '<feGaussianBlur stdDeviation="2" result="b"/>'+
+               '<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>'+
+             '</filter>'+
+           '</defs>';
+      // Thin blue axis line + soft halo behind it
+      s += '<line x1="'+lineL+'" y1="'+lineY+'" x2="'+lineR+'" y2="'+lineY+'" '+
+           'stroke="'+BLUE_M+'" stroke-width="4" stroke-linecap="round"/>';
+      s += '<line x1="'+lineL+'" y1="'+lineY+'" x2="'+lineR+'" y2="'+lineY+'" '+
+           'stroke="'+BLUE+'" stroke-width="1.5" stroke-linecap="round"/>';
+      // End caps
+      s += '<circle cx="'+lineL+'" cy="'+lineY+'" r="2.5" fill="'+BLUE+'"/>';
+      s += '<circle cx="'+lineR+'" cy="'+lineY+'" r="2.5" fill="'+BLUE+'"/>';
+      // Tick marks at 0/25/50/75/100 (longer at quartiles, short at ends)
+      for (var i=0; i<=4; i++) {{
+        var tx = lineL + (i/4)*lineW;
+        var th = (i===0||i===4) ? 4 : 5;
+        s += '<line x1="'+tx+'" y1="'+(lineY-th)+'" x2="'+tx+'" y2="'+(lineY+th)+'" '+
+             'stroke="'+BLUE+'" stroke-width="1.1" opacity="0.75"/>';
+        if (tickLabels && tickLabels[i]) {{
+          s += '<text x="'+tx+'" y="'+(lineY+18)+'" font-size="9.5" '+
+               'fill="var(--muted)" text-anchor="middle" font-family="monospace">'+tickLabels[i]+'</text>';
+        }}
+      }}
+      // Diamond marker — temperature-coloured (red worst → green best)
+      if (hasFund) {{
+        var dr = 7.5;
+        var poly = fundX+','+(lineY-dr)+' '+(fundX+dr)+','+lineY+' '+fundX+','+(lineY+dr)+' '+(fundX-dr)+','+lineY;
+        var cols = diaColors(clamp);
+        // Outer dark halo for contrast against blue line
+        s += '<polygon points="'+poly+'" fill="#0b1220" opacity="0.55" filter="url(#'+idPrefix+'-glow)"/>';
+        // Temperature diamond
+        s += '<polygon points="'+poly+'" fill="'+cols[0]+'" stroke="'+cols[1]+'" '+
+             'stroke-width="1.4" stroke-linejoin="round"/>';
+        // Inner glassy highlight
+        var dr2 = dr*0.42;
+        var inner = fundX+','+(lineY-dr2)+' '+(fundX+dr2)+','+lineY+' '+fundX+','+(lineY+dr2)+' '+(fundX-dr2)+','+lineY;
+        s += '<polygon points="'+inner+'" fill="rgba(255,255,255,0.55)"/>';
+      }}
+      // Left label (line title)
+      s += '<text x="'+(L-8)+'" y="'+(lineY+4)+'" font-size="11" '+
+           'fill="var(--text)" text-anchor="end" font-weight="600">'+leftLabel+'</text>';
+      // Right label (our value summary)
+      if (rightLabel) {{
+        s += '<text x="'+(lineR+8)+'" y="'+(lineY+4)+'" font-size="11" '+
+             'fill="var(--text)" text-anchor="start" font-weight="600">'+rightLabel+'</text>';
+      }}
+      s += '</svg>';
+      return s;
+    }}
+
+    function buildPair(win, idPrefix) {{
+      var rows = allRows.map(function(r){{return Object.assign({{}},r,{{_dv:dvWin(r,win)}});}})
+                        .filter(function(r){{return r._dv!=null&&!isNaN(r._dv);}});
+      if (!rows.length) return '<div style="color:var(--muted);font-size:11px;padding:6px 12px">Sem dados '+win+'</div>';
+      var sorted = rows.slice().sort(function(a,b){{return b._dv-a._dv;}});
+      var n = sorted.length;
+      var ourIdx = sorted.findIndex(function(r){{return _isGlpgFundRpt(r,groupFundName);}});
+      var hasFund = ourIdx >= 0;
+      var ordPct = hasFund ? (n>1 ? (n-1-ourIdx)/(n-1)*100 : 50) : 0;
+      var ourVal = hasFund ? sorted[ourIdx]._dv : null;
+      var asc = rows.map(function(r){{return r._dv;}}).sort(function(a,b){{return a-b;}});
+      function q(p) {{
+        if (n===1) return asc[0];
+        var pos = p*(n-1), lo = Math.floor(pos), hi = Math.ceil(pos);
+        return asc[lo] + (asc[hi]-asc[lo])*(pos-lo);
+      }}
+      var p0=asc[0], p25=q(0.25), p50=q(0.50), p75=q(0.75), p100=asc[n-1];
+      var valPct = (hasFund && p100>p0) ? (ourVal-p0)/(p100-p0)*100 : 50;
+
+      var ordTicks = ['P0','P25','P50','P75','P100'];
+      var ordRight = hasFund ? ('P'+ordPct.toFixed(0)+' · #'+(ourIdx+1)+'/'+n) : '—';
+      var s1 = mkStrip(win+' · ordinal', ordRight, ordPct, ordTicks, idPrefix+'-ord', hasFund);
+
+      var rtTicks = [fmtRet(p0), fmtRet(p25), fmtRet(p50), fmtRet(p75), fmtRet(p100)];
+      var rtRight = hasFund ? fmtRet(ourVal) : '—';
+      var s2 = mkStrip(win+' · retorno', rtRight, valPct, rtTicks, idPrefix+'-rt', hasFund);
+
+      return s1 + '<div style="height:4px"></div>' + s2;
+    }}
+
+    /* Per-window scatter: Vol (12M) on X, return on Y. Adapted from
+     * _renderPeersCharts but sized for the right column. */
+    function buildScatter(win, idPrefix) {{
+      var rows = allRows.map(function(r){{return Object.assign({{}},r,{{_dv:dvWin(r,win)}});}})
+                        .filter(function(r){{return r.Vol!=null&&!isNaN(r.Vol)&&r._dv!=null&&!isNaN(r._dv);}});
+      if (rows.length < 3) return '<div style="color:var(--muted);font-size:11px;padding:24px;text-align:center">Sem dados suficientes para scatter '+win+'</div>';
+      var W = 460, H = 280, P = {{l:48, r:14, t:22, b:34}};
+      var plotW = W - P.l - P.r, plotH = H - P.t - P.b;
+      var vols = rows.map(function(r){{return r.Vol;}});
+      var rets = rows.map(function(r){{return r._dv;}});
+      var minV = Math.min.apply(null, vols), maxV = Math.max.apply(null, vols);
+      var minR = Math.min.apply(null, rets), maxR = Math.max.apply(null, rets);
+      var vRange = (maxV-minV)||0.01, rRange = (maxR-minR)||0.01;
+      var vPad = vRange*0.06, rPad = rRange*0.06;
+      function sx(v)  {{ return P.l + ((v-(minV-vPad))/(vRange+2*vPad))*plotW; }}
+      function sy(rv) {{ return P.t + plotH - ((rv-(minR-rPad))/(rRange+2*rPad))*plotH; }}
+
+      var s = '<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" width="100%" style="display:block;overflow:visible;font-family:inherit">';
+      s += '<text x="'+(P.l+plotW/2)+'" y="14" font-size="10.5" fill="var(--muted)" text-anchor="middle" font-weight="600">'+
+           (isAlpha?'Vol vs Alpha ':'Vol vs Retorno ')+win+'</text>';
+      // Axes
+      s += '<line x1="'+P.l+'" y1="'+P.t+'" x2="'+P.l+'" y2="'+(P.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.8"/>';
+      s += '<line x1="'+P.l+'" y1="'+(P.t+plotH)+'" x2="'+(P.l+plotW)+'" y2="'+(P.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.8"/>';
+      s += '<text x="'+(P.l+plotW/2)+'" y="'+(H-6)+'" font-size="9.5" fill="var(--muted)" text-anchor="middle">Volatilidade (anual)</text>';
+      s += '<text x="11" y="'+(P.t+plotH/2)+'" font-size="9.5" fill="var(--muted)" text-anchor="middle" transform="rotate(-90,11,'+(P.t+plotH/2)+')">'+
+           (isAlpha?'Alpha':'Retorno')+' '+win+'</text>';
+      // Zero return line if range straddles 0
+      if (minR<0 && maxR>0) {{
+        var zy = sy(0);
+        s += '<line x1="'+P.l+'" y1="'+zy+'" x2="'+(P.l+plotW)+'" y2="'+zy+'" stroke="var(--line-2)" stroke-width="0.6" stroke-dasharray="4,3"/>';
+      }}
+      // Gridlines + axis labels (5 ticks each)
+      for (var i=0; i<=5; i++) {{
+        var rv = minR + rRange*i/5, ty = sy(rv);
+        s += '<line x1="'+P.l+'" y1="'+ty+'" x2="'+(P.l+plotW)+'" y2="'+ty+'" stroke="var(--line-2)" stroke-width="0.3" opacity="0.4"/>';
+        s += '<text x="'+(P.l-6)+'" y="'+(ty+3)+'" font-size="9" fill="var(--muted)" text-anchor="end">'+
+             (rv>=0?'+':'')+(rv*100).toFixed(0)+suffix+'</text>';
+        var xv = minV + vRange*i/5, tx = sx(xv);
+        s += '<line x1="'+tx+'" y1="'+P.t+'" x2="'+tx+'" y2="'+(P.t+plotH)+'" stroke="var(--line-2)" stroke-width="0.3" opacity="0.4"/>';
+        s += '<text x="'+tx+'" y="'+(P.t+plotH+13)+'" font-size="9" fill="var(--muted)" text-anchor="middle">'+(xv*100).toFixed(0)+'%</text>';
+      }}
+      // Layered draw: peers, benches, our fund (drawn on top)
+      var layers = [
+        rows.filter(function(r){{return !_isGlpgFundRpt(r,groupFundName)&&!r.is_bench;}}),
+        rows.filter(function(r){{return !!r.is_bench;}}),
+        rows.filter(function(r){{return _isGlpgFundRpt(r,groupFundName);}})
+      ];
+      function _esc(t) {{ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+      for (var li=0; li<layers.length; li++) {{
+        var layer = layers[li];
+        for (var i2=0; i2<layer.length; i2++) {{
+          var r = layer[i2];
+          var cx = sx(r.Vol), cy = sy(r._dv);
+          var isFund = _isGlpgFundRpt(r, groupFundName);
+          var isBench = !!r.is_bench;
+          var radius    = isFund?7:isBench?5:4.5;
+          var dotFill   = isFund?'rgba(255,193,7,.9)':isBench?'rgba(150,160,175,.65)':'rgba(100,140,210,.65)';
+          var dotStroke = isFund?'#ffc107':isBench?'rgba(180,190,200,.8)':'rgba(120,160,230,.8)';
+          var tipName = _esc(cleanName(r.name||'—'));
+          var tipRet  = (isAlpha?'Alpha ':'Retorno ')+win+': '+(r._dv>=0?'+':'')+(r._dv*100).toFixed(2)+suffix;
+          var tipVol  = 'Vol (12M): '+(r.Vol*100).toFixed(2)+'%';
+          s += '<circle cx="'+cx+'" cy="'+cy+'" r="'+radius+'" fill="'+dotFill+'" stroke="'+dotStroke+'" '+
+               'stroke-width="1" class="rpt-sc-dot" '+
+               'data-tip-name="'+tipName+'" data-tip-ret="'+tipRet+'" data-tip-vol="'+tipVol+'" '+
+               'style="cursor:pointer"/>';
+          if (isFund || isBench) {{
+            var cn = truncName(cleanName(r.name||''),18);
+            s += '<text x="'+cx+'" y="'+(cy-radius-4)+'" font-size="'+(isFund?10:9)+'" '+
+                 'fill="'+(isFund?'var(--accent)':'var(--muted)')+'" text-anchor="middle" '+
+                 'font-weight="'+(isFund?'600':'400')+'" pointer-events="none">'+cn+'</text>';
+          }}
+        }}
+      }}
+      s += '</svg>';
+      return s;
+    }}
+
+    // 2×2 grid: each row pairs the 2 strips of a window with its scatter
+    container.innerHTML =
+      '<div style="display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);'+
+                  'grid-auto-rows:auto;gap:18px 18px;align-items:center">' +
+        '<div style="min-width:0">' + buildPair('MTD', groupKey+'-mtd') + '</div>' +
+        '<div style="min-width:0">' + buildScatter('MTD', groupKey+'-sc-mtd') + '</div>' +
+        '<div style="min-width:0">' + buildPair('YTD', groupKey+'-ytd') + '</div>' +
+        '<div style="min-width:0">' + buildScatter('YTD', groupKey+'-sc-ytd') + '</div>' +
+      '</div>';
+  }}
+
+  /* Per-card view toggle (charts ↔ table) */
+  window.rptSetFundPeersView = function(pg, view) {{
+    document.querySelectorAll('.rpt-fpeers-vw[data-pg="'+pg+'"]').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.fview === view);
+    }});
+    document.querySelectorAll('.rpt-peers-fund-strips[data-peers-group="'+pg+'"]').forEach(function(el) {{
+      el.style.display = view==='charts' ? '' : 'none';
+    }});
+    document.querySelectorAll('.rpt-peers-fund-tbl-wrap[data-peers-group="'+pg+'"]').forEach(function(el) {{
+      el.style.display = view==='table' ? '' : 'none';
+    }});
+  }};
+
   function renderAllPeersTables() {{
     renderTable(document.getElementById('rpt-peers-tbl'), _rptPeersGrp);
     document.querySelectorAll('.rpt-peers-fund-tbl').forEach(function(tbl) {{
       renderTable(tbl, tbl.dataset.peersGroup);
+    }});
+    document.querySelectorAll('.rpt-peers-fund-strips').forEach(function(el) {{
+      _renderFundPeersStrips(el, el.dataset.peersGroup);
     }});
     if (_rptView === 'charts') _renderPeersCharts(_rptPeersGrp);
   }}
@@ -3666,7 +4277,48 @@ window.refreshRptPnl = function() {{
     if (view==='charts') _renderPeersCharts(_rptPeersGrp);
   }};
 
+  /* Shared tooltip for scatter dots — single floating div, follows cursor */
+  function _ensureRptTip() {{
+    var tip = document.getElementById('rpt-sc-tip');
+    if (tip) return tip;
+    tip = document.createElement('div');
+    tip.id = 'rpt-sc-tip';
+    tip.style.cssText = 'position:fixed;display:none;pointer-events:none;z-index:9999;'+
+      'background:rgba(15,23,42,0.96);color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);'+
+      'border-radius:6px;padding:6px 10px;font:12px/1.4 system-ui,sans-serif;'+
+      'box-shadow:0 4px 16px rgba(0,0,0,0.45);max-width:280px;white-space:nowrap';
+    document.body.appendChild(tip);
+    document.addEventListener('mouseover', function(e) {{
+      var t = e.target.closest && e.target.closest('.rpt-sc-dot');
+      if (!t) return;
+      tip.innerHTML =
+        '<div style="font-weight:700;color:#fbbf24;margin-bottom:2px">'+t.getAttribute('data-tip-name')+'</div>'+
+        '<div style="color:#cbd5e1">'+t.getAttribute('data-tip-ret')+'</div>'+
+        '<div style="color:#94a3b8">'+t.getAttribute('data-tip-vol')+'</div>';
+      tip.style.display = 'block';
+    }});
+    document.addEventListener('mousemove', function(e) {{
+      if (tip.style.display !== 'block') return;
+      var x = e.clientX + 14, y = e.clientY + 14;
+      var rb = tip.getBoundingClientRect();
+      // Avoid going off the right/bottom edges
+      if (x + rb.width > window.innerWidth) x = e.clientX - rb.width - 14;
+      if (y + rb.height > window.innerHeight) y = e.clientY - rb.height - 14;
+      tip.style.left = x + 'px';
+      tip.style.top  = y + 'px';
+    }});
+    document.addEventListener('mouseout', function(e) {{
+      var t = e.target.closest && e.target.closest('.rpt-sc-dot');
+      if (!t) return;
+      // Hide only if the mouse is leaving for something that's NOT another dot
+      var to = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.rpt-sc-dot');
+      if (!to) tip.style.display = 'none';
+    }});
+    return tip;
+  }}
+
   window.initRptPeers = function() {{
+    _ensureRptTip();
     if (!_RPT_PEERS || !_RPT_PEERS.groups) return;
     var GROUPS_ORDER = ['EVOLUTION','ALBATROZ','FRONTIER','NAZCA','IGUANA','DRAGON','SEA LION','MACRO','GLOBAL','PELICAN'];
     var available = Object.keys(_RPT_PEERS.groups);
@@ -3833,8 +4485,9 @@ def main():  # noqa: C901
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
         _pnl_date      = str(_prev_bday(DATA))
-        fut_book_pnl   = ex.submit(fetch_book_pnl,   _pnl_date)
-        fut_peers_data = ex.submit(fetch_peers_data)
+        fut_book_pnl    = ex.submit(fetch_book_pnl,        _pnl_date)
+        fut_peers_data  = ex.submit(fetch_peers_data)
+        fut_market_snap = ex.submit(fetch_market_snapshot, DATA_STR)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
     df_risk     = fut_risk.result()
@@ -4098,6 +4751,11 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  Peers data fetch failed ({e})")
         peers_data = {}
+    try:
+        market_snap = fut_market_snap.result()
+    except Exception as e:
+        print(f"  Market snapshot fetch failed ({e})")
+        market_snap = {}
 
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
@@ -4166,7 +4824,7 @@ def main():  # noqa: C901
         dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
         vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
         expo_date_label=expo_date_label, data_manifest=data_manifest,
-        book_pnl=book_pnl, peers_data=peers_data,
+        book_pnl=book_pnl, peers_data=peers_data, market_snap=market_snap,
     )
     html = build_html(report_data)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"

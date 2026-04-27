@@ -72,7 +72,21 @@
       "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe generate_risk_report.py 2026-04-20)",
       "Bash(start \"\" \"data/morning-calls/2026-04-20_risk_monitor.html\")",
       "Bash(C:/Users/diego.fainberg/.venvs/risk_monitor/Scripts/python.exe evolution_diversification_card.py 2026-04-20)",
-      "Bash(start \"\" \"data/morning-calls/evolution_diversification_2026-04-17.html\")"
+      "Bash(start \"\" \"data/morning-calls/evolution_diversification_2026-04-17.html\")",
+      "Bash(powershell.exe -Command \"cd 'f:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor'; & 'C:\\\\Users\\\\diego.fainberg\\\\AppData\\\\Local\\\\anaconda3\\\\python.exe' generate_risk_report.py 2>&1 | Select-Object -Last 5\")",
+      "Bash(uv --version)",
+      "Read(//c/Users/diego.fainberg/AppData/Local/uv/**)",
+      "Read(//c/Users/diego.fainberg/AppData/Roaming/uv/**)",
+      "Bash(cmd.exe /c \"dir \\\\\"C:\\\\Users\\\\diego.fainberg\\\\AppData\\\\Roaming\\\\uv\\\\\"\")",
+      "Bash(uv python *)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File scripts/send_risk_monitor_email.ps1)",
+      "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" generate_risk_report.py --date 2026-04-23)",
+      "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" generate_risk_report.py --help)",
+      "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" generate_risk_report.py 2026-04-23)",
+      "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" --version)",
+      "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" -)",
+      "Bash(2>&1)",
+      "Bash(\"F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\.venv\\\\Scripts\\\\pip.exe\" install *)"
     ]
   }
 }

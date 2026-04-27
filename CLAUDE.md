@@ -103,6 +103,7 @@ Nunca escrever `SISTEMATICO` em query — o nome real no banco é **`QUANT`**.
 | QUANT      | ✅ RPM              | ✅       | ✅                | ✅              | —               |
 | EVOLUTION  | ✅ RPM              | ✅       | ✅ 3-níveis       | ✅              | —               |
 | ALBATROZ   | ✅ LOTE_FUND_STRESS | ✅       | ✅ drill DV01     | ✅ HS gross     | ✅ 150bps/mês   |
+| BALTRA     | ✅ LOTE_FUND_STRESS | ✅       | —                 | — (sem HS)      | — (prov. only)  |
 | MACRO_Q    | ✅ LOTE_FUND_STRESS | ✅       | —                 | —               | —               |
 | FRONTIER   | ✅ BVaR HS          | ✅ (GFA) | ✅ active wt      | ✅ α vs IBOV   | —               |
 | IDKA 3Y    | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
@@ -142,6 +143,17 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **VaR/BVaR table rows** — clicáveis (`selectFund`) via `summary_renderers.py`
 - **Market tab parked** — `fetch_market_snapshot()` em `data_fetch.py`, seção HTML pronta; parkeado por 3 bugs de query (ver `memory/project_todo_market_tab_fixes.md`)
 
+**Features entregues 2026-04-27:**
+- **Exposure Total — 3 métricas** (`_build_expo_unified_table` em `expo_renderers.py`): linha "Total não-diversificado" (Σ |VaR fator|, cinza) + linha "Diversificado HS portfolio" (de `series_map[td]`) + benefício em bps. Aplicado MACRO/QUANT/EVOLUTION via novo helper `_latest_hs_var_bps(short)` em `generate_risk_report.build_html`.
+- **Per-fund Peers redesign** — substituiu tabela por 4 strips finos azuis (linha + diamante temperatura red→green) + 2 scatters (MTD/YTD Vol vs Retorno) em grid 2×2 alinhado por janela. Tooltip custom (`<div>` flutuante, `mouseover` delegado em `document`) com nome/retorno/vol em hover. Toggle Gráficos/Tabela por card.
+- **PA Reset Sort** — botão `↺ Reset` no toolbar de cada PA card; `window.resetPaSort` restaura ordem default DFS via JSON `byParent`, reseta `userSorted=0` + sortIdx=2 (YTD desc).
+- **Markets** — tab renomeado de "Market" → "Markets".
+- **Distribuição 1d/21d** — toggle troca universo de retornos: 1d = retornos diários (252 obs); 21d = somas rolantes 21d (≈232 obs). Helper `_to_rolling_sum(w, window)` via cumsum vetorizado. Quando 21d ativo, botão azul "5 piores · 5 melhores" abre modal.
+- **Modal Top 21d Janelas** — `compute_top_windows(w, k=5, window_days=21)` em `metrics.py`: greedy não-overlap (sort por soma asc/desc, pula janelas sobrepostas). Modal único com toggle de 3 seções pra IDKA (vs Benchmark / vs Replication / Repl − Bench), 5 PIORES e 5 MELHORES empilhadas. JS `setDistTopSection`/`openDistTop`/`closeDistTop`.
+- **NTN-B coupon-date fix** — `_ntnb_total_return_pct_change(prices, maturity=...)` em `data_fetch.py` adiciona semi-coupon ((1.06)^0.5−1 ≈ 2.956%) de volta no pct_change da 1ª BDay ≥ data-cupom. Maturity-aware: cupons derivados do mês de expiração (NTN-B 2030-08-15 → Fev/Ago, não Mai/Nov). Eliminou outliers de -180 a -227 bps no spread Repl−Bench das IDKAs. Aplicado em `fetch_idka_hs_replication_series` e `fetch_idka_hs_spread_series`.
+- **`export_idka_repl_vs_bench.py`** — script standalone pra investigação: dump xlsx com colunas `*_RET_CLEAN_BPS` (legado) vs `*_RET_BPS` (TR-adjusted) por NTN-B + summary distribuição. Output em `data/morning-calls/<date>_idka_repl_vs_bench.xlsx`.
+- **P95 column** — coluna `a+var95` renomeada pra `p95` na tabela Distribuição (header + legenda).
+
 ---
 
 ## 8. Armadilhas conhecidas
@@ -154,6 +166,8 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **DB drift** — tabelas PA/NAV são reescritas por batch a cada ~30–60 min. Validação numérica de refactor exige regen back-to-back (< 2 min entre runs).
 - **`_liquido_scale` sign mismatch** — `bench_matrix` usa DV01 (long bond = negativo); `agg_rows["brl"]` usa `ano_eq_brl` (long bond = positivo). Em `_liquido_scale` usar `abs(bench)/abs(total)`. Nunca alterar o sinal do `bench_matrix` — quebraria o Factor Breakdown que usa `gross - bench` em DV01.
 - **Top Posições double counting** — prevenido por `via == 'direct'` em `agg_rows` (exclui look-through e via_albatroz) e por `fetch_evolution_direct_single_names` (exclui QUANT/Frontier/MACRO da equity Evolution).
+- **ANBIMA UNIT_PRICE é clean (ex-coupon)** — `pct_change()` direto em série ANBIMA gera -200 a -300 bps fantasma na data-cupom NTN-B. Sempre usar `_ntnb_total_return_pct_change(prices, maturity=...)` que reinjeta o semi-coupon. Cupons derivam da maturity (`m+6 mod 12`), NÃO são fixos em Mai/Nov.
+- **JS strings em Python f-string** — `\n` em string Python vira newline literal no JS de saída → SyntaxError silencioso quebra IIFE inteira. Usar `\\n` ou tooltip via `<div>` custom em vez de `<title>` SVG.
 
 ---
 
@@ -161,7 +175,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 
 Fora de escopo até decisão explícita:
 
-- Fundos **BALTRA**
+- ~~Fundos **BALTRA**~~ — **implementado 2026-04-26**: VaR/Stress + PA em `RAW_FUNDS`. Benchmark = IPCA+ (~3-4 anos duration real), a confirmar. Limites provisórios (soft 1.5%/hard 2.5% VaR; soft 10%/hard 18% stress).
 - Fundos **FMN** (relatório separado via xlwings existe)
 - Família **Crédito** (entra só após MM + RF estáveis)
 

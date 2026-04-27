@@ -296,6 +296,59 @@ def fetch_idka_active_series(desk: str, idka_idx_name: str,
     return (active.tail(window_days).to_numpy() * 10000).astype(float)
 
 
+_NTNB_SEMI_COUPON = (1.06) ** 0.5 - 1  # ≈ 0.029563 (semi-annual coupon, NTN-B 6% a.a. effective)
+
+
+def _ntnb_total_return_pct_change(prices: pd.Series,
+                                   maturity: pd.Timestamp | None = None) -> pd.Series:
+    """Adjust ANBIMA clean-price pct_change to approximate NTN-B total-return.
+
+    Why: ANBIMA's UNIT_PRICE is the clean (ex-coupon) price. On NTN-B coupon
+    dates the clean price drops by ~ the semi-coupon (~2.956%), producing a
+    spurious -200~300 bps return that does not exist in the IDKA index
+    (which reinvests coupons internally).
+
+    Coupon dates: NTN-B pays coupons every 6 months on its maturity-anniversary
+    (e.g. NTN-B 2030-08-15 → coupons every Feb 15 / Aug 15). Without the
+    `maturity` arg we fall back to the most common pair (May 15 / Nov 15),
+    which only covers part of the curve.
+
+    Fix: at each coupon transition captured in the series (the prior quote is
+    strictly before the coupon date), add back the semi-coupon to that day's
+    return: r_TR = (1 + r_clean) * (1 + c) - 1.
+    """
+    if prices is None or prices.empty:
+        return pd.Series(dtype=float)
+    s = prices.sort_index()
+    rets = s.pct_change()
+    idx = s.index
+    if len(idx) < 2:
+        return rets
+    if maturity is not None:
+        m, d = int(maturity.month), int(maturity.day)
+        m2 = ((m + 6 - 1) % 12) + 1
+        anniv_md = [(m, d), (m2, d)]
+    else:
+        anniv_md = [(5, 15), (11, 15)]
+    years = sorted(set(d.year for d in idx))
+    for y in years:
+        for month, day in anniv_md:
+            try:
+                target = pd.Timestamp(year=y, month=month, day=day)
+            except ValueError:
+                continue  # e.g. Feb 30 — shouldn't happen with NTN-B but be safe
+            geq = idx[idx >= target]
+            lt  = idx[idx <  target]
+            if len(geq) == 0 or len(lt) == 0:
+                continue
+            first = geq[0]
+            if (first - target) > pd.Timedelta(days=7):
+                continue
+            if pd.notna(rets.loc[first]):
+                rets.loc[first] = (1 + rets.loc[first]) * (1 + _NTNB_SEMI_COUPON) - 1
+    return rets
+
+
 def _compute_idka_bench_replication(date_str: str, target_anos: int, tenour_du: int) -> pd.DataFrame:
     """Replicação do bench IDKA via DV-match — melhor carteira NTN-B que replica o ponto.
        (Metodologia igual IDKA_TABLES_GRAPHS.py, Pedro Igor.)
@@ -436,12 +489,15 @@ def fetch_idka_hs_replication_series(portfolio_name: str, target_anos: int, teno
         return np.array([])
 
     df_p["dt"] = pd.to_datetime(df_p["dt"])
-    rep_weights = rep.set_index("INSTRUMENT")["W"].astype(float)
+    rep_indexed = rep.set_index("INSTRUMENT")
     rep_ret = pd.Series(dtype=float)
-    for inst, w in rep_weights.items():
+    for inst in rep_indexed.index:
+        w = float(rep_indexed.at[inst, "W"])
+        mat = pd.to_datetime(rep_indexed.at[inst, "EXPIRATION_DATE"])
         prices = (df_p[df_p["INSTRUMENT"] == inst]
                   .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
-        ret = prices.pct_change().dropna() * 10_000 * w
+        # Total-return: adjusts coupon-date clean-price drops back into the return
+        ret = _ntnb_total_return_pct_change(prices, maturity=mat).dropna() * 10_000 * w
         rep_ret = rep_ret.add(ret, fill_value=0.0)
 
     hs_s = df_hs.set_index("dt")["W"].astype(float).sort_index()
@@ -507,12 +563,18 @@ def fetch_idka_hs_spread_series(portfolio_name: str, idx_name: str,
                  .sort_index().pct_change().dropna() * 10_000)
 
     df_p["dt"] = pd.to_datetime(df_p["dt"])
-    rep_weights = rep.set_index("INSTRUMENT")["W"].astype(float)
+    rep_indexed = rep.set_index("INSTRUMENT")
     rep_bps = pd.Series(dtype=float)
-    for inst, w in rep_weights.items():
+    for inst in rep_indexed.index:
+        w = float(rep_indexed.at[inst, "W"])
+        mat = pd.to_datetime(rep_indexed.at[inst, "EXPIRATION_DATE"])
         prices = (df_p[df_p["INSTRUMENT"] == inst]
                   .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
-        rep_bps = rep_bps.add(prices.pct_change().dropna() * 10_000 * w, fill_value=0.0)
+        # Total-return: adjusts coupon-date clean-price drops back into the return
+        rep_bps = rep_bps.add(
+            _ntnb_total_return_pct_change(prices, maturity=mat).dropna() * 10_000 * w,
+            fill_value=0.0,
+        )
 
     aligned = bench_bps.to_frame("bench").join(rep_bps.rename("rep"), how="inner")
     if len(aligned) < 30:
@@ -1370,7 +1432,7 @@ def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" = DATE '{date_str}'
                THEN COALESCE("POSITION",0) ELSE 0 END) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','GFA','IDKAIPCAY3','IDKAIPCAY10')
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','BALTRA','GFA','IDKAIPCAY3','IDKAIPCAY10')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","CLASSE","GRUPO","LIVRO","BOOK","PRODUCT"
@@ -1699,35 +1761,152 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
     }
 
 
-def fetch_market_snapshot(date_str: str) -> dict:
-    """Market snapshot for the risk report Market tab.
+_EXCEL_MARKET_PATH = r"F:\Macros\Gestao\Miguel Ishimura\Prices_Close_Global - Copy.xlsm"
 
-    Returns {val_date, sections:[{label, rows:[{label,value,chg,chg_pct,unit,fmt,decimals,history}]}]}.
-    Every instrument fails gracefully — bad queries return a null row.
+
+def _read_excel_market_fallback() -> dict:
+    """Read current Bloomberg values from open Excel workbook (Prices_Close_Global).
+
+    Returns {row_label: row_dict} with value/chg/chg_pct/chg_5d/chg_pct_5d/chg_1m/chg_pct_1m.
+    Empty dict if Bloomberg/Excel not running or workbook not open.
+    Column indices (0-based) assumed: label=0, BBG=1, val=2, chg_net=3, chg_pct=4,
+    arrow=5, chg5_net=6, chg5_pct=7, arrow=8, chg1m_net=9, chg1m_pct=10.
     """
-    from datetime import datetime, timedelta
-    start = (pd.Timestamp(date_str) - timedelta(days=50)).strftime("%Y-%m-%d")
+    import os
+    try:
+        import xlwings as xw
+    except ImportError:
+        return {}
+    try:
+        if not xw.apps:
+            return {}
+        app = xw.apps.active
+        fname = os.path.basename(_EXCEL_MARKET_PATH).lower()
+        wb = next((b for b in app.books
+                   if os.path.basename(b.fullname).lower() == fname), None)
+        if wb is None:
+            wb = app.books.open(_EXCEL_MARKET_PATH)
 
-    def _row(label, df, val_col="value", unit="", fmt="price", decimals=2, n=21):
-        base = dict(label=label, value=None, chg=None, chg_pct=None,
-                    unit=unit, fmt=fmt, decimals=decimals, history=[])
-        if df is None or df.empty:
-            return base
-        df = df.dropna(subset=[val_col])
-        if df.empty:
-            return base
-        vals = df[val_col].astype(float)
-        tail = vals.tail(n)
-        base["history"] = [None if pd.isna(v) else float(v) for v in tail.values]
-        base["value"]   = float(vals.iloc[-1])
-        if len(vals) >= 2:
-            prev = float(vals.iloc[-2])
-            chg  = base["value"] - prev
-            base["chg"]     = round(chg, max(decimals + 2, 4))
-            base["chg_pct"] = round(chg / prev, 6) if prev else None
+        _BBG_ERR = -2146826259
+
+        def _safe(v) -> float | None:
+            if not isinstance(v, (int, float)):
+                return None
+            if abs(v - _BBG_ERR) < 1:
+                return None
+            return float(v)
+
+        result: dict = {}
+        # sheet → (label_col, val, chg_net, chg_pct, chg5_net, chg5_pct, chg1m_net, chg1m_pct)
+        sheet_map = {
+            "Janelas":     (0, 2, 3, 4, 6, 7,  9, 10),
+            "Moedas":      (0, 2, 3, 4, 6, 7,  9, 10),
+            "Commodities": (1, 3, 4, 5, 7, 8, 10, 11),
+        }
+        for shname, (lc, vc, nc, pc, n5c, p5c, n1c, p1c) in sheet_map.items():
+            try:
+                sh = wb.sheets[shname]
+                data = sh.used_range.value
+                if not data:
+                    continue
+                for row in data:
+                    if not row or len(row) <= vc:
+                        continue
+                    label = str(row[lc]).strip() if row[lc] else ""
+                    if not label or len(label) < 2:
+                        continue
+                    val = _safe(row[vc])
+                    if val is None:
+                        continue
+
+                    def _get(idx):
+                        return _safe(row[idx]) if len(row) > idx else None
+
+                    result[label] = dict(
+                        value=val,
+                        chg=_get(nc), chg_pct=_get(pc),
+                        chg_5d=_get(n5c), chg_pct_5d=_get(p5c),
+                        chg_1m=_get(n1c), chg_pct_1m=_get(p1c),
+                        history=[], from_excel=True,
+                    )
+            except Exception:
+                continue
+        return result
+    except Exception:
+        return {}
+
+
+def fetch_market_snapshot(date_str: str) -> dict:
+    """Comprehensive market snapshot — mirrors Excel Ferramenta_Diario structure.
+
+    Sections: Janelas (Bolsas/Juros/Moeda/Commodities groups), Moedas, Commodities.
+    Primary source: GLPG-DB01 (sparklines + history).
+    Fallback: Bloomberg-linked Excel at _EXCEL_MARKET_PATH (current value + 1D/5D/1M).
+    Row keys: label, value, unit, fmt, decimals, rate_mode, history,
+              chg, chg_pct, chg_5d, chg_pct_5d, chg_1m, chg_pct_1m.
+    """
+    import logging as _logging
+    from datetime import timedelta
+    log = _logging.getLogger(__name__)
+    start = (pd.Timestamp(date_str) - timedelta(days=70)).strftime("%Y-%m-%d")
+
+    xl: dict = {}
+    try:
+        xl = _read_excel_market_fallback()
+        if xl:
+            log.info("Excel market fallback: %d instruments loaded", len(xl))
+    except Exception:
+        pass
+
+    # ── Row builder ───────────────────────────────────────────────────────────
+    def _row(label: str, df, val_col: str = "value", unit: str = "",
+             fmt: str = "price", decimals: int = 2, rate_mode: bool = False,
+             xl_key: str | None = None) -> dict:
+        base: dict = dict(label=label, value=None, unit=unit, fmt=fmt,
+                          decimals=decimals, rate_mode=rate_mode, history=[],
+                          chg=None, chg_pct=None,
+                          chg_5d=None, chg_pct_5d=None,
+                          chg_1m=None, chg_pct_1m=None)
+        has_db = df is not None and not df.empty
+        if has_db:
+            df = df.dropna(subset=[val_col]).copy()
+            has_db = not df.empty
+        if has_db:
+            vals = df[val_col].astype(float)
+            base["history"] = [None if pd.isna(v) else float(v)
+                                for v in vals.tail(21).values]
+            curr = float(vals.iloc[-1])
+            base["value"] = curr
+
+            def _delta(n: int):
+                if len(vals) <= n:
+                    return None, None
+                prev = float(vals.iloc[-(n + 1)])
+                d = curr - prev
+                if rate_mode:
+                    return round(d * 100, 2), None  # bps, no %
+                pct = d / abs(prev) if prev else None
+                return (round(d, max(decimals + 2, 4)),
+                        round(pct, 6) if pct is not None else None)
+
+            base["chg"],    base["chg_pct"]    = _delta(1)
+            base["chg_5d"], base["chg_pct_5d"] = _delta(5)
+            base["chg_1m"], base["chg_pct_1m"] = _delta(21)
+
+        # Excel override: fresher Bloomberg data for value + changes
+        key = xl_key or label
+        if key in xl:
+            xr = xl[key]
+            if xr.get("value") is not None:
+                for k in ("value", "chg", "chg_pct", "chg_5d", "chg_pct_5d",
+                          "chg_1m", "chg_pct_1m"):
+                    if xr.get(k) is not None:
+                        base[k] = xr[k]
         return base
 
-    def _eco(instrument, field, label, unit="% a.a.", fmt="rate", decimals=2, scale=1.0):
+    # ── DB fetchers ───────────────────────────────────────────────────────────
+    def _eco(instrument, field, label, unit="% a.a.", fmt="rate", decimals=2,
+             scale=1.0, rate_mode=False, xl_key=None):
         try:
             df = read_sql(f"""
                 SELECT "DATE", "VALUE" * {scale} AS value FROM public."ECO_INDEX"
@@ -1735,12 +1914,14 @@ def fetch_market_snapshot(date_str: str) -> dict:
                   AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
                   AND "VALUE" IS NOT NULL ORDER BY "DATE"
             """)
-            return _row(label, df, unit=unit, fmt=fmt, decimals=decimals)
+            return _row(label, df, unit=unit, fmt=fmt, decimals=decimals,
+                        rate_mode=rate_mode, xl_key=xl_key)
         except Exception as e:
-            log.warning("market ECO_INDEX %s: %s", instrument, e)
-            return _row(label, None, unit=unit, fmt=fmt, decimals=decimals)
+            log.warning("market ECO %s: %s", instrument, e)
+            return _row(label, None, unit=unit, fmt=fmt, decimals=decimals,
+                        rate_mode=rate_mode, xl_key=xl_key)
 
-    def _fx(instrument, label, unit, decimals=4):
+    def _fx(instrument, label, unit="R$/USD", decimals=4, xl_key=None):
         try:
             df = read_sql(f"""
                 SELECT "DATE", "CLOSE" AS value FROM public."FX_PRICES_SPOT"
@@ -1748,25 +1929,47 @@ def fetch_market_snapshot(date_str: str) -> dict:
                   AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
                   AND "CLOSE" IS NOT NULL ORDER BY "DATE"
             """)
-            return _row(label, df, unit=unit, fmt="price", decimals=decimals)
+            return _row(label, df, unit=unit, fmt="price", decimals=decimals,
+                        xl_key=xl_key)
         except Exception as e:
             log.warning("market FX %s: %s", instrument, e)
-            return _row(label, None, unit=unit, fmt="price", decimals=decimals)
+            return _row(label, None, unit=unit, fmt="price", decimals=decimals,
+                        xl_key=xl_key)
 
-    def _ibov():
+    def _eq_br(label, instrument="IBOV", unit="pts", decimals=0, xl_key=None):
         try:
             df = read_sql(f"""
                 SELECT "DATE", "CLOSE" AS value FROM public."EQUITIES_PRICES"
-                WHERE "INSTRUMENT" = 'IBOV'
+                WHERE "INSTRUMENT" = '{instrument}'
                   AND "DATE" >= DATE '{start}' AND "DATE" <= DATE '{date_str}'
                   AND "CLOSE" IS NOT NULL ORDER BY "DATE"
             """)
-            return _row("IBOV", df, unit="pts", fmt="index", decimals=0)
+            return _row(label, df, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
         except Exception as e:
-            log.warning("market IBOV: %s", e)
-            return _row("IBOV", None, unit="pts", fmt="index", decimals=0)
+            log.warning("market BR eq %s: %s", instrument, e)
+            return _row(label, None, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
 
-    def _di(label, target_bdays, lo, hi):
+    def _eq_global(ticker, label, unit="USD", decimals=2, xl_key=None):
+        try:
+            df = read_sql(f"""
+                SELECT e."DATE", e."CLOSE" AS value
+                FROM public."PRICES_GLOBAL_EQUITIES" e
+                JOIN public."MAPS_GLOBAL_EQUITIES" m
+                  ON m."GLOBAL_EQUITIES_KEY" = e."GLOBAL_EQUITIES_KEY"
+                WHERE m."TICKER_RT" = '{ticker}'
+                  AND e."DATE" >= DATE '{start}' AND e."DATE" <= DATE '{date_str}'
+                  AND e."CLOSE" IS NOT NULL ORDER BY e."DATE" LIMIT 500
+            """)
+            return _row(label, df, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
+        except Exception as e:
+            log.warning("market global eq %s: %s", ticker, e)
+            return _row(label, None, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
+
+    def _di(label, target_bdays, lo, hi, xl_key=None):
         try:
             raw = read_sql(f"""
                 SELECT "DATE", "CLOSE" AS rate, "BDAYS" FROM public."FUTURES_PRICES"
@@ -1776,72 +1979,161 @@ def fetch_market_snapshot(date_str: str) -> dict:
                 ORDER BY "DATE", "BDAYS"
             """)
             if raw.empty:
-                return _row(label, None, unit="% a.a.", fmt="rate", decimals=2)
+                return _row(label, None, unit="% a.a.", fmt="rate", decimals=2,
+                            rate_mode=True, xl_key=xl_key)
             raw["dist"] = (raw["BDAYS"] - target_bdays).abs()
             best = (raw.loc[raw.groupby("DATE")["dist"].idxmin()]
                       [["DATE", "rate"]].rename(columns={"rate": "value"}))
-            return _row(label, best, unit="% a.a.", fmt="rate", decimals=2)
+            return _row(label, best, unit="% a.a.", fmt="rate", decimals=2,
+                        rate_mode=True, xl_key=xl_key)
         except Exception as e:
             log.warning("market DI %s: %s", label, e)
-            return _row(label, None, unit="% a.a.", fmt="rate", decimals=2)
+            return _row(label, None, unit="% a.a.", fmt="rate", decimals=2,
+                        rate_mode=True, xl_key=xl_key)
 
-    def _us10y():
+    def _us_rate(tenour, label, xl_key=None):
         try:
             df = read_sql(f"""
                 SELECT yc."DATE", yc."YIELD" AS value
                 FROM public."YIELDS_GLOBAL_CURVES" yc
                 JOIN public."MAPS_GLOBAL_CURVES" mc
                   ON mc."GLOBAL_CURVES_KEY" = yc."GLOBAL_CURVES_KEY"
-                WHERE mc."CURVE_NAME" ILIKE '%US_TREASURY%'
-                  AND mc."TENOUR" IN ('10Y','DGS10')
+                WHERE mc."CHAIN" = 'US_TREASURY_CONSTANT_MATURITY'
+                  AND yc."TENOUR" = {tenour}
                   AND yc."DATE" >= DATE '{start}' AND yc."DATE" <= DATE '{date_str}'
                   AND yc."YIELD" IS NOT NULL ORDER BY yc."DATE"
             """)
-            return _row("US 10Y", df, unit="% a.a.", fmt="rate", decimals=3)
+            return _row(label, df, unit="% a.a.", fmt="rate", decimals=3,
+                        rate_mode=True, xl_key=xl_key)
         except Exception as e:
-            log.warning("market US10Y: %s", e)
-            return _row("US 10Y", None, unit="% a.a.", fmt="rate", decimals=3)
+            log.warning("market US rate %s: %s", tenour, e)
+            return _row(label, None, unit="% a.a.", fmt="rate", decimals=3,
+                        rate_mode=True, xl_key=xl_key)
 
-    def _global_eq(ticker_prefix, label, unit):
+    def _fut_global(cod, label, unit="USD", decimals=2, xl_key=None):
+        """CME global futures — front-month (nearest DAYS_TO_EXP > 0) per date."""
         try:
             df = read_sql(f"""
-                SELECT e."DATE", e."CLOSE" AS value
-                FROM public."PRICES_GLOBAL_EQUITIES" e
-                JOIN public."MAPS_GLOBAL_EQUITIES" m
-                  ON m."GLOBAL_EQUITIES_KEY" = e."GLOBAL_EQUITIES_KEY"
-                WHERE m."TICKER_RT" ILIKE '{ticker_prefix}%' AND m."COUNTRY"='US'
-                  AND m."SOURCE"='BBG'
-                  AND e."DATE" >= DATE '{start}' AND e."DATE" <= DATE '{date_str}'
-                  AND e."CLOSE" IS NOT NULL ORDER BY e."DATE" LIMIT 500
+                SELECT fp."DATE", fp."CLOSE" AS value, fp."DAYS_TO_EXP"
+                FROM public."FUTURES_GLOBAL_PRICES" fp
+                JOIN public."FUTURES_GLOBAL_MAP" m ON m."INSTRUMENT" = fp."INSTRUMENT"
+                WHERE m."COD_NAME" = '{cod}'
+                  AND fp."DATE" >= DATE '{start}' AND fp."DATE" <= DATE '{date_str}'
+                  AND fp."CLOSE" IS NOT NULL
+                  AND fp."DAYS_TO_EXP" > 0
+                ORDER BY fp."DATE", fp."DAYS_TO_EXP" ASC
+                LIMIT 2000
             """)
-            return _row(label, df, unit=unit, fmt="index", decimals=2)
+            if df.empty:
+                return _row(label, None, unit=unit, fmt="index", decimals=decimals,
+                            xl_key=xl_key)
+            df = (df.sort_values(["DATE", "DAYS_TO_EXP"])
+                    .groupby("DATE")["value"].first()
+                    .reset_index())
+            return _row(label, df, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
         except Exception as e:
-            log.warning("market %s: %s", label, e)
-            return _row(label, None, unit=unit, fmt="index", decimals=2)
+            log.warning("market futures %s: %s", cod, e)
+            return _row(label, None, unit=unit, fmt="index", decimals=decimals,
+                        xl_key=xl_key)
 
-    import logging as _logging
-    log = _logging.getLogger(__name__)
+    def _null(label, unit="", fmt="price", decimals=2, rate_mode=False, xl_key=None):
+        """Placeholder row — Excel-only instrument (no DB source)."""
+        return _row(label, None, unit=unit, fmt=fmt, decimals=decimals,
+                    rate_mode=rate_mode, xl_key=xl_key)
 
-    brasil = [
-        _fx("BRL", "USD/BRL", "R$/USD", decimals=4),
-        _ibov(),
-        _di("DI 1Y",  252,  60,  504),
-        _di("DI 5Y", 1260, 756, 2016),
-        _eco("IMA-B",    "YIELD", "IMA-B",    scale=100),
-        _eco("IMA-B_5+", "YIELD", "IMA-B 5+", scale=100),
-        _eco("CDI",      "YIELD", "CDI",       scale=252*100),
+    # ── Section 1: Janelas ────────────────────────────────────────────────────
+    janelas_groups = [
+        {"label": "Bolsas", "rows": [
+            _eq_br("Ibovespa",    "IBOV",  unit="pts",  decimals=0, xl_key="Ibovespa"),
+            _eq_global("SPY",  "S&P 500",    unit="USD",  decimals=2, xl_key="S&P 500 BMF"),
+            _eq_global("QQQ",  "Nasdaq",     unit="USD",  decimals=2, xl_key="Nasdaq"),
+            _eq_global("DIA",  "Dow Jones",  unit="USD",  decimals=2, xl_key="Dow Jones"),
+            _eq_global("IWM",  "Russell 2000", unit="USD", decimals=2, xl_key="Russell 2000"),
+            _eq_global("MCHI", "MSCI China", unit="USD",  decimals=2, xl_key="MSCI China"),
+        ]},
+        {"label": "Juros", "rows": [
+            _us_rate(504,  "US 2Y",  xl_key="US 2 YR"),
+            _us_rate(1260, "US 5Y",  xl_key="US 5 YR"),
+            _us_rate(2520, "US 10Y", xl_key="US 10 YR"),
+            _di("DI Jan27", 189,  90, 280,  xl_key="DI Jan27"),
+            _di("DI Jan30", 945, 700, 1100, xl_key="DI Jan30"),
+            _di("DI Jan31", 1197, 1000, 1400, xl_key="DI Jan31"),
+        ]},
+        {"label": "Moeda", "rows": [
+            _null("DXY",     unit="",       fmt="price", decimals=2, xl_key="DXY"),
+            _fx("EUR",  "EUR/USD", unit="EUR/USD", decimals=4, xl_key="EUR"),
+            _fx("JPY",  "USD/JPY", unit="USD/JPY", decimals=2, xl_key="JPY"),
+            _fx("CHF",  "USD/CHF", unit="USD/CHF", decimals=4, xl_key="CHF"),
+            _fx("GBP",  "GBP/USD", unit="GBP/USD", decimals=4, xl_key="GBP"),
+            _fx("BRL",  "USD/BRL", unit="R$/USD",  decimals=4, xl_key="BRL"),
+            _fx("MXN",  "USD/MXN", unit="USD/MXN", decimals=4, xl_key="MXN"),
+        ]},
+        {"label": "Commodities", "rows": [
+            _fut_global("GC", "Gold",        unit="USD/oz",   decimals=1, xl_key="Gold (Spot)"),
+            _fut_global("CL", "WTI Crude",   unit="USD/bbl",  decimals=2, xl_key="WTI Oil"),
+            _fut_global("NG", "Natural Gas",  unit="USD/MMBtu",decimals=3, xl_key="Gás Natural"),
+            _fut_global("SI", "Silver",      unit="USD/oz",   decimals=2, xl_key="SLV"),
+            _fut_global("HG", "Cobre",       unit="USc/lb",   decimals=3, xl_key="CPER"),
+            _fut_global("ZS", "Soja",        unit="USc/bu",   decimals=2, xl_key="Soja"),
+            _fut_global("ZC", "Milho",       unit="USc/bu",   decimals=2, xl_key="Milho"),
+        ]},
     ]
-    global_ = [
-        _fx("EUR", "EUR/USD", "EUR/USD", decimals=4),
-        _us10y(),
-        _global_eq("SPY", "S&P 500 (SPY)", "USD"),
-        _global_eq("GLD", "Gold (GLD)",    "USD"),
+
+    # ── Section 2: Moedas ─────────────────────────────────────────────────────
+    moedas_rows = [
+        _null("DXY",     unit="",       fmt="price", decimals=2, xl_key="DXY"),
+        _fx("GBP", "GBP/USD", unit="GBP/USD", decimals=4, xl_key="Reino Unido"),
+        _fx("JPY", "USD/JPY", unit="USD/JPY", decimals=2, xl_key="Japao"),
+        _fx("CAD", "USD/CAD", unit="USD/CAD", decimals=4, xl_key="Canadá"),
+        _fx("CHF", "USD/CHF", unit="USD/CHF", decimals=4, xl_key="Suíça"),
+        _fx("EUR", "EUR/USD", unit="EUR/USD", decimals=4, xl_key="Euro"),
+        _fx("SEK", "USD/SEK", unit="USD/SEK", decimals=3, xl_key="Suécia"),
+        _fx("NOK", "USD/NOK", unit="USD/NOK", decimals=3, xl_key="Noruega"),
+        _fx("NZD", "NZD/USD", unit="NZD/USD", decimals=4, xl_key="N. Zelândia"),
+        _fx("AUD", "AUD/USD", unit="AUD/USD", decimals=4, xl_key="Austrália"),
+        _fx("BRL", "USD/BRL", unit="R$/USD",  decimals=4, xl_key="Brasil"),
+        _fx("MXN", "USD/MXN", unit="USD/MXN", decimals=4, xl_key="México"),
+        _fx("CLP", "USD/CLP", unit="USD/CLP", decimals=1, xl_key="Chile"),
+        _fx("COP", "USD/COP", unit="USD/COP", decimals=0, xl_key="Colômbia"),
+        _fx("CZK", "USD/CZK", unit="USD/CZK", decimals=3, xl_key="Rep. Checa"),
+        _fx("HUF", "USD/HUF", unit="USD/HUF", decimals=1, xl_key="Hungria"),
+        _fx("PLN", "USD/PLN", unit="USD/PLN", decimals=4, xl_key="Polônia"),
+        _fx("KRW", "USD/KRW", unit="USD/KRW", decimals=0, xl_key="Coréia"),
+        _fx("ZAR", "USD/ZAR", unit="USD/ZAR", decimals=4, xl_key="Africa do Sul"),
     ]
+
+    # ── Section 3: Commodities ────────────────────────────────────────────────
+    commodities_groups = [
+        {"label": "Metais Industriais", "rows": [
+            _fut_global("HG", "Cobre",    unit="USc/lb",  decimals=3, xl_key="Cobre"),
+            _null("Minério de Ferro",      unit="USD/t",   fmt="index", decimals=2, xl_key="Minério Cing."),
+            _fut_global("PA", "Paládio",  unit="USD/oz",  decimals=1, xl_key="Paladium"),
+            _fut_global("PL", "Platina",  unit="USD/oz",  decimals=1, xl_key="Platina"),
+        ]},
+        {"label": "Energia", "rows": [
+            _fut_global("CL", "WTI Crude",   unit="USD/bbl",    decimals=2, xl_key="WTI Oil"),
+            _fut_global("BZ", "Brent",       unit="USD/bbl",    decimals=2, xl_key="Brent Crude"),
+            _fut_global("NG", "Natural Gas", unit="USD/MMBtu",  decimals=3, xl_key="Gás Natural"),
+            _fut_global("RB", "Gasoline",    unit="USD/gal",    decimals=3, xl_key="Gasoline RBOB"),
+        ]},
+        {"label": "Metais Preciosos", "rows": [
+            _fut_global("GC", "Gold",   unit="USD/oz", decimals=1, xl_key="Gold (Spot)"),
+            _fut_global("SI", "Silver", unit="USD/oz", decimals=2, xl_key="SLV"),
+        ]},
+        {"label": "Agricultura", "rows": [
+            _fut_global("ZS", "Soja",  unit="USc/bu", decimals=2, xl_key="Soja"),
+            _fut_global("ZC", "Milho", unit="USc/bu", decimals=2, xl_key="Milho"),
+            _fut_global("ZW", "Trigo", unit="USc/bu", decimals=2, xl_key="Trigo"),
+        ]},
+    ]
+
     return {
         "val_date": date_str,
         "sections": [
-            {"label": "Brasil", "rows": brasil},
-            {"label": "Global", "rows": global_},
+            {"label": "Janelas",     "type": "groups", "groups": janelas_groups},
+            {"label": "Moedas",      "type": "rows",   "rows":   moedas_rows},
+            {"label": "Commodities", "type": "groups", "groups": commodities_groups},
         ],
     }
 

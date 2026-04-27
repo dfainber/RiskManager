@@ -37,7 +37,7 @@ from risk_config import (
     _DIST_PORTFOLIOS, _VR_PORTFOLIOS,
 )
 from svg_renderers import make_sparkline, range_line_svg, stop_bar_svg
-from metrics import compute_distribution_stats, compute_pa_outliers
+from metrics import compute_distribution_stats, compute_pa_outliers, compute_top_windows
 from pa_renderers import _pa_filter_alpha, _pa_render_name
 
 
@@ -346,13 +346,111 @@ def build_vol_regime_section(fund_short: str, vol_regime_map: dict) -> str:
     </section>"""
 
 
+def _build_top_windows_modal(modal_id: str, fund_short: str, sections: list) -> str:
+    """Modal listing 5 worst + 5 best non-overlapping 21d windows.
+
+    sections: list of (key, title, w_array). Each section pre-renders one
+    table block (hidden except the first). Toggle at the top swaps which
+    section is visible. Shown when the user clicks "Top 5 piores · 5 melhores"
+    in the 21d view.
+    """
+    if not sections:
+        return ""
+
+    def _table_block(w, n_obs: int) -> str:
+        ext = compute_top_windows(w, k=5, window_days=21)
+        if not ext or (not ext.get("worst") and not ext.get("best")):
+            return ""
+
+        def _row(item, idx, color):
+            return (
+                f'<tr>'
+                f'<td style="color:var(--muted);text-align:right">{idx+1}</td>'
+                f'<td class="mono" style="text-align:right">{item["n_back"]}d atrás</td>'
+                f'<td class="mono" style="text-align:right;color:{color};font-weight:700">{item["sum_bps"]:+.1f}</td>'
+                f'<td class="mono" style="text-align:right">{item["mean_bps"]:+.2f}</td>'
+                f'<td class="mono" style="text-align:right;color:var(--down)">{item["min_day"]:+.1f}</td>'
+                f'<td class="mono" style="text-align:right;color:var(--up)">{item["max_day"]:+.1f}</td>'
+                f'</tr>'
+            )
+
+        worst_rows = "".join(_row(it, i, "var(--down)") for i, it in enumerate(ext["worst"]))
+        best_rows  = "".join(_row(it, i, "var(--up)")   for i, it in enumerate(ext["best"]))
+        head = (
+            '<thead><tr>'
+            '<th style="text-align:right;width:34px">#</th>'
+            '<th style="text-align:right">Encerra</th>'
+            '<th style="text-align:right">Σ 21d (bps)</th>'
+            '<th style="text-align:right">Média/dia</th>'
+            '<th style="text-align:right">Pior dia</th>'
+            '<th style="text-align:right">Melhor dia</th>'
+            '</tr></thead>'
+        )
+        return (
+            f'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">{ext["n_obs"]} janelas · sem sobreposição · base HS</div>'
+            f'<div style="color:var(--down);font-size:11px;font-weight:700;margin:8px 0 4px">5 PIORES</div>'
+            f'<table class="metric-table" data-no-sort="1" style="width:100%">{head}<tbody>{worst_rows}</tbody></table>'
+            f'<div style="color:var(--up);font-size:11px;font-weight:700;margin:14px 0 4px">5 MELHORES</div>'
+            f'<table class="metric-table" data-no-sort="1" style="width:100%">{head}<tbody>{best_rows}</tbody></table>'
+        )
+
+    rendered = []
+    for key, title, w in sections:
+        block = _table_block(w, len(w) if w is not None else 0)
+        if not block:
+            continue
+        rendered.append((key, title, block))
+    if not rendered:
+        return ""
+
+    # Toggle: shown only if more than one section (e.g. IDKA cards).
+    if len(rendered) > 1:
+        btns = "".join(
+            f'<button class="dist-btn dist-top-sec-btn{(" active" if i == 0 else "")}" '
+            f'data-sec="{key}" onclick="setDistTopSection(\'{modal_id}\',\'{key}\')">{title}</button>'
+            for i, (key, title, _) in enumerate(rendered)
+        )
+        toggle_html = f'<div class="dist-toggle" style="margin-bottom:12px">{btns}</div>'
+    else:
+        toggle_html = ""
+
+    body = "".join(
+        f'<div class="dist-top-sec{(" active" if i == 0 else "")}" data-sec="{key}">'
+        f'<div style="font-weight:700;font-size:13px;margin-bottom:6px;color:var(--text)">{title}</div>'
+        f'{block}</div>'
+        for i, (key, title, block) in enumerate(rendered)
+    )
+
+    return f"""
+    <div id="{modal_id}" class="dist-top-modal" style="display:none">
+      <div class="dist-top-backdrop" onclick="closeDistTop('{modal_id}')"></div>
+      <div class="dist-top-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text)">Top janelas 21d — {fund_short}</div>
+            <div style="font-size:11px;color:var(--muted)">Janelas de 21 dias úteis sem sobreposição · bps de NAV</div>
+          </div>
+          <button onclick="closeDistTop('{modal_id}')" style="background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px">×</button>
+        </div>
+        {toggle_html}
+        {body}
+      </div>
+    </div>"""
+
+
 def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: dict,
                             actuals: dict) -> str:
-    """Single card with toggle between Backward (D-1 carteira + realized DIA) and Forward (D carteira profile).
-       IDKA funds also get a second toggle: vs Benchmark / vs Replication."""
-    bw_table = _build_backward_table(fund_short, dist_map_prev, actuals)
-    fw_table = _build_forward_table(fund_short, dist_map_now)
-    if not bw_table and not fw_table:
+    """Distribuição card with toggles: Backward/Forward × 1d/21d (rolling sum).
+       21d view = distribution of rolling 21-day cumulative returns.
+       21d adds a "Top 5 piores / 5 melhores" button → modal with non-overlapping
+       extremes.
+    """
+    # Build all 4 base variants (mode × window-days)
+    bw252 = _build_backward_table(fund_short, dist_map_prev, actuals, 1)
+    fw252 = _build_forward_table(fund_short, dist_map_now, 1)
+    bw21  = _build_backward_table(fund_short, dist_map_prev, actuals, 21)
+    fw21  = _build_forward_table(fund_short, dist_map_now, 21)
+    if not (bw252 or fw252 or bw21 or fw21):
         return ""
     dck_id = f"dist-{fund_short.lower()}"
     _sub_map = {
@@ -366,16 +464,43 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
     _EMPTY_BW = '<div class="empty-view">Sem dados backward (D-1 sem simulação).</div>'
     _EMPTY_FW = '<div class="empty-view">Sem dados forward.</div>'
 
-    # IDKA: extra bench toggle (vs Benchmark / vs Replication / Comparação)
+    # 1d/21d window toggle. Both buttons share the same .dist-btn styling so
+    # the active state shows the canonical blue accent gradient.
+    modal_id = f"{dck_id}-top21"
+    window_toggle_html = (
+        f'<div class="dist-toggle" style="margin-right:6px">'
+        f'<button class="dist-btn active" data-window="1" '
+        f'onclick="setDistWindow(\'{dck_id}\',\'1\')">1d</button>'
+        f'<button class="dist-btn"        data-window="21" '
+        f'onclick="setDistWindow(\'{dck_id}\',\'21\')">21d</button>'
+        f'</div>'
+        f'<button class="dist-btn dist-top21-btn" '
+        f'onclick="openDistTop(\'{modal_id}\')" '
+        f'style="display:none;background:linear-gradient(180deg,var(--accent-2),var(--accent));color:#fff;border:1px solid var(--line);margin-right:6px">'
+        f'5 piores · 5 melhores</button>'
+    )
+
+    def _view(mode: str, window: str, html: str, default_active: bool) -> str:
+        """One <div.dist-view> with both data-mode and data-window."""
+        visible = default_active and mode == "forward" and window == "1"
+        cls = "dist-view" + (" active" if visible else "")
+        style = "" if visible else ' style="display:none"'
+        return f'<div class="{cls}" data-mode="{mode}" data-window="{window}"{style}>{html}</div>'
+
+    # ── IDKA: extra bench toggle (vs Benchmark / vs Replication / Comparação) ──
     if fund_short in {"IDKA_3Y", "IDKA_10Y"}:
         rep_short = f"{fund_short}_REP"
         cmp_short = f"{fund_short}_CMP"
-        bw_rep = _build_backward_table(rep_short, dist_map_prev, actuals)
-        fw_rep = _build_forward_table(rep_short, dist_map_now)
-        bw_cmp = _build_backward_table(cmp_short, dist_map_prev, actuals)
-        fw_cmp = _build_forward_table(cmp_short, dist_map_now)
-        has_rep = bool(bw_rep or fw_rep)
-        has_cmp = bool(bw_cmp or fw_cmp)
+        bw_rep_1   = _build_backward_table(rep_short, dist_map_prev, actuals, 1)
+        fw_rep_1   = _build_forward_table(rep_short, dist_map_now, 1)
+        bw_rep_21  = _build_backward_table(rep_short, dist_map_prev, actuals, 21)
+        fw_rep_21  = _build_forward_table(rep_short, dist_map_now, 21)
+        bw_cmp_1   = _build_backward_table(cmp_short, dist_map_prev, actuals, 1)
+        fw_cmp_1   = _build_forward_table(cmp_short, dist_map_now, 1)
+        bw_cmp_21  = _build_backward_table(cmp_short, dist_map_prev, actuals, 21)
+        fw_cmp_21  = _build_forward_table(cmp_short, dist_map_now, 21)
+        has_rep = bool(bw_rep_1 or fw_rep_1 or bw_rep_21 or fw_rep_21)
+        has_cmp = bool(bw_cmp_1 or fw_cmp_1 or bw_cmp_21 or fw_cmp_21)
 
         def _bench_btn(bench, label, active=False, disabled=False):
             cls = "dist-bench-btn" + (" active" if active else "")
@@ -390,17 +515,22 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
             + _bench_btn("comparison", "Comparação",     disabled=not has_cmp)
             + '</div>'
         )
+
         sections_html = (
             f'<div data-bench-section="benchmark">'
-            f'<div class="dist-view" data-mode="backward" style="display:none">{bw_table or _EMPTY_BW}</div>'
-            f'<div class="dist-view" data-mode="forward">{fw_table or _EMPTY_FW}</div>'
+            f'{_view("backward","1",  bw252 or _EMPTY_BW, True)}'
+            f'{_view("forward","1",   fw252 or _EMPTY_FW, True)}'
+            f'{_view("backward","21", bw21  or _EMPTY_BW, True)}'
+            f'{_view("forward","21",  fw21  or _EMPTY_FW, True)}'
             f'</div>'
         )
         if has_rep:
             sections_html += (
                 f'<div data-bench-section="replication" style="display:none">'
-                f'<div class="dist-view" data-mode="backward" style="display:none">{bw_rep or _EMPTY_BW}</div>'
-                f'<div class="dist-view" data-mode="forward">{fw_rep or _EMPTY_FW}</div>'
+                f'{_view("backward","1",  bw_rep_1   or _EMPTY_BW, False)}'
+                f'{_view("forward","1",   fw_rep_1   or _EMPTY_FW, False)}'
+                f'{_view("backward","21", bw_rep_21  or _EMPTY_BW, False)}'
+                f'{_view("forward","21",  fw_rep_21  or _EMPTY_FW, False)}'
                 f'</div>'
             )
         if has_cmp:
@@ -414,19 +544,37 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
             )
             sections_html += (
                 f'<div data-bench-section="comparison" style="display:none">'
-                f'<div class="dist-view" data-mode="backward" style="display:none">{bw_cmp or _EMPTY_BW}{_cmp_note}</div>'
-                f'<div class="dist-view" data-mode="forward">{fw_cmp or _EMPTY_FW}{_cmp_note}</div>'
+                f'{_view("backward","1",  (bw_cmp_1  or _EMPTY_BW)+_cmp_note, False)}'
+                f'{_view("forward","1",   (fw_cmp_1  or _EMPTY_FW)+_cmp_note, False)}'
+                f'{_view("backward","21", (bw_cmp_21 or _EMPTY_BW)+_cmp_note, False)}'
+                f'{_view("forward","21",  (fw_cmp_21 or _EMPTY_FW)+_cmp_note, False)}'
                 f'</div>'
             )
+        # Modal: 5 worst + 5 best 21d non-overlapping windows. 3 sections by series:
+        #  - "vs Benchmark"  → fund_short series       (e.g. IDKA_10Y)
+        #  - "vs Replication"→ rep_short series        (e.g. IDKA_10Y_REP)
+        #  - "Repl − Bench"  → spread series           (e.g. IDKA_10Y_SPREAD)
+        modal_sections = []
+        bench_w  = dist_map_now.get(fund_short)
+        rep_w    = dist_map_now.get(rep_short)
+        spread_w = dist_map_now.get(f"{fund_short}_SPREAD")
+        if bench_w is not None and len(bench_w) >= 21:
+            modal_sections.append(("benchmark", "vs Benchmark", bench_w))
+        if rep_w is not None and len(rep_w) >= 21:
+            modal_sections.append(("replication", "vs Replication", rep_w))
+        if spread_w is not None and len(spread_w) >= 21:
+            modal_sections.append(("spread", "Repl − Bench (spread)", spread_w))
+        modal_html = _build_top_windows_modal(modal_id, fund_short, modal_sections)
         return f"""
-    <section class="card" id="{dck_id}">
+    <section class="card" id="{dck_id}" data-active-mode="forward" data-active-window="1">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
         <div>
-          <span class="card-title">Distribuição 252d</span>
+          <span class="card-title">Distribuição</span>
           <span class="card-sub">{sub}</span>
         </div>
-        <div style="display:flex;gap:6px;align-items:center">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           {bench_toggle_html}
+          {window_toggle_html}
           <div class="dist-toggle">
             <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
             <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
@@ -434,40 +582,71 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
         </div>
       </div>
       {sections_html}
+      {modal_html}
     </section>"""
 
+    # Non-IDKA path: single-bench card.
+    primary_w = next((dist_map_now.get(p[0]) for p in _dist_entries(fund_short) if p[2] == "fund"), None)
+    modal_html = ""
+    if primary_w is not None and len(primary_w) >= 21:
+        modal_html = _build_top_windows_modal(
+            modal_id, fund_short, [("fund", fund_short, primary_w)]
+        )
     return f"""
-    <section class="card" id="{dck_id}">
+    <section class="card" id="{dck_id}" data-active-mode="forward" data-active-window="1">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
         <div>
-          <span class="card-title">Distribuição 252d</span>
+          <span class="card-title">Distribuição</span>
           <span class="card-sub">{sub}</span>
         </div>
-        <div class="dist-toggle">
-          <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
-          <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          {window_toggle_html}
+          <div class="dist-toggle">
+            <button class="dist-btn"        data-mode="backward" onclick="setDistMode('{dck_id}','backward')">Backward</button>
+            <button class="dist-btn active" data-mode="forward"  onclick="setDistMode('{dck_id}','forward')">Forward</button>
+          </div>
         </div>
       </div>
-      <div class="dist-view"        data-mode="backward" style="display:none">{bw_table or _EMPTY_BW}</div>
-      <div class="dist-view active" data-mode="forward">{fw_table or _EMPTY_FW}</div>
+      {_view("backward","1",  bw252 or _EMPTY_BW, True)}
+      {_view("forward","1",   fw252 or _EMPTY_FW, True)}
+      {_view("backward","21", bw21  or _EMPTY_BW, True)}
+      {_view("forward","21",  fw21  or _EMPTY_FW, True)}
+      {modal_html}
     </section>"""
 
 
-def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -> str:
-    """Backward-looking: yesterday's carteira × last 252d, with today's realized DIA overlayed.
-       Answers: 'where did today's move land in the historical distribution of D-1 carteira?'
+def _to_rolling_sum(w, window: int):
+    """Daily-return series → rolling cumulative-sum series (length n - window + 1)."""
+    arr = np.asarray(w, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    if len(arr) < window:
+        return np.array([])
+    if window <= 1:
+        return arr
+    csum = np.cumsum(arr)
+    return np.concatenate(([csum[window - 1]], csum[window:] - csum[:-window]))
 
-       Drill-down: fund row always visible; livro/rf rows hidden until fund row
-       is clicked (caret toggle). Parent key = fund_short.
+
+def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict,
+                          window_days: int = 1) -> str:
+    """Backward-looking: D-1 carteira distribution with today's realized DIA overlayed.
+
+    window_days==1 (default): each obs = 1-day HS return; actual_bps = today's DIA.
+    window_days>1: each obs = rolling sum of `window_days` consecutive 1-day HS
+    returns. The overlay (actual_bps) is omitted because realized 21d returns
+    aren't tracked here — the rolling-sum distribution alone is shown.
     """
     if not dist_map_prev:
         return ""
     rows = ""
     for portfolio_name, label, kind, key, fs in _dist_entries(fund_short):
-        w = dist_map_prev.get(portfolio_name)
-        if w is None or len(w) < 30:
+        w_raw = dist_map_prev.get(portfolio_name)
+        if w_raw is None or len(w_raw) < max(window_days * 2, 30):
             continue
-        actual = actuals.get(f"{kind}:{key}")
+        w = _to_rolling_sum(w_raw, window_days) if window_days > 1 else np.asarray(w_raw, dtype=float)
+        if len(w) < 30:
+            continue
+        actual = actuals.get(f"{kind}:{key}") if window_days == 1 else None
         stats = compute_distribution_stats(w, actual)
         if stats is None or abs(stats["max"] - stats["min"]) < 1e-6:
             continue
@@ -521,16 +700,21 @@ def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict) -
       </div>"""
 
 
-def _build_forward_table(fund_short: str, dist_map: dict) -> str:
-    """Forward-looking: today's carteira × last 252d. Describes expected P&L profile.
-       Drill-down: fund row clickable, child rows (livro/rf) hidden by default.
+def _build_forward_table(fund_short: str, dist_map: dict, window_days: int = 1) -> str:
+    """Forward-looking: today's carteira × historical scenarios. Describes expected P&L profile.
+
+    window_days==1: each obs = 1-day HS return.
+    window_days>1: each obs = rolling-sum of `window_days` consecutive 1-day HS returns.
     """
     if not dist_map:
         return ""
     rows = ""
     for portfolio_name, label, kind, key, fs in _dist_entries(fund_short):
-        w = dist_map.get(portfolio_name)
-        if w is None or len(w) < 30:
+        w_raw = dist_map.get(portfolio_name)
+        if w_raw is None or len(w_raw) < max(window_days * 2, 30):
+            continue
+        w = _to_rolling_sum(w_raw, window_days) if window_days > 1 else np.asarray(w_raw, dtype=float)
+        if len(w) < 30:
             continue
         stats = compute_distribution_stats(w, None)
         if stats is None or abs(stats["max"] - stats["min"]) < 1e-6:
@@ -569,7 +753,7 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
             <th style="text-align:right;width:60px">Min</th>
             <th style="text-align:right;width:70px">p05</th>
             <th style="text-align:right;width:60px">Média</th>
-            <th style="text-align:right;width:70px">a+var95</th>
+            <th style="text-align:right;width:70px">p95</th>
             <th style="text-align:right;width:60px">Max</th>
             <th style="text-align:right;width:55px">σ</th>
           </tr>
@@ -577,7 +761,7 @@ def _build_forward_table(fund_short: str, dist_map: dict) -> str:
         <tbody>{rows}</tbody>
       </table>
       <div class="bar-legend">
-        <b>Min/Max</b> = extremos dos 252 PnLs hipotéticos · <b>p05</b> = 5° percentil (cauda de perda, VaR 95%) · <b>a+var95</b> = 95° percentil (cauda de ganho) · <b>Média/σ</b> = expectativa diária e vol
+        <b>Min/Max</b> = extremos dos 252 PnLs hipotéticos · <b>p05</b> = 5° percentil (cauda de perda, VaR 95%) · <b>p95</b> = 95° percentil (cauda de ganho) · <b>Média/σ</b> = expectativa diária e vol
       </div>"""
 
 
@@ -1658,8 +1842,8 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
                     detail=detail + ("" if has_pnl else " · PnL zero/ausente"))
 
     _SRC_DEFS = [
-        ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _pa_item),
-        ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","IDKA_3Y","IDKA_10Y"], _var_item),
+        ("PA / PnL",          ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","BALTRA","IDKA_3Y","IDKA_10Y"], _pa_item),
+        ("VaR / Stress",      ["MACRO","QUANT","EVOLUTION","MACRO_Q","ALBATROZ","BALTRA","IDKA_3Y","IDKA_10Y"], _var_item),
         ("Exposição",         ["MACRO","QUANT","EVOLUTION","ALBATROZ"],           _expo_item),
         ("Single-Name",       ["QUANT","EVOLUTION"],                              _sn_item),
         ("Distribuição 252d", ["MACRO","EVOLUTION"],                              _dist_item),

@@ -267,6 +267,55 @@ def compute_portfolio_vol_regime(dist_map: dict, vol_window: int = 21) -> dict:
     return out
 
 
+def compute_top_windows(w_series, k: int = 5, window_days: int = 21) -> dict | None:
+    """Find k worst and k best NON-OVERLAPPING rolling windows in a return series.
+
+    Greedy: sort window starts by cumulative sum (asc for worst, desc for best),
+    pick the first k whose window [start, end] doesn't overlap any previously
+    picked window. Returns None if series shorter than window_days.
+
+    Returns:
+      {"n_obs": N, "worst": [item, ...], "best": [item, ...]}
+      item = {start_idx, end_idx, n_back, sum_bps, mean_bps, min_day, max_day}
+        n_back = bus-days from window end to series end (0 = ending today)
+    """
+    import numpy as np
+    if w_series is None or len(w_series) < window_days:
+        return None
+    w = np.asarray(w_series, dtype=float)
+    w = w[~np.isnan(w)]
+    n = len(w)
+    if n < window_days:
+        return None
+    sums = np.array([float(np.sum(w[i:i + window_days])) for i in range(n - window_days + 1)])
+
+    def _greedy(asc: bool) -> list:
+        order = np.argsort(sums) if asc else np.argsort(-sums)
+        picked = []
+        for idx in order:
+            i = int(idx)
+            e = i + window_days - 1
+            if any(not (e < u[0] or i > u[1]) for u in picked):
+                continue
+            picked.append((i, e))
+            if len(picked) >= k:
+                break
+        out = []
+        for s, e in picked:
+            seg = w[s:e + 1]
+            out.append({
+                "start_idx": s, "end_idx": e,
+                "n_back":  n - 1 - e,
+                "sum_bps":  float(np.sum(seg)),
+                "mean_bps": float(np.mean(seg)),
+                "min_day":  float(np.min(seg)),
+                "max_day":  float(np.max(seg)),
+            })
+        return out
+
+    return {"n_obs": n, "worst": _greedy(True), "best": _greedy(False)}
+
+
 def compute_distribution_stats(w_series, actual_bps=None):
     """Returns dict with forward-looking stats and (optional) backward comparison."""
     import numpy as np
