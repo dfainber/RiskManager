@@ -153,6 +153,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **NTN-B coupon-date fix** — `_ntnb_total_return_pct_change(prices, maturity=...)` em `data_fetch.py` adiciona semi-coupon ((1.06)^0.5−1 ≈ 2.956%) de volta no pct_change da 1ª BDay ≥ data-cupom. Maturity-aware: cupons derivados do mês de expiração (NTN-B 2030-08-15 → Fev/Ago, não Mai/Nov). Eliminou outliers de -180 a -227 bps no spread Repl−Bench das IDKAs. Aplicado em `fetch_idka_hs_replication_series` e `fetch_idka_hs_spread_series`.
 - **`export_idka_repl_vs_bench.py`** — script standalone pra investigação: dump xlsx com colunas `*_RET_CLEAN_BPS` (legado) vs `*_RET_BPS` (TR-adjusted) por NTN-B + summary distribuição. Output em `data/morning-calls/<date>_idka_repl_vs_bench.xlsx`.
 - **P95 column** — coluna `a+var95` renomeada pra `p95` na tabela Distribuição (header + legenda).
+- **MACRO PA FX-split** (`generate_macro_pa_fx_split.py`) — relatório standalone que reagrupa o PA do MACRO separando efeito-ativo de efeito-FX. CLASSE='BRLUSD' (+ 'FX' cross) → novo bucket "FX Basis Risk & Carry" com sub-grupos: FX em Commodities/RV Intl/RF Intl + FX Spot & Futuros (consolidado: USD Brasil hedge + spot + cross-FX + custos). Demais classes preservadas. Total idêntico ao PA canônico (pura reordenação). Inclui bloco de verificação numérica (✓/⚠ por bucket) e top contribuintes/detratores **excluindo** FX Basis (só efeito-ativo). Output: `data/morning-calls/<date>_macro_pa_fx_split.html`.
 
 ---
 
