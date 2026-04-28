@@ -2394,8 +2394,18 @@ def build_html(d: ReportData) -> str:
   .pa-table tfoot td.pa-name {{ padding:8px 10px; }}
   .pa-table th.pa-sortable {{ user-select:none; }}
   .pa-table th.pa-sortable:hover {{ color:var(--text); }}
-  .pa-table th.pa-sort-active {{ color:var(--accent-2); }}
+  .pa-table th.pa-sort-active {{ color:var(--accent-2); border-left:1px solid rgba(90,163,232,0.35); border-right:1px solid rgba(90,163,232,0.35); }}
   .pa-sort-arrow {{ font-size:9px; color:var(--accent-2); margin-left:2px; }}
+  /* Highlight da coluna ativa do sort no PA — fundo azul sutil + bordas laterais
+     no header. nth-child(2..5) = colunas DIA/MTD/YTD/12M (col 1 = nome). */
+  .pa-view[data-sort-idx="0"] .pa-table tbody td:nth-child(2),
+  .pa-view[data-sort-idx="0"] .pa-table tfoot td:nth-child(2) {{ background:rgba(90,163,232,0.06); }}
+  .pa-view[data-sort-idx="1"] .pa-table tbody td:nth-child(3),
+  .pa-view[data-sort-idx="1"] .pa-table tfoot td:nth-child(3) {{ background:rgba(90,163,232,0.06); }}
+  .pa-view[data-sort-idx="2"] .pa-table tbody td:nth-child(4),
+  .pa-view[data-sort-idx="2"] .pa-table tfoot td:nth-child(4) {{ background:rgba(90,163,232,0.06); }}
+  .pa-view[data-sort-idx="3"] .pa-table tbody td:nth-child(5),
+  .pa-view[data-sort-idx="3"] .pa-table tfoot td:nth-child(5) {{ background:rgba(90,163,232,0.06); }}
   .pa-pos {{ color:var(--muted); }}
 
   /* Single-name fund switcher (Por Report > Single-Name) */
