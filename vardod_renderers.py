@@ -170,19 +170,27 @@ def _df_to_payload(df: pd.DataFrame, fund_key: str) -> dict:
     }
 
 
-def build_vardod_data_payload(date_str: str) -> tuple[str, set[str]]:
+def build_vardod_data_payload(date_str: str,
+                              prefetched_dfs: dict | None = None) -> tuple[str, set[str]]:
     """Fetch decomposition for all supported funds, return:
        (script_html, funds_with_data) — script_html is the <script>...</script>
        block; funds_with_data is the set of fund_keys with non-empty data.
+
+       prefetched_dfs: optional {fund_key → DataFrame} cache to skip the DB
+       round-trips (useful when the caller already pulled DoD data for
+       Comments / commentary upstream).
     """
     payload: dict[str, dict] = {}
     funds_with_data: set[str] = set()
     for fund_key in _VAR_DOD_DISPATCH:
-        try:
-            df = fetch_var_dod_decomposition(fund_key, date_str)
-        except Exception as e:
-            print(f"  [vardod] {fund_key} failed: {e}")
-            continue
+        if prefetched_dfs is not None and fund_key in prefetched_dfs:
+            df = prefetched_dfs[fund_key]
+        else:
+            try:
+                df = fetch_var_dod_decomposition(fund_key, date_str)
+            except Exception as e:
+                print(f"  [vardod] {fund_key} failed: {e}")
+                continue
         if df is None or df.empty:
             continue
         d = _df_to_payload(df, fund_key)

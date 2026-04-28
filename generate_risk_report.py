@@ -113,6 +113,8 @@ from data_fetch import (
     fetch_book_pnl,
     fetch_peers_data,
     fetch_market_snapshot,
+    fetch_var_dod_decomposition,
+    _VAR_DOD_DISPATCH,
 )
 
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
@@ -1499,27 +1501,56 @@ def build_html(d: ReportData) -> str:
 
     changes_html = build_changes_card(df_expo, df_expo_d1, position_changes)
 
-    # Δ VaR commentary: flag fund-level changes ≥ 5 bps, show top-1 driver
-    def _top1_var_delta(df_today, df_d1, key_col):
-        if df_today is None or df_today.empty or df_d1 is None or df_d1.empty:
+    # Δ VaR commentary: pull from VaR DoD attribution (full-suite coverage).
+    # Threshold: 5 bps default; IDKAs use 2 bps (BVaR is smaller magnitude).
+    # Prefetch all DoD dataframes once — shared with build_vardod_data_payload below.
+    _DOD_THRESHOLD = {"IDKA_3Y": 2.0, "IDKA_10Y": 2.0}
+    _DOD_THRESHOLD_DEFAULT = 5.0
+    _dod_dfs: dict = {}
+    for _fk in _VAR_DOD_DISPATCH:
+        try:
+            _dod_dfs[_fk] = fetch_var_dod_decomposition(_fk, DATA_STR)
+        except Exception:
+            _dod_dfs[_fk] = None
+
+    def _dod_top_driver(fund_key: str) -> dict | None:
+        df = _dod_dfs.get(fund_key)
+        if df is None or df.empty:
             return None
-        tot = float(df_today["var_pct"].sum()) - float(df_d1["var_pct"].sum())
-        if abs(tot) < 5.0:
+        # Same zero-row filter as the modal payload
+        mask = (df["contrib_d1_bps"].abs() >= 0.05) | (df["contrib_d_bps"].abs() >= 0.05)
+        df = df[mask]
+        if df.empty:
             return None
-        t = df_today.groupby(key_col)["var_pct"].sum()
-        d = df_d1.groupby(key_col)["var_pct"].sum()
-        all_keys = set(t.index) | set(d.index)
-        deltas = {k: float(t.get(k, 0.0)) - float(d.get(k, 0.0)) for k in all_keys}
-        top1 = max(deltas, key=lambda k: abs(deltas[k]))
-        return {"delta": tot, "driver": top1, "driver_delta": deltas[top1]}
+        delta_total = float(df["delta_bps"].sum())
+        threshold = _DOD_THRESHOLD.get(fund_key, _DOD_THRESHOLD_DEFAULT)
+        if abs(delta_total) < threshold:
+            return None
+        # Top by |delta|
+        top_idx = df["delta_bps"].abs().idxmax()
+        top = df.loc[top_idx]
+        # Fund-level pos/marg decomp (sum across rows when available)
+        pos_eff_total = None
+        marg_eff_total = None
+        if df["pos_effect_bps"].notna().any():
+            pos_eff_total  = float(df["pos_effect_bps"].fillna(0).sum())
+            marg_eff_total = float(df["vol_effect_bps"].fillna(0).sum())
+        # Override flag if any row carries a note (engine artifact)
+        override = any(str(o or "").strip() for o in df.get("override_note", []))
+        return {
+            "delta":        delta_total,
+            "driver":       str(top.get("label", "—")),
+            "driver_delta": float(top["delta_bps"]),
+            "pos_eff":      pos_eff_total,
+            "marg_eff":     marg_eff_total,
+            "override":     override,
+        }
 
     _var_commentary: dict = {}
-    _r = _top1_var_delta(df_var,       df_var_d1,       "rf")
-    if _r: _var_commentary["MACRO"] = _r
-    _r = _top1_var_delta(df_quant_var, df_quant_var_d1, "BOOK")
-    if _r: _var_commentary["QUANT"] = _r
-    _r = _top1_var_delta(df_evo_var,   df_evo_var_d1,   "rf")
-    if _r: _var_commentary["EVOLUTION"] = _r
+    for _fk in _VAR_DOD_DISPATCH:
+        _r = _dod_top_driver(_fk)
+        if _r:
+            _var_commentary[_fk] = _r
 
     comments_html = build_comments_card(df_pa_daily, _var_commentary or None)
 
@@ -1689,7 +1720,7 @@ def build_html(d: ReportData) -> str:
     # Por Report mode removed — no per-report fund switcher needed
 
     # VaR DoD attribution payload (single fetch for all supported funds)
-    vardod_data_script, _vardod_funds = build_vardod_data_payload(DATA_STR)
+    vardod_data_script, _vardod_funds = build_vardod_data_payload(DATA_STR, prefetched_dfs=_dod_dfs)
     vardod_modal_html = build_vardod_modal_scaffold()
 
     html = f"""<!DOCTYPE html>

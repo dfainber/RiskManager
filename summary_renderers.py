@@ -309,11 +309,17 @@ def build_changes_card(df_expo, df_expo_d1, position_changes) -> str:
 _VAR_DELTA_MIN_BPS = 5.0  # minimum fund-level |Δ VaR| to emit a VaR bullet
 
 
+_BVAR_KEYS = {"IDKA_3Y", "IDKA_10Y", "FRONTIER"}
+
+
 def build_comments_card(
     df_pa_daily: pd.DataFrame,
     var_commentary: dict | None = None,
 ) -> str:
-    """var_commentary: {short → {"delta": float, "driver": str, "driver_delta": float}}"""
+    """var_commentary: {short → {
+        "delta": float, "driver": str, "driver_delta": float,
+        "pos_eff": float|None, "marg_eff": float|None, "override": bool,
+    }}"""
     if df_pa_daily is None or df_pa_daily.empty:
         return ""
     try:
@@ -327,20 +333,41 @@ def build_comments_card(
             label = FUND_LABELS.get(short, short)
 
             items = ""
-            # ── VaR delta bullet (top-1 driver) ──────────────────────────────
+            # ── VaR delta bullet (top-1 driver + pos/marg + override flag) ───
             vc = (var_commentary or {}).get(short)
             if vc:
                 delta    = vc["delta"]
                 dd       = vc["driver_delta"]
                 delta_c  = "var(--up)" if delta < 0 else "var(--down)"
                 dd_c     = "var(--up)" if dd < 0 else "var(--down)"
+                metric_lbl = "BVaR" if short in _BVAR_KEYS else "VaR"
+                # Optional pos/marg decomp suffix (only when fund publishes per-row pos data)
+                decomp = ""
+                pe = vc.get("pos_eff"); me = vc.get("marg_eff")
+                if pe is not None and me is not None:
+                    pe_c = "var(--up)" if pe < 0 else "var(--down)"
+                    me_c = "var(--up)" if me < 0 else "var(--down)"
+                    decomp = (
+                        f' <span style="color:var(--muted)">·</span> '
+                        f'<span style="color:var(--muted)">[pos </span>'
+                        f'<span class="mono" style="color:{pe_c}">{pe:+.1f}</span>'
+                        f'<span style="color:var(--muted)"> / marg </span>'
+                        f'<span class="mono" style="color:{me_c}">{me:+.1f}</span>'
+                        f'<span style="color:var(--muted)">]</span>'
+                    )
+                # Override flag (engine artifact corrected — IDKA bench primitive, etc)
+                override_tag = (
+                    ' <span class="mono" style="color:#eab308" title="Override aplicado em primitive do passivo">⚠ override</span>'
+                    if vc.get("override") else ""
+                )
                 items += (
                     f'<li style="border-left:2px solid var(--border);padding-left:6px">'
-                    f'<span style="color:var(--muted)">VaR </span>'
+                    f'<span style="color:var(--muted)">{metric_lbl} </span>'
                     f'<span class="mono" style="color:{delta_c};font-weight:700">{delta:+.1f} bps</span>'
                     f'<span style="color:var(--muted)"> vs D-1 · driver: </span>'
                     f'<span class="mono">{vc["driver"]}</span>'
                     f' <span class="mono" style="color:{dd_c}">({dd:+.1f} bps)</span>'
+                    + decomp + override_tag +
                     f'</li>'
                 )
             # ── PA outlier bullets ────────────────────────────────────────────
@@ -374,7 +401,7 @@ def build_comments_card(
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Comments — Outliers do dia</span>
-                <span class="card-sub">— produtos com |z| ≥ 2σ (vs. 90d) e |contrib| ≥ 3 bps · VaR Δ ≥ {_VAR_DELTA_MIN_BPS:.0f} bps vs D-1</span>
+                <span class="card-sub">— produtos com |z| ≥ 2σ (vs. 90d) e |contrib| ≥ 3 bps · VaR Δ ≥ {_VAR_DELTA_MIN_BPS:.0f} bps (BVaR IDKAs ≥ 2 bps) vs D-1</span>
               </div>
               <div class="comments-grid">{''.join(body_chunks)}</div>
             </section>"""
