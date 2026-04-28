@@ -1773,6 +1773,72 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str,
     else:
         body = f"{toggle_bar}{highlights_html}{table_html}"
 
+    # ── Top 3 winners + top 3 losers banner (by daily attribution) ────────────
+    _stocks_alive = stocks_valid[stocks_valid["TOTAL_ATRIBUTION_DAY"].notna()].copy()
+    _stocks_alive["att"] = _stocks_alive["TOTAL_ATRIBUTION_DAY"].astype(float)
+    _winners = _stocks_alive.nlargest(3,  "att")[["PRODUCT", "att"]]
+    _losers  = _stocks_alive.nsmallest(3, "att")[["PRODUCT", "att"]]
+
+    def _banner_chip(ticker: str, val: float, side: str) -> str:
+        sign = "+" if val >= 0 else ""
+        col  = "var(--up)" if side == "win" else "var(--down)"
+        return (f'<span class="fr-banner-chip">'
+                f'<span class="fr-banner-tk mono">{ticker}</span>'
+                f'<span class="fr-banner-val mono" style="color:{col}">'
+                f'{sign}{val*100:.2f}%</span></span>')
+
+    win_html = "".join(_banner_chip(r.PRODUCT, r.att, "win")
+                       for r in _winners.itertuples(index=False))
+    los_html = "".join(_banner_chip(r.PRODUCT, r.att, "los")
+                       for r in _losers.itertuples(index=False))
+    if not win_html and not los_html:
+        top3_banner = ""
+    else:
+        top3_banner = f"""
+        <div class="fr-top3-banner">
+          <div class="fr-top3-half fr-top3-win">
+            <span class="fr-top3-lbl">🏆 TOP 3 CONTRIBUIDORES</span>
+            {win_html or '<span class="fr-top3-empty">—</span>'}
+          </div>
+          <div class="fr-top3-half fr-top3-los">
+            <span class="fr-top3-lbl">🚫 TOP 3 DETRATORES</span>
+            {los_html or '<span class="fr-top3-empty">—</span>'}
+          </div>
+        </div>
+        <style>
+        .fr-top3-banner {{
+          display: flex; gap: 10px; margin: 6px 0 12px 0;
+          flex-wrap: wrap;
+        }}
+        .fr-top3-half {{
+          flex: 1 1 300px; min-width: 0;
+          padding: 8px 12px;
+          border-radius: 4px;
+          border: 1px solid var(--border-soft, rgba(168,179,194,0.15));
+          display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+          font-size: 11.5px;
+        }}
+        .fr-top3-win {{ background: rgba(34, 197, 94, 0.06); }}
+        .fr-top3-los {{ background: rgba(239, 68, 68, 0.06); }}
+        .fr-top3-lbl {{
+          font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+          color: var(--muted-strong, #c9d1dd);
+          margin-right: 4px;
+        }}
+        .fr-banner-chip {{
+          display: inline-flex; align-items: baseline; gap: 4px;
+          padding: 2px 7px;
+          border-radius: 3px;
+          background: rgba(255,255,255,0.04);
+        }}
+        .fr-banner-tk {{
+          font-size: 11px; font-weight: 600;
+          color: var(--text);
+        }}
+        .fr-banner-val {{ font-size: 11px; font-weight: 700; }}
+        .fr-top3-empty {{ color: var(--muted); font-style: italic; font-size: 10.5px; }}
+        </style>"""
+
     return f"""
     <section class="card">
       <div class="card-head">
@@ -1780,6 +1846,7 @@ def build_frontier_lo_section(df: pd.DataFrame, date_str: str,
         <span class="card-sub">— Frontier Ações · {val_date}{stale_badge} · NAV R$ {nav_fmt} · Beta {beta_fmt}</span>
       </div>
       {header_metrics}
+      {top3_banner}
       {body}
       {toggle_js}
     </section>"""
