@@ -19,7 +19,7 @@ $RepoDir   = Split-Path -Parent $ScriptDir
 $Python    = "C:\Users\diego.fainberg\.venvs\risk_monitor\Scripts\python.exe"
 $Script    = Join-Path $RepoDir "generate_risk_report.py"
 $MailTo    = "diego.fainberg@galapagoscapital.com"
-$MailBcc   = "fabio.guarda@galapagoscapital.com; luiz.laudari@galapagoscapital.com; rodrigo.jafet@galapagoscapital.com; jorge.dib@galapagoscapital.com; rodrigo.fonseca@galapagoscapital.com; pedro.alexandre@galapagoscapital.com; pedro.borges@galapagoscapital.com; luca.esposito@galapagoscapital.com; thiago.veiga@galapagoscapital.com"
+$MailBcc   = "bruno.stein@galapagoscapital.com; bruno.tuma@galapagoscapital.com; claudio.ferraz@galapagoscapital.com; danilo.franco@galapagoscapital.com; eduardo.cotrim@galapagoscapital.com; enzo.campos@galapagoscapital.com; erik.freundt@galapagoscapital.com; fabio.guarda@galapagoscapital.com; guilherme.quintero@galapagoscapital.com; guilherme.ramos@galapagoscapital.com; jorge.dib@galapagoscapital.com; luca.esposito@galapagoscapital.com; lucas.lage@galapagoscapital.com; luiz.laudari@galapagoscapital.com; marcos.colombo@galapagoscapital.com; maria.mathias@galapagoscapital.com; mariam.dayoub@galapagoscapital.com; marina.benvenuto@galapagoscapital.com; mateus.tonello@galapagoscapital.com; miguel.ishimura@galapagoscapital.com; paulo.gitz@galapagoscapital.us; pedro.alexandre@galapagoscapital.com; pedro.borges@galapagoscapital.com; rafael.vianna@galapagoscapital.com; rodrigo.fonseca@galapagoscapital.com; rodrigo.jafet@galapagoscapital.com; rodrigo.mota@galapagoscapital.com; svc_automation@galapagoscapital.com; thais.groberman@galapagoscapital.com; valentina.guida@galapagoscapital.com; vitor.batista@galapagoscapital.com"
 
 # Data-alvo: ultimo dia util
 $d = (Get-Date).AddDays(-1)
