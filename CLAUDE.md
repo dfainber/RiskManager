@@ -168,6 +168,16 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **IDKA exposure factor breakdown collapsed by default** (`expo_renderers.build_idka_exposure_section`) — caret `▼` → `▶` e `idka-pos-row` ganhou `display:none` inline. Os 4 fatores (Real/Nominal/IPCA Index/RF) começam fechados, click no header expande via `toggleIdkaFac`. Aplica a IDKA 3Y e 10Y.
 - **Catálogo de tabelas/defaults** (`docs/REPORT_TABLES_DEFAULTS.txt` + `.md`) — documentação completa de todos os cards do relatório por (mode, fund), com handlers JS de drill/toggle e estado default atual de cada um. Útil pra discutir mudanças sistemáticas de UX.
 
+**Features entregues 2026-04-28 (segunda sessão — commits `2e948f0`, `c870de1`):**
+- **Risk Budget — nova regra de carry** (`fund_renderers.carry_step`) — pnl positivo: `next = 63 + 0.5 × pnl` SEMPRE (substitui o reset-para-63 + bônus de crossover YTD); pnl negativo: 3 camadas de penalty (extra `B_t − 63` = 25% · base 63 = 50% · excedente acima de B_t = 100%) + cap em `min(B_t, 63)`. Carry extra não consumido evapora ("use it or lose it"). Detalhado em `memory/project_rule_macro_carry_step.md`.
+- **Override LF Apr/26 = 20 bps** (`data/mandatos/risk_budget_overrides.json`) — segundo override ativo (RJ Apr = 63 já existia).
+- **STOP → ⚪ FLAT downgrade** (`fund_renderers.build_stop_section` + plumbing em `generate_risk_report.build_html`) — quando PM em STOP territory mas sem exposição viva (`Σ|delta| < 0.05% NAV` em `df_expo`), status passa a FLAT cinza. Não aplica a CI.
+- **Stop history modal — drill-down BOOK-level** (`_build_stop_history_modal` + `data_fetch.fetch_pm_book_pnl_history` + handler JS `toggleStopHistRow`) — cada linha-mês ganha caret `▶` clicável; expande mostrando breakdown por BOOK do PnL daquele mês, ordenado por |PnL| desc.
+- **MACRO Exposure PM VaR — caret toggle** (`expo_renderers.toggleDrillPM`) — drill de PM (CI/LF/JD/RJ/QM) em PM VaR mode flipa `▶ ↔ ▼` corretamente (antes ficava sempre `▶`).
+- **Vol Regime — default expanded** (`fund_renderers.build_vol_regime_section`) — caret das linhas-fund agora `▼` por default, books/PMs visíveis.
+- **Paleta de cores — bump `--muted`** (`generate_risk_report.py:1696`) — `#8892a0 → #a8b3c2` (contraste 5.8:1 → 7.8:1, AAA p/ texto pequeno). Adicionados `--muted-strong: #c9d1dd` e `--muted-soft: #6b7480`. Aplicado em `.card-sub` / `.bar-legend` / `.comment-empty` / `.brief-footnote` (com `font-weight:500` em parágrafos pequenos). `@media print` remapeado também (`--muted-strong: #333`, `--muted-soft: #888`).
+- **Task Scheduler — daily report automation** (`run_report_auto.bat` + scheduled task `Risk Monitor - Daily Report`) — bat não-interativo com weekend guard via PowerShell `(Get-Date).DayOfWeek`, data via `latest_bday.py` (ANBIMA-aware), sem UI/browser, log em `logs/auto_report.log`. Task registrada Mon-Fri 08:00 logged-on-only via `schtasks /Create`. `logs/` adicionado ao `.gitignore`.
+
 ---
 
 ## 8. Armadilhas conhecidas

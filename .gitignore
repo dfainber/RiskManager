@@ -8,4 +8,5 @@ data/morning-calls/
 data/macro-stops/snapshots/
 data/.smoke_snapshots/
 data/email-logs/
+logs/
 tmp_*.py
