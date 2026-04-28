@@ -49,6 +49,12 @@ from expo_renderers import (
     build_exposure_section,
     build_frontier_exposure_section,
 )
+from vardod_renderers import (
+    build_vardod_modal_scaffold,
+    build_vardod_data_payload,
+    VARDOD_CSS,
+    VARDOD_JS,
+)
 from fund_renderers import (
     build_albatroz_risk_budget,
     build_single_names_section,
@@ -1682,6 +1688,10 @@ def build_html(d: ReportData) -> str:
 
     # Por Report mode removed — no per-report fund switcher needed
 
+    # VaR DoD attribution payload (single fetch for all supported funds)
+    vardod_data_script, _vardod_funds = build_vardod_data_payload(DATA_STR)
+    vardod_modal_html = build_vardod_modal_scaffold()
+
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -2505,6 +2515,7 @@ def build_html(d: ReportData) -> str:
     padding-left: 24px;
   }}
 </style>
+{VARDOD_CSS}
 <script>
 (function() {{
   function getBRT() {{
@@ -2664,6 +2675,8 @@ def build_html(d: ReportData) -> str:
     try {{ sessionStorage.setItem('risk_monitor_fund', name); }} catch (e) {{}}
     setHash('fund', name);
     applyState();
+    // Always start at top of the page when switching funds
+    window.scrollTo({{ top: 0, behavior: 'instant' }});
   }};
   window.selectReport = function(name) {{
     try {{ sessionStorage.setItem('risk_monitor_report', name); }} catch (e) {{}}
@@ -4507,6 +4520,10 @@ window.refreshRptPnl = function() {{
   }}
 }})();
 </script>
+
+{vardod_modal_html}
+{vardod_data_script}
+{VARDOD_JS}
 </body>
 </html>"""
     return html

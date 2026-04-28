@@ -322,24 +322,55 @@ def fetch_idka_active_series(desk: str, idka_idx_name: str,
 
 _NTNB_SEMI_COUPON = (1.06) ** 0.5 - 1  # ≈ 0.029563 (semi-annual coupon, NTN-B 6% a.a. effective)
 
+_VNA_NTNB_CACHE: dict = {}  # date_str → VNA value (or None on miss)
+
+
+def _get_vna_ntnb(date_str: str) -> float | None:
+    """VNA_NTNB on date_str, or nearest published date within ±5 calendar days.
+    Used to convert the 6% a.a. semi-coupon rate into the actual BRL cash flow
+    (coupon = semi_coupon × VNA), which differs from rate × clean price when
+    the bond trades away from par. Falls back to None if ECO_INDEX is missing
+    a publication near the requested date."""
+    if date_str in _VNA_NTNB_CACHE:
+        return _VNA_NTNB_CACHE[date_str]
+    try:
+        df = read_sql(f"""
+            SELECT "VALUE" FROM public."ECO_INDEX"
+            WHERE "INSTRUMENT"='VNA_NTNB' AND "FIELD"='INDEX'
+              AND "DATE" BETWEEN DATE '{date_str}' - INTERVAL '5 days'
+                           AND DATE '{date_str}' + INTERVAL '5 days'
+            ORDER BY ABS("DATE" - DATE '{date_str}') ASC, "DATE" ASC
+            LIMIT 1
+        """)
+    except Exception:
+        _VNA_NTNB_CACHE[date_str] = None
+        return None
+    if df.empty:
+        _VNA_NTNB_CACHE[date_str] = None
+        return None
+    val = float(df["VALUE"].iloc[0])
+    _VNA_NTNB_CACHE[date_str] = val
+    return val
+
 
 def _ntnb_total_return_pct_change(prices: pd.Series,
                                    maturity: pd.Timestamp | None = None) -> pd.Series:
-    """Adjust ANBIMA clean-price pct_change to approximate NTN-B total-return.
+    """Adjust ANBIMA clean-price pct_change to NTN-B total-return.
 
     Why: ANBIMA's UNIT_PRICE is the clean (ex-coupon) price. On NTN-B coupon
-    dates the clean price drops by ~ the semi-coupon (~2.956%), producing a
-    spurious -200~300 bps return that does not exist in the IDKA index
-    (which reinvests coupons internally).
+    dates the clean price drops by ~ the semi-coupon, producing a spurious
+    negative return that does not exist in the IDKA index (which reinvests
+    coupons internally).
 
     Coupon dates: NTN-B pays coupons every 6 months on its maturity-anniversary
     (e.g. NTN-B 2030-08-15 → coupons every Feb 15 / Aug 15). Without the
-    `maturity` arg we fall back to the most common pair (May 15 / Nov 15),
-    which only covers part of the curve.
+    `maturity` arg we fall back to the most common pair (May 15 / Nov 15).
 
     Fix: at each coupon transition captured in the series (the prior quote is
-    strictly before the coupon date), add back the semi-coupon to that day's
-    return: r_TR = (1 + r_clean) * (1 + c) - 1.
+    strictly before the coupon date), add the BRL coupon as a fraction of the
+    pre-coupon clean price: r_TR = r_clean + (semi_coupon × VNA(cup)) / P_prev.
+    Falls back to additive rate-based correction (r_clean + semi_coupon) if
+    VNA is unavailable.
     """
     if prices is None or prices.empty:
         return pd.Series(dtype=float)
@@ -368,8 +399,16 @@ def _ntnb_total_return_pct_change(prices: pd.Series,
             first = geq[0]
             if (first - target) > pd.Timedelta(days=7):
                 continue
-            if pd.notna(rets.loc[first]):
-                rets.loc[first] = (1 + rets.loc[first]) * (1 + _NTNB_SEMI_COUPON) - 1
+            if not pd.notna(rets.loc[first]):
+                continue
+            prev_date = lt[-1]
+            p_prev = float(s.loc[prev_date])
+            if p_prev <= 0:
+                continue
+            vna = _get_vna_ntnb(target.strftime("%Y-%m-%d"))
+            coupon_pct = (_NTNB_SEMI_COUPON * vna) / p_prev if (vna is not None and vna > 0) \
+                else _NTNB_SEMI_COUPON
+            rets.loc[first] = float(rets.loc[first]) + coupon_pct
     return rets
 
 
@@ -465,18 +504,140 @@ def _compute_idka_bench_replication(date_str: str, target_anos: int, tenour_du: 
         return pd.DataFrame()
 
 
+_IDKA_REP_CACHE = Path(__file__).parent / "data" / "idka_replication_cache.json"
+
+
+def _load_idka_rep_cache() -> dict:
+    if not _IDKA_REP_CACHE.exists():
+        return {}
+    try:
+        return json.loads(_IDKA_REP_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_idka_rep_cache(cache: dict) -> None:
+    try:
+        _IDKA_REP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _IDKA_REP_CACHE.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"  [IDKA rep cache] save failed: {e}")
+
+
+def _ntnb_1d_total_return(p_prev: float, p_t: float,
+                           t_prev: pd.Timestamp, t: pd.Timestamp,
+                           maturity: pd.Timestamp) -> float:
+    """1d total return of a single NTN-B over (t_prev, t]. On a coupon-day-
+    crossing interval, adds (semi_coupon × VNA) / P_prev — the actual BRL
+    coupon as a fraction of the pre-coupon clean price. Falls back to additive
+    rate-based correction if VNA is unavailable."""
+    clean_ret = p_t / p_prev - 1.0
+    m, d = int(maturity.month), int(maturity.day)
+    m2 = ((m + 6 - 1) % 12) + 1
+    for y in range(t_prev.year, t.year + 1):
+        for month, day in ((m, d), (m2, d)):
+            try:
+                cup = pd.Timestamp(year=y, month=month, day=day)
+            except ValueError:
+                continue
+            if t_prev < cup <= t:
+                vna = _get_vna_ntnb(cup.strftime("%Y-%m-%d"))
+                if vna is None or vna <= 0 or p_prev <= 0:
+                    return clean_ret + _NTNB_SEMI_COUPON
+                return clean_ret + (_NTNB_SEMI_COUPON * vna) / p_prev
+    return clean_ret
+
+
+def _compute_single_replication_return(t: pd.Timestamp, t_prev: pd.Timestamp,
+                                         target_anos: int, tenour_du: int) -> float | None:
+    """1d total return (decimal) of a constant-DV NTN-B-only replication
+    held over (t_prev, t]. Solves at t_prev's NTN-B universe, marks to t.
+    Returns None if data missing."""
+    rep = _compute_idka_bench_replication(t_prev.strftime("%Y-%m-%d"), target_anos, tenour_du)
+    if rep.empty:
+        return None
+    inst_list = ", ".join(f"'{i}'" for i in rep["INSTRUMENT"].tolist())
+    q = f"""
+    SELECT p."REFERENCE_DATE" AS dt, m."INSTRUMENT", p."UNIT_PRICE"
+    FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
+    JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
+      ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
+    WHERE m."INSTRUMENT" IN ({inst_list})
+      AND p."REFERENCE_DATE" IN (DATE '{t_prev.strftime("%Y-%m-%d")}', DATE '{t.strftime("%Y-%m-%d")}')
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    df["dt"] = pd.to_datetime(df["dt"])
+    rep_idx = rep.set_index("INSTRUMENT")
+    total = 0.0
+    for inst in rep_idx.index:
+        w = float(rep_idx.at[inst, "W"])
+        mat = pd.to_datetime(rep_idx.at[inst, "EXPIRATION_DATE"])
+        sub = df[df["INSTRUMENT"] == inst].set_index("dt")["UNIT_PRICE"].astype(float)
+        if t_prev not in sub.index or t not in sub.index:
+            return None
+        total += w * _ntnb_1d_total_return(float(sub[t_prev]), float(sub[t]), t_prev, t, mat)
+    return total
+
+
+def _compute_idka_replication_returns(target_anos: int, tenour_du: int,
+                                       scenario_dates) -> pd.Series:
+    """Engine-style replication: for each scenario date t, return the 1d TR (bps)
+    of a constant-DV NTN-B-only portfolio solved at t_prev's universe.
+    Independent of the fund's actual position. Cached per (target_anos, date)
+    to JSON — once a date is computed it never changes (depends only on
+    historical data), so cold-start cost (~10–20s for 252-day backfill)
+    is paid once and daily runs only fill the new tail."""
+    cache = _load_idka_rep_cache()
+    sub = cache.setdefault(str(target_anos), {})
+
+    sorted_dates = sorted(pd.to_datetime(list(scenario_dates)))
+    out: dict = {}
+    dirty = False
+
+    for i, t in enumerate(sorted_dates):
+        ts = t.strftime("%Y-%m-%d")
+        if ts in sub:
+            out[t] = sub[ts]
+            continue
+        if i > 0:
+            t_prev = sorted_dates[i - 1]
+        else:
+            try:
+                t_prev = pd.Timestamp(_prev_bday(ts))
+            except Exception:
+                continue
+        r = _compute_single_replication_return(t, t_prev, target_anos, tenour_du)
+        if r is not None:
+            sub[ts] = r * 10_000.0
+            out[t] = sub[ts]
+            dirty = True
+
+    if dirty:
+        _save_idka_rep_cache(cache)
+
+    if not out:
+        return pd.Series(dtype=float)
+    return pd.Series(out).sort_index()
+
+
 def fetch_idka_hs_replication_series(portfolio_name: str, target_anos: int, tenour_du: int,
                                       date_str: str = DATA_STR) -> np.ndarray:
-    """HS active return for IDKA vs DV-matched replication portfolio (current-date weights).
+    """HS active return for IDKA vs constant-DV NTN-B engine replication.
 
-    Replication: 1-2 NTN-Bs solved via _compute_idka_bench_replication at date_str,
-    weights applied to historical ANBIMA unit prices on each DATE_SYNTHETIC_POSITION.
-    Returns bps of NAV; empty array if replication or price data unavailable.
+    Replication: at each historical scenario date t, a NTN-B-only constant-DV
+    portfolio is solved at t_prev's universe and marked to t. The fund's actual
+    position is not used (W cancels out of the replication side). Cached to
+    data/idka_replication_cache.json — once a date is computed it never changes.
+    Returns bps of NAV; empty array if data unavailable.
     """
-    rep = _compute_idka_bench_replication(date_str, target_anos, tenour_du)
-    if rep.empty:
-        return np.array([])
-
     q_hs = f"""
     SELECT "DATE_SYNTHETIC_POSITION" AS dt, "W"
     FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
@@ -490,42 +651,14 @@ def fetch_idka_hs_replication_series(portfolio_name: str, target_anos: int, teno
         return np.array([])
     if df_hs.empty:
         return np.array([])
-
     df_hs["dt"] = pd.to_datetime(df_hs["dt"])
-    dt_min = df_hs["dt"].min().strftime("%Y-%m-%d")
 
-    inst_list = ", ".join(f"'{i}'" for i in rep["INSTRUMENT"].tolist())
-    q_prices = f"""
-    SELECT p."REFERENCE_DATE" AS dt, m."INSTRUMENT", p."UNIT_PRICE"
-    FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
-    JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
-      ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
-    WHERE m."INSTRUMENT" IN ({inst_list})
-      AND p."REFERENCE_DATE" >= DATE '{dt_min}'
-      AND p."REFERENCE_DATE" <= DATE '{date_str}'
-    ORDER BY p."REFERENCE_DATE", m."INSTRUMENT"
-    """
-    try:
-        df_p = read_sql(q_prices)
-    except Exception:
+    rep_s = _compute_idka_replication_returns(target_anos, tenour_du, df_hs["dt"].tolist())
+    if rep_s.empty:
         return np.array([])
-    if df_p.empty:
-        return np.array([])
-
-    df_p["dt"] = pd.to_datetime(df_p["dt"])
-    rep_indexed = rep.set_index("INSTRUMENT")
-    rep_ret = pd.Series(dtype=float)
-    for inst in rep_indexed.index:
-        w = float(rep_indexed.at[inst, "W"])
-        mat = pd.to_datetime(rep_indexed.at[inst, "EXPIRATION_DATE"])
-        prices = (df_p[df_p["INSTRUMENT"] == inst]
-                  .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
-        # Total-return: adjusts coupon-date clean-price drops back into the return
-        ret = _ntnb_total_return_pct_change(prices, maturity=mat).dropna() * 10_000 * w
-        rep_ret = rep_ret.add(ret, fill_value=0.0)
 
     hs_s = df_hs.set_index("dt")["W"].astype(float).sort_index()
-    aligned = hs_s.to_frame("W").join(rep_ret.rename("rep"), how="inner")
+    aligned = hs_s.to_frame("W").join(rep_s.rename("rep"), how="inner")
     if len(aligned) < 30:
         return np.array([])
     return (aligned["W"] - aligned["rep"]).to_numpy()
@@ -534,29 +667,31 @@ def fetch_idka_hs_replication_series(portfolio_name: str, target_anos: int, teno
 def fetch_idka_hs_spread_series(portfolio_name: str, idx_name: str,
                                  target_anos: int, tenour_du: int,
                                  date_str: str = DATA_STR) -> np.ndarray:
-    """Spread = benchmark_return − replication_return (bps) over the HS window dates.
+    """Spread = replication − benchmark (bps) over the HS scenario dates.
 
-    Positive = IDKA index outperformed the NTN-B DV-match replication.
-    Shows the tracking error of the replication vs the actual index — independent
-    of the fund's own positions (W cancels out).
-    Date grid = DATE_SYNTHETIC_POSITION for the given portfolio/date.
-    """
-    rep = _compute_idka_bench_replication(date_str, target_anos, tenour_du)
-    if rep.empty:
-        return np.array([])
-
+    Replication: constant-DV NTN-B engine (same source as
+    fetch_idka_hs_replication_series). Benchmark: pct_change of the IDKA index
+    (ECO_INDEX, FIELD='INDEX'). Positive = NTN-B-only replication outperformed
+    the actual IDKA index. Pure replication-strategy tracking error — no fund
+    position dependency on either side."""
     q_dates = f"""
-    SELECT MIN("DATE_SYNTHETIC_POSITION") AS dt_min
+    SELECT "DATE_SYNTHETIC_POSITION" AS dt
     FROM q_models."PORTIFOLIO_DAILY_HISTORICAL_SIMULATION"
     WHERE "PORTIFOLIO_DATE" = DATE '{date_str}' AND "PORTIFOLIO" = '{portfolio_name}'
+    ORDER BY dt
     """
     try:
         df_dates = read_sql(q_dates)
     except Exception:
         return np.array([])
-    if df_dates.empty or pd.isna(df_dates["dt_min"].iloc[0]):
+    if df_dates.empty:
         return np.array([])
-    dt_min = pd.to_datetime(df_dates["dt_min"].iloc[0]).strftime("%Y-%m-%d")
+    df_dates["dt"] = pd.to_datetime(df_dates["dt"])
+    dt_min = df_dates["dt"].min().strftime("%Y-%m-%d")
+
+    rep_s = _compute_idka_replication_returns(target_anos, tenour_du, df_dates["dt"].tolist())
+    if rep_s.empty:
+        return np.array([])
 
     q_bench = f"""
     SELECT "DATE" AS dt, "VALUE" FROM public."ECO_INDEX"
@@ -564,43 +699,17 @@ def fetch_idka_hs_spread_series(portfolio_name: str, idx_name: str,
       AND "DATE" >= DATE '{dt_min}' AND "DATE" <= DATE '{date_str}'
     ORDER BY dt
     """
-    inst_list = ", ".join(f"'{i}'" for i in rep["INSTRUMENT"].tolist())
-    q_prices = f"""
-    SELECT p."REFERENCE_DATE" AS dt, m."INSTRUMENT", p."UNIT_PRICE"
-    FROM "public"."PRICES_ANBIMA_BR_PUBLIC_BONDS" p
-    JOIN "public"."MAPS_ANBIMA_BR_PUBLIC_BONDS" m
-      ON m."BR_PUBLIC_BONDS_KEY" = p."BR_PUBLIC_BONDS_KEY"
-    WHERE m."INSTRUMENT" IN ({inst_list})
-      AND p."REFERENCE_DATE" >= DATE '{dt_min}' AND p."REFERENCE_DATE" <= DATE '{date_str}'
-    ORDER BY p."REFERENCE_DATE", m."INSTRUMENT"
-    """
     try:
         df_b = read_sql(q_bench)
-        df_p = read_sql(q_prices)
     except Exception:
         return np.array([])
-    if df_b.empty or df_p.empty:
+    if df_b.empty:
         return np.array([])
-
     df_b["dt"] = pd.to_datetime(df_b["dt"])
     bench_bps = (df_b.set_index("dt")["VALUE"].astype(float)
                  .sort_index().pct_change().dropna() * 10_000)
 
-    df_p["dt"] = pd.to_datetime(df_p["dt"])
-    rep_indexed = rep.set_index("INSTRUMENT")
-    rep_bps = pd.Series(dtype=float)
-    for inst in rep_indexed.index:
-        w = float(rep_indexed.at[inst, "W"])
-        mat = pd.to_datetime(rep_indexed.at[inst, "EXPIRATION_DATE"])
-        prices = (df_p[df_p["INSTRUMENT"] == inst]
-                  .set_index("dt")["UNIT_PRICE"].astype(float).sort_index())
-        # Total-return: adjusts coupon-date clean-price drops back into the return
-        rep_bps = rep_bps.add(
-            _ntnb_total_return_pct_change(prices, maturity=mat).dropna() * 10_000 * w,
-            fill_value=0.0,
-        )
-
-    aligned = bench_bps.to_frame("bench").join(rep_bps.rename("rep"), how="inner")
+    aligned = bench_bps.to_frame("bench").join(rep_s.rename("rep"), how="inner")
     if len(aligned) < 30:
         return np.array([])
     return (aligned["rep"] - aligned["bench"]).to_numpy()
@@ -676,6 +785,638 @@ def fetch_frontier_alpha_series(date_str: str = DATA_STR, window_days: int = 252
         return np.array([])
     s = df.sort_values("VAL_DATE")["alpha_day"].astype(float) * 10_000.0
     return s.to_numpy()
+
+
+# ── VaR DoD attribution (D vs D-1 decomposition by leaf factor) ──────────────
+
+# fund_key → (data_source, desk_full_name, metric_label, bench_primitive_or_None)
+# bench_primitive: nome do PRIMITIVE no LOTE_PARAMETRIC_VAR_TABLE que representa
+# a obrigação de tracking do índice (passivo). Por mandato deveria ser sempre -1×NAV;
+# o engine às vezes recalibra pra -0.62/-0.71 (parking lot — ver memory/project_todo_idka_bench_engine_recalibration.md).
+_VAR_DOD_DISPATCH = {
+    "IDKA_3Y":   ("idka_param", "IDKA IPCA 3Y FIRF",                       "BVaR", "IDKA IPCA 3Y"),
+    "IDKA_10Y":  ("idka_param", "IDKA IPCA 10Y FIRF",                      "BVaR", "IDKA IPCA 10Y"),
+    "MACRO":     ("rpm_book",   "Galapagos Macro FIM",                     "VaR",  None),
+    "QUANT":     ("rpm_book",   "Galapagos Quantitativo FIM",              "VaR",  None),
+    "EVOLUTION": ("rpm_book",   "Galapagos Evolution FIC FIM CP",          "VaR",  None),
+    "ALBATROZ":  ("lote_fund",  "GALAPAGOS ALBATROZ FIRF LP",              "VaR",  None),
+    "MACRO_Q":   ("lote_fund",  "Galapagos Global Macro Q",                "VaR",  None),
+    "BALTRA":    ("lote_fund",  "Galapagos Baltra Icatu Qualif Prev FIM CP","VaR", None),
+}
+
+_VAR_DOD_COLUMNS = [
+    "label", "group",
+    "contrib_d1_bps", "contrib_d_bps", "delta_bps",
+    "pos_d1", "pos_d", "d_pos_pct",
+    "vol_d1_bps", "vol_d_bps", "d_vol_bps",
+    "pos_effect_bps", "vol_effect_bps",
+    "sign", "override_note",
+    "children",  # list[dict] | None — populated only for parent rows that explode (e.g. Albatroz)
+]
+
+_ALBATROZ_PRIMITIVE_LABEL = "GALAPAGOS ALBATROZ FIRF LP"
+_ALBATROZ_DESK = "GALAPAGOS ALBATROZ FIRF LP"
+
+
+def _empty_var_dod() -> pd.DataFrame:
+    return pd.DataFrame(columns=_VAR_DOD_COLUMNS)
+
+
+def _sign_of(delta_bps: float) -> str:
+    if pd.isna(delta_bps) or abs(float(delta_bps)) < 0.5:
+        return "0"
+    return "+" if delta_bps > 0 else "-"
+
+
+def _decompose_pos_constant_today(pos_d1, pos_d, contrib_d1, contrib_d):
+    """Per-row attribution holding TODAY's position constant:
+       pos_effect = Δpos × (contrib_d1 / pos_d1)   [position changed at yesterday's vol]
+       vol_effect = pos_d × Δg                     [today's pos at change in vol-per-BRL]
+                  = delta − pos_effect
+       Edge cases: new position (pos_d1=0) → pos_effect=contrib_d, vol_effect=0;
+                   closed position (pos_d=0) → pos_effect=-contrib_d1, vol_effect=0.
+       Sums exactly to delta_bps. Returns (pos_effect, vol_effect).
+       Both NaN if position info unavailable."""
+    if pd.isna(pos_d1) or pd.isna(pos_d) or pd.isna(contrib_d1) or pd.isna(contrib_d):
+        return (np.nan, np.nan)
+    pos_d1 = float(pos_d1); pos_d = float(pos_d)
+    cd1 = float(contrib_d1); cd = float(contrib_d)
+    delta = cd - cd1
+    # Closed position
+    if abs(pos_d) < 1e-3 and abs(pos_d1) >= 1e-3:
+        return (-cd1, 0.0)  # all from position closing
+    # New position
+    if abs(pos_d1) < 1e-3 and abs(pos_d) >= 1e-3:
+        return (cd, 0.0)  # all from new position taking risk
+    # Both zero
+    if abs(pos_d1) < 1e-3 and abs(pos_d) < 1e-3:
+        return (0.0, 0.0)
+    g_d1 = cd1 / pos_d1
+    pos_effect = (pos_d - pos_d1) * g_d1
+    vol_effect = delta - pos_effect
+    return (pos_effect, vol_effect)
+
+
+def _var_dod_idka(desk: str, date_d: str, date_d1: str,
+                   bench_primitive: str | None = None,
+                   nav_d: float | None = None,
+                   nav_d1: float | None = None) -> pd.DataFrame:
+    """IDKA BVaR DoD via LOTE_PARAMETRIC_VAR_TABLE.
+    Per PRIMITIVE; full pos/vol decomposition (symmetric, exact).
+
+    Override aplicado no PRIMITIVE do bench (passivo): força DELTA = -NAV
+    (ratio -1.00) sempre que o engine reportar magnitude diferente. Escala
+    contrib_bps e vol_bps proporcionalmente. Razão: por mandato o passivo
+    é 100% NAV; recalibrações intermitentes do engine para -0.62/-0.71
+    geram ΔBVaR artificial sem mudança real de risco. Ver
+    memory/project_todo_idka_bench_engine_recalibration.md."""
+    q = f"""
+    SELECT "VAL_DATE", "PRIMITIVE",
+           "DELTA",
+           "RELATIVE_VAR_PCT" * -10000.0 AS contrib_bps,
+           "RELATIVE_VOL_PCT" * 10000.0  AS vol_bps
+    FROM "LOTE45"."LOTE_PARAMETRIC_VAR_TABLE"
+    WHERE "VAL_DATE" IN (DATE '{date_d}', DATE '{date_d1}')
+      AND "TRADING_DESK" = '{desk}'
+      AND "BOOKS"::text = '{{*}}'
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return _empty_var_dod()
+    if df.empty:
+        return _empty_var_dod()
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).dt.strftime("%Y-%m-%d")
+    p_contrib = df.pivot_table(index="PRIMITIVE", columns="VAL_DATE",
+                                values="contrib_bps", aggfunc="sum").fillna(0.0)
+    p_pos = df.pivot_table(index="PRIMITIVE", columns="VAL_DATE",
+                            values="DELTA", aggfunc="sum").fillna(0.0)
+    p_vol = df.pivot_table(index="PRIMITIVE", columns="VAL_DATE",
+                            values="vol_bps", aggfunc="sum").fillna(0.0)
+    if date_d not in p_contrib.columns or date_d1 not in p_contrib.columns:
+        return _empty_var_dod()
+
+    # ── Bench-leg override (passivo = -1×NAV, sempre) ────────────────────────
+    # Mandato: o passivo é 100% NAV por construção. Engine paramétrico
+    # intermitentemente reporta ratios menores (-0.62/-0.71) por problema de
+    # processo upstream — assumimos sempre -1.00 e escalamos contrib/vol
+    # proporcionalmente. Note registrado apenas quando correção é material
+    # (|ratio + 1| > 0.05) pra audit trail.
+    override_notes: dict[str, str] = {}
+    if bench_primitive and bench_primitive in p_pos.index:
+        for date_col, nav in ((date_d, nav_d), (date_d1, nav_d1)):
+            if nav is None or nav <= 0:
+                continue
+            engine_delta = float(p_pos.at[bench_primitive, date_col])
+            if engine_delta == 0:
+                continue
+            ratio = engine_delta / nav
+            target_delta = -float(nav)
+            scale = target_delta / engine_delta  # preserves sign; ≈1.0 if engine OK
+            p_pos.at[bench_primitive, date_col]     = target_delta
+            p_contrib.at[bench_primitive, date_col] = float(p_contrib.at[bench_primitive, date_col]) * scale
+            p_vol.at[bench_primitive, date_col]     = float(p_vol.at[bench_primitive, date_col]) * scale
+            if abs(ratio + 1.0) > 0.05:
+                override_notes[date_col] = f"engine ratio {ratio:+.2f} → forced to -1.00"
+
+    out = pd.DataFrame(index=p_contrib.index)
+    out["contrib_d1_bps"] = p_contrib[date_d1]
+    out["contrib_d_bps"]  = p_contrib[date_d]
+    out["delta_bps"]      = out["contrib_d_bps"] - out["contrib_d1_bps"]
+    out["pos_d1"] = p_pos[date_d1]
+    out["pos_d"]  = p_pos[date_d]
+    den = out["pos_d1"].abs()
+    out["d_pos_pct"] = np.where(
+        den > 1e-3, (out["pos_d"] - out["pos_d1"]) / den * 100.0, np.nan
+    )
+    out["vol_d1_bps"] = p_vol[date_d1]
+    out["vol_d_bps"]  = p_vol[date_d]
+    out["d_vol_bps"]  = out["vol_d_bps"] - out["vol_d1_bps"]
+
+    # Decomposição "today's pos constant": vol_effect = contrib pra ΔVaR vinda
+    # de mudança de vol (holding pos at today's level). Soma exata com pos_effect.
+    pe, ve = [], []
+    for r in out.itertuples():
+        p, v = _decompose_pos_constant_today(r.pos_d1, r.pos_d, r.contrib_d1_bps, r.contrib_d_bps)
+        pe.append(p); ve.append(v)
+    out["pos_effect_bps"] = pe
+    out["vol_effect_bps"] = ve
+
+    out["label"] = out.index.astype(str)
+    out["group"] = pd.NA
+    out["sign"]  = out["delta_bps"].apply(_sign_of)
+    out["override_note"] = ""
+    out["children"] = None
+    if override_notes and bench_primitive in out.index:
+        out.at[bench_primitive, "override_note"] = " · ".join(
+            f"{d}: {n}" for d, n in sorted(override_notes.items())
+        )
+
+    # Albatroz look-through explosion: when IDKA holds Albatroz, expand the
+    # 'GALAPAGOS ALBATROZ FIRF LP' primitive into Albatroz's underlying products
+    # rescaled to IDKA NAV bps.
+    if _ALBATROZ_PRIMITIVE_LABEL in out.index:
+        kids = _explode_albatroz_for_idka(
+            idka_desk=desk, date_d=date_d, date_d1=date_d1,
+            parent_d_bps=float(out.at[_ALBATROZ_PRIMITIVE_LABEL, "contrib_d_bps"]),
+            parent_d1_bps=float(out.at[_ALBATROZ_PRIMITIVE_LABEL, "contrib_d1_bps"]),
+        )
+        if kids:
+            out.at[_ALBATROZ_PRIMITIVE_LABEL, "children"] = kids
+
+    out = out[_VAR_DOD_COLUMNS].reset_index(drop=True)
+    return out.sort_values("delta_bps", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+
+
+def _explode_albatroz_for_idka(idka_desk: str, date_d: str, date_d1: str,
+                                parent_d_bps: float, parent_d1_bps: float) -> list:
+    """Build per-product children rows for the Albatroz line in an IDKA modal.
+    Method:
+      - Albatroz standalone PVAR1DAY per (BOOK, PRODUCT) on D and D-1 → contribs
+        in Albatroz NAV bps (alb_total = sum).
+      - Rescale: child_contrib_in_idka = albatroz_contrib_in_alb_bps × (parent / alb_total).
+        Sum of children = parent (exact).
+      - Position from LOTE_PRODUCT_EXPO with TRADING_DESK='ALBATROZ' AND
+        TRADING_DESK_SHARE_SOURCE=idka_desk → IDKA's slice of Albatroz, in BRL.
+    Returns list of row dicts (already filtered for material movers)."""
+    # Albatroz NAV (denominator for Albatroz bps)
+    nav_alb_d  = _latest_nav(_ALBATROZ_DESK, date_d)
+    nav_alb_d1 = _latest_nav(_ALBATROZ_DESK, date_d1)
+    if not nav_alb_d or not nav_alb_d1 or nav_alb_d <= 0 or nav_alb_d1 <= 0:
+        return []
+
+    # Albatroz per-(BOOK,PRODUCT) PVAR1DAY for both dates
+    try:
+        df_var = read_sql(f"""
+            SELECT "VAL_DATE", "BOOK", "PRODUCT", "PVAR1DAY"
+            FROM "LOTE45"."LOTE_FUND_STRESS"
+            WHERE "VAL_DATE" IN (DATE '{date_d}', DATE '{date_d1}')
+              AND "TRADING_DESK" = '{_ALBATROZ_DESK}'
+              AND "PVAR1DAY" IS NOT NULL
+        """)
+    except Exception:
+        return []
+    if df_var.empty:
+        return []
+    df_var["VAL_DATE"] = pd.to_datetime(df_var["VAL_DATE"]).dt.strftime("%Y-%m-%d")
+    df_var["key"] = df_var["BOOK"].astype(str) + "::" + df_var["PRODUCT"].astype(str)
+    # Albatroz contrib in Albatroz NAV bps (positive = adds VaR)
+    df_var["contrib_alb_bps"] = np.where(
+        df_var["VAL_DATE"] == date_d,
+        -df_var["PVAR1DAY"].astype(float) / float(nav_alb_d) * 10000.0,
+        -df_var["PVAR1DAY"].astype(float) / float(nav_alb_d1) * 10000.0,
+    )
+    p = df_var.pivot_table(index="key", columns="VAL_DATE",
+                            values="contrib_alb_bps", aggfunc="sum").fillna(0.0)
+    if date_d not in p.columns or date_d1 not in p.columns:
+        return []
+
+    alb_total_d  = float(p[date_d].sum())
+    alb_total_d1 = float(p[date_d1].sum())
+    if abs(alb_total_d) < 1e-6 and abs(alb_total_d1) < 1e-6:
+        return []
+    scale_d  = (parent_d_bps  / alb_total_d)  if abs(alb_total_d)  > 1e-6 else 0.0
+    scale_d1 = (parent_d1_bps / alb_total_d1) if abs(alb_total_d1) > 1e-6 else 0.0
+
+    # IDKA's slice of Albatroz positions per (BOOK, PRODUCT) — look-through
+    pos_lookup_d  = _fetch_albatroz_lookthrough_pos(idka_desk, date_d)
+    pos_lookup_d1 = _fetch_albatroz_lookthrough_pos(idka_desk, date_d1)
+
+    book_map = df_var.groupby("key")["BOOK"].first()
+    prod_map = df_var.groupby("key")["PRODUCT"].first()
+
+    children: list = []
+    for key in p.index:
+        c_alb_d  = float(p.at[key, date_d])
+        c_alb_d1 = float(p.at[key, date_d1])
+        c_d  = c_alb_d  * scale_d
+        c_d1 = c_alb_d1 * scale_d1
+        delta = c_d - c_d1
+        # Filter immaterial children (consistent with main payload)
+        if abs(c_d) < 0.05 and abs(c_d1) < 0.05:
+            continue
+        pos_d  = pos_lookup_d.get(key)
+        pos_d1 = pos_lookup_d1.get(key)
+        d_pos_pct = ((pos_d - pos_d1) / abs(pos_d1) * 100.0
+                     if (pos_d is not None and pos_d1 is not None and abs(pos_d1) > 1e-3)
+                     else None)
+        pe, ve = _decompose_pos_constant_today(pos_d1, pos_d, c_d1, c_d)
+        children.append({
+            "label": str(prod_map.get(key, key)),
+            "group": str(book_map.get(key, "")),
+            "contrib_d1_bps": c_d1,
+            "contrib_d_bps":  c_d,
+            "delta_bps":      delta,
+            "pos_d1":         pos_d1,
+            "pos_d":          pos_d,
+            "d_pos_pct":      d_pos_pct,
+            "vol_d1_bps":     None,
+            "vol_d_bps":      None,
+            "d_vol_bps":      None,
+            "pos_effect_bps": pe,
+            "vol_effect_bps": ve,
+            "sign":           _sign_of(delta),
+            "override_note":  "",
+        })
+    # Sort children by |delta| desc
+    children.sort(key=lambda x: -abs(x.get("delta_bps") or 0))
+    return children
+
+
+def _fetch_albatroz_lookthrough_pos(idka_desk: str, date_str: str) -> dict[str, float]:
+    """IDKA's slice of Albatroz positions per (BOOK, PRODUCT) in BRL. Sums DELTA
+    grouped by (BOOK, PRODUCT) when ALBATROZ holds positions on behalf of `idka_desk`.
+    Uses TRADING_DESK_SHARE_SOURCE filter."""
+    try:
+        df = read_sql(f"""
+            SELECT "BOOK", "PRODUCT", SUM("DELTA") AS pos_brl
+            FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+            WHERE "VAL_DATE" = DATE '{date_str}'
+              AND "TRADING_DESK" = '{_ALBATROZ_DESK}'
+              AND "TRADING_DESK_SHARE_SOURCE" = '{idka_desk}'
+              AND "DELTA" IS NOT NULL
+            GROUP BY "BOOK", "PRODUCT"
+        """)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    return {f"{r.BOOK}::{r.PRODUCT}": float(r.pos_brl) for r in df.itertuples(index=False)}
+
+
+def _var_dod_rpm(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd.DataFrame:
+    """MACRO/QUANT/EVOLUTION VaR DoD via LOTE_FUND_STRESS_RPM (LEVEL=10, BOOK aggregate).
+    Vol proxy: using today's |DELTA| sum per BOOK from LOTE_PRODUCT_EXPO as a
+    constant denominator for both days. vol_x_bps = contrib_x_bps / pos_pct_nav_d
+    (bps de risco por 1% NAV em gross size). Captura mudança de "intensidade
+    de vol" do BOOK holding-position-constant."""
+    q = f"""
+    SELECT "VAL_DATE", "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
+    FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
+    WHERE "VAL_DATE" IN (DATE '{date_d}', DATE '{date_d1}')
+      AND "TRADING_DESK" = '{desk}'
+      AND "LEVEL" = 10
+    GROUP BY "VAL_DATE", "BOOK"
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return _empty_var_dod()
+    if df.empty or nav_d <= 0:
+        return _empty_var_dod()
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).dt.strftime("%Y-%m-%d")
+    df["contrib_bps"] = -df["var_brl"].astype(float) / nav_d * 10000.0
+    p = df.pivot_table(index="BOOK", columns="VAL_DATE",
+                        values="contrib_bps", aggfunc="sum").fillna(0.0)
+    if date_d not in p.columns or date_d1 not in p.columns:
+        return _empty_var_dod()
+
+    # Today's position per BOOK (proxy denominator for vol calc)
+    pos_book = _fetch_pos_per_book(desk, date_d)
+    pos_book_d1 = _fetch_pos_per_book(desk, date_d1)
+
+    out = pd.DataFrame(index=p.index)
+    out["contrib_d1_bps"] = p[date_d1]
+    out["contrib_d_bps"]  = p[date_d]
+    out["delta_bps"]      = out["contrib_d_bps"] - out["contrib_d1_bps"]
+    out["label"] = out.index.astype(str)
+    out["group"] = pd.NA
+
+    # Fill pos via cross-join (real D and D-1)
+    out["pos_d"]  = out.index.map(lambda b: pos_book.get(b, np.nan))
+    out["pos_d1"] = out.index.map(lambda b: pos_book_d1.get(b, np.nan))
+    den = out["pos_d1"].abs()
+    out["d_pos_pct"] = np.where(den > 1e-3,
+                                 (out["pos_d"] - out["pos_d1"]) / den * 100.0, np.nan)
+
+    # vol per BRL of pos: g_x = contrib_x / pos_x (effective vol intensity, signed bps/BRL).
+    # Mostrado como "vol_x_bps" pra eyeball regime change na mesma posição.
+    den_d  = out["pos_d"].abs()
+    den_d1 = out["pos_d1"].abs()
+    out["vol_d_bps"]  = np.where(den_d  > 1e-3, out["contrib_d_bps"]  / den_d  * 1e6, np.nan)
+    out["vol_d1_bps"] = np.where(den_d1 > 1e-3, out["contrib_d1_bps"] / den_d1 * 1e6, np.nan)
+    out["d_vol_bps"]  = out["vol_d_bps"] - out["vol_d1_bps"]
+
+    # Decomposição "today's pos constant": pos_effect + vol_effect = delta (exato).
+    pe, ve = [], []
+    for r in out.itertuples():
+        p, v = _decompose_pos_constant_today(r.pos_d1, r.pos_d, r.contrib_d1_bps, r.contrib_d_bps)
+        pe.append(p); ve.append(v)
+    out["pos_effect_bps"] = pe
+    out["vol_effect_bps"] = ve
+
+    out["sign"] = out["delta_bps"].apply(_sign_of)
+    out["override_note"] = ""
+    out["children"] = None
+    out = out[_VAR_DOD_COLUMNS].reset_index(drop=True)
+    return out.sort_values("delta_bps", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+
+
+def _fetch_pos_per_book(desk: str, date_str: str) -> dict[str, float]:
+    """Sum of |DELTA| per BOOK from LOTE_PRODUCT_EXPO. Used as proxy denominator
+    for vol calc in non-IDKA funds. Returns {} on failure."""
+    try:
+        df = read_sql(f"""
+            SELECT "BOOK", SUM(ABS("DELTA")) AS pos_brl
+            FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+            WHERE "VAL_DATE" = DATE '{date_str}' AND "TRADING_DESK" = '{desk}'
+              AND "DELTA" IS NOT NULL
+            GROUP BY "BOOK"
+        """)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    return {str(r.BOOK): float(r.pos_brl) for r in df.itertuples(index=False)}
+
+
+def _fetch_pos_per_product(desk: str, date_str: str) -> dict[str, float]:
+    """Sum of |DELTA| per (BOOK, PRODUCT) from LOTE_PRODUCT_EXPO."""
+    try:
+        df = read_sql(f"""
+            SELECT "BOOK", "PRODUCT", SUM(ABS("DELTA")) AS pos_brl
+            FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+            WHERE "VAL_DATE" = DATE '{date_str}' AND "TRADING_DESK" = '{desk}'
+              AND "DELTA" IS NOT NULL
+            GROUP BY "BOOK", "PRODUCT"
+        """)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    return {f"{r.BOOK}::{r.PRODUCT}": float(r.pos_brl) for r in df.itertuples(index=False)}
+
+
+def _var_dod_lote_fund(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd.DataFrame:
+    """ALBATROZ/MACRO_Q/BALTRA VaR DoD via LOTE_FUND_STRESS (per PRODUCT, BOOK as group)."""
+    q = f"""
+    SELECT "VAL_DATE", "BOOK", "PRODUCT", "PVAR1DAY"
+    FROM "LOTE45"."LOTE_FUND_STRESS"
+    WHERE "VAL_DATE" IN (DATE '{date_d}', DATE '{date_d1}')
+      AND "TRADING_DESK" = '{desk}'
+      AND "PVAR1DAY" IS NOT NULL
+    """
+    try:
+        df = read_sql(q)
+    except Exception:
+        return _empty_var_dod()
+    if df.empty or nav_d <= 0:
+        return _empty_var_dod()
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).dt.strftime("%Y-%m-%d")
+    df["contrib_bps"] = -df["PVAR1DAY"].astype(float) / nav_d * 10000.0
+    df["key"] = df["BOOK"].astype(str) + "::" + df["PRODUCT"].astype(str)
+    p_contrib = df.pivot_table(index="key", columns="VAL_DATE",
+                                values="contrib_bps", aggfunc="sum").fillna(0.0)
+    book_map = df.groupby("key")["BOOK"].first()
+    prod_map = df.groupby("key")["PRODUCT"].first()
+    if date_d not in p_contrib.columns or date_d1 not in p_contrib.columns:
+        return _empty_var_dod()
+
+    out = pd.DataFrame(index=p_contrib.index)
+    out["contrib_d1_bps"] = p_contrib[date_d1]
+    out["contrib_d_bps"]  = p_contrib[date_d]
+    out["delta_bps"]      = out["contrib_d_bps"] - out["contrib_d1_bps"]
+    out["label"] = prod_map.reindex(out.index).astype(str).values
+    out["group"] = book_map.reindex(out.index).astype(str).values
+
+    # Position cross-join: LOTE_PRODUCT_EXPO per (BOOK, PRODUCT)
+    pos_d_map  = _fetch_pos_per_product(desk, date_d)
+    pos_d1_map = _fetch_pos_per_product(desk, date_d1)
+    out["pos_d"]  = out.index.map(lambda k: pos_d_map.get(k, np.nan))
+    out["pos_d1"] = out.index.map(lambda k: pos_d1_map.get(k, np.nan))
+    den = out["pos_d1"].abs()
+    out["d_pos_pct"] = np.where(den > 1e-3,
+                                 (out["pos_d"] - out["pos_d1"]) / den * 100.0, np.nan)
+
+    # vol per BRL of pos (signed effective bps/BRL, scaled by 1e6 for readability).
+    den_d  = out["pos_d"].abs()
+    den_d1 = out["pos_d1"].abs()
+    out["vol_d_bps"]  = np.where(den_d  > 1e-3, out["contrib_d_bps"]  / den_d  * 1e6, np.nan)
+    out["vol_d1_bps"] = np.where(den_d1 > 1e-3, out["contrib_d1_bps"] / den_d1 * 1e6, np.nan)
+    out["d_vol_bps"]  = out["vol_d_bps"] - out["vol_d1_bps"]
+
+    pe, ve = [], []
+    for r in out.itertuples():
+        p, v = _decompose_pos_constant_today(r.pos_d1, r.pos_d, r.contrib_d1_bps, r.contrib_d_bps)
+        pe.append(p); ve.append(v)
+    out["pos_effect_bps"] = pe
+    out["vol_effect_bps"] = ve
+    out["sign"] = out["delta_bps"].apply(_sign_of)
+    out["override_note"] = ""
+    out["children"] = None
+
+    # Look-through regrouping: positions sourced from sub-funds (BALTRA holds
+    # IDKAs, Albatroz) are grouped under synthetic parent rows.
+    # NOTE: longer-term, BALTRA should be populated in LOTE_FUND_STRESS_RPM
+    # where the engine already does this look-through aggregation natively.
+    # Parked in memory/project_todo_baltra_lote_fund_stress_rpm.md.
+    out = _regroup_lookthrough(out, desk, date_d)
+
+    out = out[_VAR_DOD_COLUMNS].reset_index(drop=True)
+    return out.sort_values("delta_bps", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+
+
+_FUND_PRETTY = {
+    "IDKA IPCA 10Y FIRF": "IDKA 10Y holdings",
+    "IDKA IPCA 3Y FIRF":  "IDKA 3Y holdings",
+    "GALAPAGOS ALBATROZ FIRF LP": "Albatroz holdings",
+    "Galapagos Pinzon FIRF Ref DI": "Pinzon holdings",
+}
+
+
+def _pretty_source(desk: str) -> str:
+    return _FUND_PRETTY.get(desk, desk + " holdings")
+
+
+def _fetch_lookthrough_source_funds(desk: str, date_str: str) -> dict:
+    """Map (BOOK, PRODUCT) → source_fund_label for look-through positions held
+    by `desk`. Source funds are TRADING_DESKs that report into `desk` via
+    TRADING_DESK_SHARE_SOURCE. Only includes external sources (not desk itself)."""
+    try:
+        df = read_sql(f"""
+            SELECT "BOOK", "PRODUCT", "TRADING_DESK", SUM(ABS("DELTA")) AS gross_brl
+            FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+            WHERE "VAL_DATE" = DATE '{date_str}'
+              AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
+              AND "TRADING_DESK" != '{desk}'
+              AND "DELTA" IS NOT NULL
+            GROUP BY "BOOK", "PRODUCT", "TRADING_DESK"
+        """)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    df = df.sort_values("gross_brl", ascending=False)
+    out = {}
+    for r in df.itertuples(index=False):
+        key = (str(r.BOOK), str(r.PRODUCT))
+        if key not in out:
+            out[key] = str(r.TRADING_DESK)
+    return out
+
+
+def _regroup_lookthrough(out_df: pd.DataFrame, desk: str, date_d: str) -> pd.DataFrame:
+    """Restructure rows: those whose (BOOK, PRODUCT) matches a look-through
+    source fund get grouped under a synthetic parent row. Direct rows stay flat.
+    Index of out_df is 'BOOK::PRODUCT'."""
+    if out_df.empty:
+        return out_df
+    src_map = _fetch_lookthrough_source_funds(desk, date_d)
+    if not src_map:
+        return out_df
+
+    sources: list = []
+    for idx in out_df.index:
+        parts = str(idx).split("::", 1)
+        if len(parts) == 2:
+            sources.append(src_map.get((parts[0], parts[1])))
+        else:
+            sources.append(None)
+    tagged = out_df.copy()
+    tagged["_src"] = sources
+
+    direct = tagged[tagged["_src"].isna()].drop(columns=["_src"])
+    grouped = tagged[tagged["_src"].notna()]
+    if grouped.empty:
+        return direct
+
+    parent_records = []
+    for src, sub in grouped.groupby("_src", sort=False):
+        children = []
+        for _, r in sub.iterrows():
+            children.append({
+                "label": r["label"], "group": r["group"],
+                "contrib_d1_bps": (None if pd.isna(r["contrib_d1_bps"]) else float(r["contrib_d1_bps"])),
+                "contrib_d_bps":  (None if pd.isna(r["contrib_d_bps"])  else float(r["contrib_d_bps"])),
+                "delta_bps":      (None if pd.isna(r["delta_bps"])      else float(r["delta_bps"])),
+                "pos_d1":         (None if pd.isna(r["pos_d1"])         else float(r["pos_d1"])),
+                "pos_d":          (None if pd.isna(r["pos_d"])          else float(r["pos_d"])),
+                "d_pos_pct":      (None if pd.isna(r["d_pos_pct"])      else float(r["d_pos_pct"])),
+                "vol_d1_bps":     (None if pd.isna(r["vol_d1_bps"])     else float(r["vol_d1_bps"])),
+                "vol_d_bps":      (None if pd.isna(r["vol_d_bps"])      else float(r["vol_d_bps"])),
+                "d_vol_bps":      (None if pd.isna(r["d_vol_bps"])      else float(r["d_vol_bps"])),
+                "pos_effect_bps": (None if pd.isna(r["pos_effect_bps"]) else float(r["pos_effect_bps"])),
+                "vol_effect_bps": (None if pd.isna(r["vol_effect_bps"]) else float(r["vol_effect_bps"])),
+                "sign":           str(r["sign"] or ""),
+                "override_note":  "",
+            })
+        children.sort(key=lambda c: -abs(c.get("delta_bps") or 0))
+
+        c_d1 = float(sub["contrib_d1_bps"].fillna(0).sum())
+        c_d  = float(sub["contrib_d_bps"].fillna(0).sum())
+        delta = c_d - c_d1
+        pos_d1_t = float(sub["pos_d1"].abs().fillna(0).sum())
+        pos_d_t  = float(sub["pos_d"].abs().fillna(0).sum())
+        d_pos_pct = ((pos_d_t - pos_d1_t) / pos_d1_t * 100.0) if pos_d1_t > 1e-3 else None
+        pe_t = float(sub["pos_effect_bps"].fillna(0).sum())
+        ve_t = float(sub["vol_effect_bps"].fillna(0).sum())
+        parent_records.append({
+            "label": f"↻ {_pretty_source(src)}",
+            "group": pd.NA,
+            "contrib_d1_bps": c_d1,
+            "contrib_d_bps":  c_d,
+            "delta_bps":      delta,
+            "pos_d1":         pos_d1_t if pos_d1_t > 0 else np.nan,
+            "pos_d":          pos_d_t  if pos_d_t  > 0 else np.nan,
+            "d_pos_pct":      d_pos_pct if d_pos_pct is not None else np.nan,
+            "vol_d1_bps":     np.nan,
+            "vol_d_bps":      np.nan,
+            "d_vol_bps":      np.nan,
+            "pos_effect_bps": pe_t,
+            "vol_effect_bps": ve_t,
+            "sign":           _sign_of(delta),
+            "override_note":  "",
+            "children":       children,
+        })
+
+    parents_df = pd.DataFrame(parent_records)
+    parents_df.index = [f"[lookthrough]{p['label']}" for p in parent_records]
+    return pd.concat([direct, parents_df])
+
+
+def fetch_var_dod_decomposition(fund_key: str, date_str: str = DATA_STR) -> pd.DataFrame:
+    """Day-over-day decomposition of VaR/BVaR by leaf factor.
+
+    Output schema (uniform; pos/vol cols NaN where source lacks DELTA):
+      label             — PRIMITIVE / BOOK / PRODUCT name
+      group             — BOOK (for ALBATROZ/MACRO_Q/BALTRA), NaN otherwise
+      contrib_d1_bps    — yesterday's contribution in bps of NAV (positive = adds VaR)
+      contrib_d_bps     — today's contribution
+      delta_bps         — contrib_d − contrib_d1 (sorted by |·| desc)
+      pos_d1 / pos_d / d_pos_pct      — IDKA only (DELTA in BRL, % change)
+      vol_d1_bps / vol_d_bps / d_vol_bps — IDKA only (RELATIVE_VOL_PCT × 10000)
+      pos_effect_bps / vol_effect_bps — IDKA only (symmetric, sums to delta_bps)
+      sign              — '+' (added risk), '-' (removed), '0' (|Δ| < 0.5 bps)
+
+    Returns empty DataFrame if fund unsupported, no data, or D-1 missing.
+    Source by family:
+      IDKAs                    → LOTE_PARAMETRIC_VAR_TABLE (BOOKS='{*}')
+      MACRO/QUANT/EVOLUTION    → LOTE_FUND_STRESS_RPM (LEVEL=10, BOOK aggregate)
+      ALBATROZ/MACRO_Q/BALTRA  → LOTE_FUND_STRESS (per PRODUCT)
+    """
+    cfg = _VAR_DOD_DISPATCH.get(fund_key)
+    if cfg is None:
+        return _empty_var_dod()
+    source, desk, _metric, bench_primitive = cfg
+    # Normalize to YYYY-MM-DD (matches the pivot column keys built downstream).
+    date_d  = pd.to_datetime(date_str).strftime("%Y-%m-%d")
+    date_d1 = pd.to_datetime(_prev_bday(date_d)).strftime("%Y-%m-%d")
+    if source == "idka_param":
+        nav_d  = _latest_nav(desk, date_d)
+        nav_d1 = _latest_nav(desk, date_d1)
+        return _var_dod_idka(desk, date_d, date_d1, bench_primitive,
+                             nav_d, nav_d1)
+    if source == "rpm_book":
+        nav_d = _latest_nav(desk, date_d)
+        if nav_d is None or nav_d <= 0:
+            return _empty_var_dod()
+        return _var_dod_rpm(desk, date_d, date_d1, float(nav_d))
+    if source == "lote_fund":
+        nav_d = _latest_nav(desk, date_d)
+        if nav_d is None or nav_d <= 0:
+            return _empty_var_dod()
+        return _var_dod_lote_fund(desk, date_d, date_d1, float(nav_d))
+    return _empty_var_dod()
 
 
 def fetch_pnl_distribution(date_str: str = DATA_STR) -> dict:

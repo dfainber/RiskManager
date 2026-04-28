@@ -86,7 +86,24 @@
       "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" --version)",
       "Bash(\"/c/Users/diego.fainberg/Anaconda3/python.exe\" -)",
       "Bash(2>&1)",
-      "Bash(\"F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\.venv\\\\Scripts\\\\pip.exe\" install *)"
+      "Bash(\"F:\\\\Bloomberg\\\\Quant\\\\MODELOS\\\\DFF\\\\Risk_Monitor\\\\.venv\\\\Scripts\\\\pip.exe\" install *)",
+      "Edit(/.claude/skills/evolution-risk-concentration/**)",
+      "Edit(/.claude/skills/macro-stop-monitor/**)",
+      "Edit(/.claude/skills/macro-risk-breakdown/**)",
+      "Edit(/.claude/skills/performance-attribution/**)",
+      "Edit(/.claude/skills/rf-idka-monitor/**)",
+      "Edit(/.claude/skills/risk-data-collector/**)",
+      "Edit(/.claude/skills/risk-manager/**)",
+      "Edit(/.claude/skills/risk-morning-call/**)",
+      "Edit(/.claude/skills/wrap-session/**)",
+      "Bash(awk '/^def build_html/,/^def [a-z]/' generate_risk_report.py)",
+      "Bash(awk 'NR>=479 && NR<=1580' generate_risk_report.py)",
+      "Bash(start \"\" \"data/morning-calls/2026-04-27_risk_monitor.html\")",
+      "Bash(cmd //c \"run_report_auto.bat\")",
+      "Bash(cmd //c \"F:\\\\\\\\Bloomberg\\\\\\\\Quant\\\\\\\\MODELOS\\\\\\\\DFF\\\\\\\\Risk_Monitor\\\\\\\\run_report_auto.bat\")",
+      "Bash(schtasks //Create //SC WEEKLY //D MON,TUE,WED,THU,FRI //ST 08:00 //TN \"Risk Monitor - Daily Report\" //TR \"F:\\\\\\\\Bloomberg\\\\\\\\Quant\\\\\\\\MODELOS\\\\\\\\DFF\\\\\\\\Risk_Monitor\\\\\\\\run_report_auto.bat\" //F)",
+      "Bash(schtasks //Query //TN \"Risk Monitor - Daily Report\" //V //FO LIST)",
+      "Bash(git ls-remote *)"
     ]
   }
 }

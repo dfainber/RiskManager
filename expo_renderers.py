@@ -40,6 +40,7 @@ from html_assets import UEXPO_JS as _UEXPO_JS
 from svg_renderers import make_sparkline, range_line_svg, stop_bar_svg
 from metrics import compute_distribution_stats
 from data_fetch import fetch_rf_exposure_map, _compute_idka_bench_replication
+from vardod_renderers import build_vardod_trigger
 
 
 def _build_expo_unified_table(
@@ -487,6 +488,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
       <div class="card-head">
         <span class="card-title">Exposição — QUANT</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · por fator de risco e por livro</span>
+        {build_vardod_trigger("QUANT")}
         <div class="pa-view-toggle" style="margin-left:auto">
           <button class="pa-tgl active" data-qexpo-view="factor"
                   onclick="selectQuantExpoView(this,'factor')">Por Fator</button>
@@ -972,6 +974,7 @@ if (!window.__evoExpoJSLoaded) {
       <div class="card-head">
         <span class="card-title">Exposição — EVOLUTION</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · look-through completo (MACRO + SIST + FRONTIER + CREDITO + EVO_STRAT)</span>
+        {build_vardod_trigger("EVOLUTION")}
         <div class="pa-view-toggle" style="margin-left:auto">
           <button class="pa-tgl active" data-evo-view="strat"
                   onclick="selectEvoExpoView(this,'strat')">Por Strategy</button>
@@ -1267,6 +1270,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
       <div class="card-head">
         <span class="card-title">Exposição — {short_label}</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · posições por fator · bench = {bench_label} ({bench_dur:.0f}y real + IPCA carry)</span>
+        {build_vardod_trigger(short)}
         <div style="display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap">
           <button class="pa-tgl" style="font-size:11px;padding:3px 8px"
                   onclick="idkaExpandAll(this)">▼ All</button>
@@ -1769,6 +1773,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
       <div class="card-head">
         <span class="card-title">Exposure RF</span>
         <span class="card-sub">— {fund_label} · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {dv01_fmt}k R$/bp</span>
+        {build_vardod_trigger(fund_label)}
       </div>
 
       <div class="sn-inline-stats mono" style="margin-bottom:8px; display:flex; align-items:center; gap:10px">
@@ -2157,6 +2162,7 @@ function toggleDrillPM(id) {
       <div class="card-head">
         <span class="card-title">Exposição — MACRO</span>
         <span class="card-sub">— NAV R$ {nav_fmt}M · por fator de risco e por PM</span>
+        {build_vardod_trigger("MACRO")}
         <div class="pa-view-toggle" style="margin-left:auto">
           <button id="mbtn-pos" class="pa-tgl active" onclick="setMacroView('pos')">POSIÇÕES</button>
           <button id="mbtn-pmv" class="pa-tgl"        onclick="setMacroView('pmv')">PM VaR</button>
