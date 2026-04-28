@@ -103,13 +103,13 @@ Nunca escrever `SISTEMATICO` em query — o nome real no banco é **`QUANT`**.
 | QUANT      | ✅ RPM              | ✅       | ✅                | ✅              | —               |
 | EVOLUTION  | ✅ RPM              | ✅       | ✅ 3-níveis       | ✅              | —               |
 | ALBATROZ   | ✅ LOTE_FUND_STRESS | ✅       | ✅ drill DV01     | ✅ HS gross     | ✅ 150bps/mês   |
-| BALTRA     | ✅ LOTE_FUND_STRESS | ✅       | —                 | — (sem HS)      | — (prov. only)  |
+| BALTRA     | ✅ LOTE_FUND_STRESS | ✅       | ✅ drill DV01 + Map | — (sem HS)      | — (prov. only)  |
 | MACRO_Q    | ✅ LOTE_FUND_STRESS | ✅       | —                 | —               | —               |
 | FRONTIER   | ✅ BVaR HS          | ✅ (GFA) | ✅ active wt      | ✅ α vs IBOV   | —               |
 | IDKA 3Y    | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
 | IDKA 10Y   | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
 
-Limites provisórios: ALBATROZ, MACRO_Q, IDKA 3Y (soft 0.40/hard 0.60 daily),
+Limites provisórios: ALBATROZ, MACRO_Q, BALTRA, IDKA 3Y (soft 0.40/hard 0.60 daily),
 IDKA 10Y (soft 1.00/hard 1.50 daily). Aguardam mandatos definitivos.
 
 ---

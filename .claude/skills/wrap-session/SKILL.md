@@ -1,6 +1,6 @@
 ---
 name: wrap-session
-description: Rotina de fim de sessão do Risk Monitor kit. Executa um checklist automático para fechar o dia de desenvolvimento — identifica o que foi feito, atualiza memory + CLAUDE.md com regras/TODOs/entregas, roda um sanity check (gera o relatório para confirmar que nada quebrou), faz commit com mensagem descritiva e push pra origin/master. Use quando o usuário disser "wrap", "wrap up", "fechar sessão", "finalizar a sessão", "encerrar", "fim de sessão", "fechar o dia" ou similar. Não usar para commits avulsos no meio da sessão — é especificamente o ritual de encerramento que consolida tudo de uma vez.
+description: Ritual de fim de sessão do Risk Monitor kit. Identifica o que foi feito, atualiza memory + CLAUDE.md, roda sanity check (regen do relatório), commit + push para origin/master. Use para "wrap", "wrap up", "fechar/finalizar/encerrar sessão", "fim de sessão", "fechar o dia". NÃO usar para commits avulsos no meio da sessão.
 ---
 
 # Wrap Session — Fim de dia de desenvolvimento

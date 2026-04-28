@@ -1,6 +1,6 @@
 ---
 name: performance-attribution
-description: Análise de atribuição de performance (PA) transversal aos fundos da gestora. Para fundos com PA existente (MACRO, EVOLUTION, ALBATROZ, QUANTITATIVO MACRO Q), lê e consolida a tabela q_models.REPORT_ALPHA_ATRIBUTION decompondo retornos por livro, PM, classe de ativo e fator de risco. Para IDKA 3Y e IDKA 10Y, onde não existe PA oficial, constrói a atribuição do zero — excess return vs. benchmark IDKA oficial, decomposição entre réplica (book Benchmark_IDKA) e risco ativo (book RF_LF). Use sempre que o usuário pedir "atribuição de performance", "PA", "de onde veio o retorno", "análise de alpha", "performance por PM/livro", "excess return", "destaques de performance", "quem gerou o retorno", "atribuição do IDKA", ou mencionar qualquer análise de fontes de retorno dos fundos.
+description: Atribuição de performance (PA) transversal aos fundos. MACRO, EVOLUTION, ALBATROZ, MACRO_Q, QUANT, BALTRA usam REPORT_ALPHA_ATRIBUTION (decompõe por livro/PM/classe/fator). IDKA 3Y/10Y constrói PA do zero — excess return vs índice IDKA, decomposto entre réplica (Benchmark_IDKA) e risco ativo (RF_LF). Use para pedidos sobre atribuição, alpha, excess return, performance por PM/livro, ou fontes de retorno dos fundos.
 ---
 
 # Performance Attribution

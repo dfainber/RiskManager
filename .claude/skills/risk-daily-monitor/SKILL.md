@@ -1,6 +1,6 @@
 ---
 name: risk-daily-monitor
-description: Rotina diária de monitoramento de risco para os fundos Multimercados da Galapagos (Galapagos Macro FIM, Galapagos Quantitativo FIM, Galapagos Evolution FIC FIM CP). Lê dados direto do banco GLPG-DB01 (tabelas LOTE_FUND_STRESS_RPM, LOTE_BOOK_STRESS_RPM, PORTIFOLIO_DAILY_HISTORICAL_SIMULATION, LOTE_TRADING_DESKS_NAV_SHARE), cruza com mandatos e emite estado verde/amarelo/vermelho por fundo × métrica. Use sempre que o usuário pedir "rodar o monitor", "checar o risco hoje", "como está o MACRO/QUANT/EVOLUTION", "varredura diária", "VaR dos MM", "preparação Morning Call" ou mencionar qualquer fundo MM no contexto de risco diário. Suporte para outras famílias (RF, Crédito, RV) será adicionado incrementalmente.
+description: Monitor diário de risco dos MM da Galapagos (MACRO, QUANT, EVOLUTION). Lê GLPG-DB01 (LOTE_FUND_STRESS_RPM, LOTE_BOOK_STRESS_RPM, PORTIFOLIO_DAILY_HISTORICAL_SIMULATION, LOTE_TRADING_DESKS_NAV_SHARE), cruza com mandatos, emite verde/amarelo/vermelho por fundo × métrica. Use para pedidos sobre rodar monitor, checar risco diário, VaR dos MM, preparação Morning Call, ou status de fundo MM.
 ---
 
 # Risk Daily Monitor — Multimercados

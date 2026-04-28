@@ -1,6 +1,6 @@
 ---
 name: risk-data-collector
-description: Coletor de dados da rotina de madrugada para o Morning Call. Verifica se todas as bases do GLPG-DB01 necessárias para as skills de risco estão atualizadas; se alguma está defasada, tenta disparar a rotina geradora; produz um manifesto JSON de status que é consumido pela risk-morning-call. Não substitui as rotinas existentes — verifica, tenta, e reporta. Use sempre que o usuário pedir "rodar coleta", "verificar dados de risco", "a rotina de hoje", "status das bases", "quais bases estão faltando", "executar coleta noturna".
+description: Coletor de dados da rotina de madrugada para Morning Call. Verifica se bases GLPG-DB01 (necessárias para skills de risco) estão atualizadas; se defasada, tenta disparar a rotina geradora; produz manifesto JSON consumido pela risk-morning-call. Não substitui rotinas — verifica, tenta, reporta. Use para pedidos sobre rodar coleta, verificar dados, status das bases, ou executar coleta noturna.
 ---
 
 # Risk Data Collector

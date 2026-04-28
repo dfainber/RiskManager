@@ -1,6 +1,6 @@
 ---
 name: macro-risk-breakdown
-description: Relatório analítico de risco do fundo Galapagos Macro FIM para o Morning Call. Decompõe VaR e Stress por classe de ativo e por gestor (CI, LF, JD, RJ, QM), destaca mudanças materiais D vs. D-1, traça cada PM individualmente contra seu orçamento, e calcula "shock absorption" — para cada um dos top 10 ativos do fundo, quanto o ativo precisa mexer para consumir frações do orçamento. Use sempre que o usuário pedir "breakdown do MACRO", "decomposição do risco", "onde está o risco do Macro", "o que mudou no risco hoje", "principais fontes de risco", "risco por classe", "risco por PM", "shock absorption", "quanto a curva tem que mexer", "briefing do MACRO", "relatório analítico do Macro", ou qualquer pedido de análise detalhada do MACRO além do semáforo de limites da `risk-daily-monitor`. Esta é a skill de profundidade analítica.
+description: Relatório analítico de risco do Galapagos Macro FIM. Decompõe VaR/Stress por classe de ativo e por PM (CI, LF, JD, RJ, QM), mudanças D-vs-D-1, traça cada PM contra orçamento, calcula "shock absorption" (quanto top-10 ativos precisam mexer pra consumir frações do orçamento). Use para pedidos sobre breakdown do MACRO, decomposição de risco, fontes de risco, shock absorption, ou análise analítica detalhada do MACRO além do semáforo da risk-daily-monitor.
 ---
 
 # Macro Risk Breakdown

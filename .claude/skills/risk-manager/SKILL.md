@@ -1,6 +1,6 @@
 ---
 name: risk-manager
-description: Framework de referência do Risk Manager para a gestora. Define a taxonomia de risco por família de fundo (Multimercados, Renda Fixa, Crédito Privado, Renda Variável), o formato canônico dos mandatos/limites, as métricas-chave (VaR, Stress, orçamento de perda, exposições, concentração, tracking error) e os gatilhos de alerta. Use sempre que o usuário mencionar monitoramento de risco, Morning Call, VaR, stress test, orçamento de perda, limites de fundo, mandato, utilização de risco, breach, ou pedir para analisar/comentar o risco de um fundo ou família de fundos. É a base conceitual usada por todas as rotinas de risco (monitor diário, briefing do Morning Call, alertas de breach).
+description: Framework de referência do Risk Manager. Define taxonomia de risco por família de fundo (MM/RF/Crédito/RV), formato canônico de mandatos/limites, métricas-chave (VaR, Stress, orçamento de perda, exposições, concentração, tracking error) e gatilhos de alerta. Base conceitual das demais skills de risco. Use para qualquer pergunta sobre monitoramento de risco, mandato, breach, utilização de risco, ou análise/comentário sobre um fundo ou família.
 ---
 
 # Risk Manager — Framework de Referência

@@ -1,8 +1,19 @@
 # Risk Monitor — Reports, Calculations & System Structure
 
-*Última atualização: 2026-04-19*
+*Última atualização: 2026-04-28*
 
 Este documento descreve o que cada card do HTML contém, qual é a fórmula por trás, de onde os dados vêm, e como as peças se encaixam. Complementa o `CLAUDE.md` (que é a fonte de verdade sobre escopo e convenções) e `docs/documentacao_tecnica.html` (que tem mais detalhe de SQL).
+
+**Deltas relevantes desde 2026-04-19** (ver CLAUDE.md §7 pra detalhe completo):
+- BALTRA adicionado (2026-04-26): VaR/Stress + PA + Exposure RF + Exposure Map RF
+- Markets re-enabled (2026-04-26)
+- Daily Monitor + Peers redesign (2026-04-24/27)
+- Camada 4 EVOLUTION (Bull market alignment) + Matriz Direcional (2026-04-21)
+- Distribuição 1d/21d toggle + modal "5 piores · 5 melhores" (2026-04-27)
+- IDKA Distribuição: toggle vs Benchmark / vs Replication / Comparação (default = Comparação)
+- Top Movers: 3º toggle "Por Classe (sem FX)" (2026-04-28)
+- PA FX-split standalone reports: MACRO, EVO, QUANT, MACRO_Q (2026-04-27/28)
+- Exposure RF (ALBATROZ + BALTRA): CDI/LFTs excluídos do breakdown (2026-04-28)
 
 ---
 
@@ -12,7 +23,7 @@ Este documento descreve o que cada card do HTML contém, qual é a fórmula por 
 
 Gerar, em 1 comando, um painel HTML consolidado do risco de todos os fundos da gestora para o **Morning Call**. O output é um único arquivo em `data/morning-calls/{YYYY-MM-DD}_risk_monitor.html` que abre no browser e tem toda a visão da casa.
 
-### 1.2 Famílias de fundos cobertas (8 fundos hoje)
+### 1.2 Famílias de fundos cobertas (9 fundos hoje)
 
 | Short | Fundo | Benchmark | Tipo | Fonte de risco |
 |-------|-------|-----------|------|----------------|
@@ -21,6 +32,7 @@ Gerar, em 1 comando, um painel HTML consolidado do risco de todos os fundos da g
 | EVOLUTION | Galapagos Evolution FIC FIM CP | CDI | Multimercado (multi-estratégia) | `LOTE_FUND_STRESS_RPM` (LEVEL=3) |
 | MACRO_Q | Galapagos Global Macro Q | CDI | Multimercado offshore | `LOTE_FUND_STRESS` (product-level SUM) |
 | ALBATROZ | GALAPAGOS ALBATROZ FIRF LP | CDI | Renda Fixa | `LOTE_FUND_STRESS` (product-level SUM) |
+| BALTRA | Galapagos Baltra Icatu Qualif Prev FIM CP | IPCA+ (~3-4y duration) | Multimercado prev | `LOTE_FUND_STRESS` (product-level SUM) |
 | FRONTIER | Frontier Ações FIC FI | IBOV | Long Only equity | `LOTE_FUND_STRESS` + HS BVaR próprio |
 | IDKA_3Y | IDKA IPCA 3Y FIRF | IDKA IPCA 3A | RF benchmarked | `LOTE_PARAMETRIC_VAR_TABLE` |
 | IDKA_10Y | IDKA IPCA 10Y FIRF | IDKA IPCA 10A | RF benchmarked | `LOTE_PARAMETRIC_VAR_TABLE` |
@@ -41,13 +53,19 @@ HTML salvo + abre no browser
 
 ### 1.4 Estrutura do HTML gerado
 
-O painel tem **3 modos de navegação** (topo direito):
+O painel tem **7 modos de navegação** (topo direito, via `selectMode(...)`):
 
 - **Summary**: visão da casa — cards agregados cross-fundo
 - **Por Fundo**: navegação fundo-a-fundo com múltiplos reports por fundo
 - **Por Report**: mesma lista de reports, agrupados por tipo em vez de por fundo
+- **Qualidade**: status das bases + drift/staleness por tabela
+- **P&L**: Daily P&L D-1 por book/classe/posição
+- **Peers**: comparativo consolidado vs pares (gráficos + tabela)
+- **Markets**: snapshot cross-asset com sub-tabs (Janelas/Moedas/Commodities) × window (1d/5d/1m)
 
-URLs com hash (`#summary`, `#fund=MACRO`, `#quality`) permitem deep-linking.
+Default ao abrir = **Summary**.
+
+URLs com hash (`#summary`, `#fund=MACRO`, `#quality`, `#market`, `#pnl`, `#peers`) permitem deep-linking.
 
 ---
 
@@ -156,11 +174,12 @@ Ordem atual de cima pra baixo:
 
 ### 2.6 Top Movers — DIA
 
-**O que mostra:** top 3 contribuintes e top 3 detratores do dia por fundo. Toggle **Por Livro** / **Por Classe**.
+**O que mostra:** top 3 contribuintes e top 3 detratores do dia por fundo. **3 toggles**: **Por Livro** (default) / **Por Classe** / **Por Classe (sem FX)**.
 
 **Cálculo:**
 - Soma `dia_bps` por LIVRO (ou CLASSE) dentro do fundo.
 - Caixa/Custos/Taxas excluídos (operacionais).
+- "Sem FX" também filtra `CLASSE in {BRLUSD, FX}` antes de agregar — isola efeito-ativo.
 - Top 3 positivos + top 3 negativos por |sum|.
 - Drop abaixo de 0.5 bps (ruído).
 
@@ -202,15 +221,18 @@ Toggle **Bruto / Líquido**:
 Cada fundo tem N reports, dependendo do que faz sentido para o fundo. Ordem fixa:
 
 1. **Análise** (por fundo) — outliers + top movers + mudanças filtradas só deste fundo
-2. **PA** (Performance Attribution) — hierárquico, com toggle Por Classe / Por Livro
+2. **PA** (Performance Attribution) — hierárquico, com toggle Por Classe / Por Livro (e Por Bench p/ IDKAs, default)
 3. **Risk Monitor** — card com VaR/BVaR/Stress, histórico 12m, bar vs. limits
-4. **Exposure** — varia por fundo
-5. **Exposure Map** (só IDKA_3Y, IDKA_10Y, ALBATROZ) — novo em 2026-04-19, § 3.5
+4. **Exposure** — varia por fundo (MACRO/QUANT/EVO/ALBATROZ/BALTRA/IDKAs/FRONTIER têm builders próprios)
+5. **Exposure Map** (IDKA_3Y, IDKA_10Y, ALBATROZ, BALTRA, MACRO, EVOLUTION) — § 3.5
 6. **Single-Name** (só QUANT, EVOLUTION) — L/S com ETF explosion
-7. **Distribuição 252d** (só MACRO, EVOLUTION) — histograma + percentil do dia
-8. **Vol Regime** (per fundo) — drill-down da Vol Regime do Summary
-9. **Risk Budget** (só MACRO, ALBATROZ) — stop mensal
+7. **Distribuição 252d** (MACRO, QUANT, EVOLUTION, ALBATROZ, IDKA 3Y, IDKA 10Y) — toggle 1d/21d × Backward/Forward; IDKAs ainda têm bench toggle (Comparação default)
+8. **Vol Regime** (per fundo MACRO/QUANT/EVOLUTION) — drill-down da Vol Regime do Summary
+9. **Risk Budget** (MACRO, ALBATROZ) — stop mensal
 10. **Long Only** (só FRONTIER) — tabela completa de posições
+11. **Diversificação** (só EVOLUTION) — 5 sub-tabs (Resumo / Camada 1 / 2 / 3 / Direcional)
+12. **Briefing** (todos os fundos) — texto narrativo
+13. **Peers** (todos os fundos com peer group definido) — strips MTD/YTD/12M/24M + 2 scatters Vol vs Retorno
 
 ### 3.1 Análise (por fundo)
 
@@ -244,12 +266,16 @@ Card único por fundo com:
 
 Varia por fundo:
 - **MACRO**: `build_exposure_section` — POSIÇÕES (por RF factor, expandível por PM × produto) + PM VaR (por gestor, expandível). Colunas: %NAV, σ, ΔExpo, VaR%, ΔVaR, Margem, DIA.
-- **ALBATROZ**: `build_albatroz_exposure` — resumo por indexador (Pré/IPCA/IGP-M/CDI/Outros) + top 15 posições por |DV01|.
+- **QUANT**: `build_quant_exposure_section` — por fator × livro, sort por header.
+- **EVOLUTION**: `build_evolution_exposure_section` — toggle Factor / Strat (default = Strat), 3 níveis.
+- **ALBATROZ**: `build_albatroz_exposure` — resumo por indexador (Pré/IPCA/IGP-M/Outros — **CDI excluído** desde 2026-04-28: LFTs duration ≈ 0 inflam Net %NAV / Gross sem representar risco) + top 15 posições por |DV01|.
+- **BALTRA**: `build_albatroz_exposure(..., fund_label="BALTRA")` — mesma estrutura do ALBATROZ. Generalizado em 2026-04-28.
+- **IDKAs**: `build_idka_exposure_section` — toggle 3-vias **Bruto / Líquido vs Benchmark / Líquido vs Replication** (default = Líquido vs Benchmark). Por fator com children collapsed por default (caret ▶), expand via `toggleIdkaFac`.
 - **FRONTIER**: `build_frontier_exposure_section` — active weight vs IBOV/IBOD, toggle Por Nome/Por Setor.
 
-### 3.5 Exposure Map (IDKAs + ALBATROZ)
+### 3.5 Exposure Map (IDKAs, ALBATROZ, BALTRA, MACRO, EVOLUTION)
 
-O card novo (sessão 2026-04-19) que detalha a exposição de taxas. **Chart único** com 3 bars por bucket: Fund Real (amber), Fund Nominal (teal), Bench (slate).
+Card que detalha a exposição de taxas (entregue 2026-04-19; estendido a MACRO/EVO em sessões seguintes; BALTRA adicionado 2026-04-28). **Chart único** com 3 bars por bucket: Fund Real (amber), Fund Nominal (teal), Bench (slate).
 
 - **Eixo X**: 12 buckets de maturidade [0-6m, 6-12m, 1-2y, 2-3y, 3-4y, 4-5y, 5-6y, 6-7y, 7-8y, 8-9y, 9-10y, 10y+].
 - **Eixo Y**: ANO_EQ em anos (years equivalent).
@@ -262,6 +288,7 @@ O card novo (sessão 2026-04-19) que detalha a exposição de taxas. **Chart ún
 - **Tabelas colapsáveis**:
   - "Mostrar tabela (por bucket)": bucket × Real/Nominal/Fund Total/Bench/Relative.
   - "Mostrar posições (por ativo)": lista completa ordenada por |ANO_EQ|, com Book, Fator, Maturidade, Duration, Position R$, ANO_EQ.
+- **Y-axis snap to ±0.5y** (entregue 2026-04-28): quando max abs de all_vals (fund + bench + relative + cumulative) < 0.5 yr, força `y_max=0.5, y_min=-0.5`. Sem isso, fundos pequenos como EVOLUTION (Total ~-0.04yr) renderizavam com auto-scale forçado em ±1.0+ deixando o chart vazio.
 
 **Albatroz look-through explodido:** `fetch_rf_exposure_map(desk)` faz 2 queries unioned:
 1. `TRADING_DESK = desk` AND `SHARE_SOURCE = desk` → posições diretas
@@ -283,14 +310,25 @@ Gross absoluto no header. Coluna "From Idx" mostra origem (WIN+BOVA+SMAL+ADR). P
 
 Para EVOLUTION, tem look-through em QUANT (Bracco, Quant_PA), Evo Strategy (FMN_*, FCO, Ações BR Long), Frontier, Macro FIM (CI_COMMODITIES). Para o Summary cross-fund, usa `fetch_evolution_direct_single_names` (só o que Evolution segura direto) p/ evitar double-count.
 
-### 3.7 Distribuição 252d (MACRO, EVOLUTION)
+### 3.7 Distribuição 252d (MACRO, QUANT, EVOLUTION, ALBATROZ, IDKA 3Y, IDKA 10Y)
 
-Toggle **Backward / Forward** (default: Forward).
+Toggle **Backward / Forward** (default: Forward) × **1d / 21d** (default: 1d).
 
 - **Backward**: D-1 carteira × 252d históricos + DIA realizado overlayed. Responde: "onde o move de hoje caiu na distribuição histórica da carteira de ontem?"
 - **Forward**: D carteira × 252d históricos. Responde: "como a carteira atual se comportaria nos últimos 252d?"
+- **1d**: cada obs = retorno HS de 1 dia (~252 obs).
+- **21d**: cada obs = soma rolante de 21 retornos consecutivos (~232 obs). Helper `_to_rolling_sum` via cumsum vetorizado. Quando 21d ativo, **botão azul "5 piores · 5 melhores"** abre modal com janelas não-sobrepostas (greedy, sort por soma asc/desc, pula sobreposições). Modal de IDKAs tem 3 sub-seções (vs Benchmark / vs Replication / Repl − Bench).
+- **Backward grayed-out em 21d** (entregue 2026-04-28): combo Backward + 21d não tem overlay realizado, então o botão Backward fica cinza/não-clicável quando window=21.
 
-Fonte: `q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.W` por portfolio (fund-level ou PM-level). Stats: min, max, mean, std, var95 (5° pct), var_p95 (95° pct), actual, percentile do actual.
+**Toggle adicional para IDKA 3Y / 10Y** (entregue 2026-04-28): **vs Benchmark / vs Replication / Comparação** (default = Comparação · 1d · Forward).
+- **vs Benchmark**: HS active return (fundo − índice IDKA).
+- **vs Replication**: fundo − réplica NTN-B (DV-match).
+- **Comparação**: tabela 3-linhas com as 3 séries lado-a-lado.
+- **NTN-B coupon-date fix**: `_ntnb_total_return_pct_change` reinjeta semi-coupon na pct_change de ANBIMA UNIT_PRICE (que é clean / ex-coupon). Eliminou outliers de -200~300 bps fantasmas em datas de cupom.
+
+**Default expanded** (entregue 2026-04-28): linhas filhas do drill-down (livro/RF dentro do fundo) começam visíveis (caret ▼). Antes começavam fechadas.
+
+Fonte: `q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION.W` por portfolio (fund-level ou PM-level). Stats: min, p05, mean, std, p95, max, actual, percentile do actual. Coluna `a+var95` renomeada para **`p95`** em 2026-04-27.
 
 ### 3.8 Risk Budget
 
@@ -303,6 +341,28 @@ Tabela completa de posições:
 - % Cash · Delta · Beta · #ADTV · Ret D/MTD/YTD · Attrib D/MTD/YTD · ER IBOD D/MTD/YTD.
 - Subtotais por book + Total.
 - Fonte: `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD`.
+
+### 3.10 PA FX-split standalone reports (2026-04-27/28)
+
+Para os 4 fundos com PA em `REPORT_ALPHA_ATRIBUTION` (MACRO, EVOLUTION, QUANT, MACRO_Q), há **scripts standalone** que reagrupam a árvore PA separando efeito-ativo de efeito-FX. Não é card no relatório principal — gera HTML próprio em `data/morning-calls/<date>_<fundo>_pa_fx_split.html`.
+
+**Scripts:**
+- `generate_macro_pa_fx_split.py` — CLASSE → GRUPO → LIVRO → PRODUCT
+- `generate_evolution_pa_fx_split.py` — STRATEGY → CLASSE_NEW → GRUPO_NEW → LIVRO → PRODUCT
+- `generate_quant_pa_fx_split.py` — LIVRO → CLASSE_NEW → GRUPO_NEW → PRODUCT
+- `generate_macroq_pa_fx_split.py` — idem do QUANT, **com toggle adicional "FX Detalhado / FX Consolidado"**: a view consolidada lifta todo BRLUSD/FX para uma única linha top-level "≡ FX Basis Risk & Carry" acima de Caixa/Custos.
+
+**Re-mapping** (idêntico nos 4):
+- `CLASSE='BRLUSD' AND GRUPO='Commodities'` → "FX Basis Risk & Carry" / "FX em Commodities"
+- `CLASSE='BRLUSD' AND GRUPO='RV Intl'` → "FX Basis Risk & Carry" / "FX em RV Intl"
+- `CLASSE='BRLUSD' AND GRUPO='RF Intl'` → "FX Basis Risk & Carry" / "FX em RF Intl"
+- `CLASSE='BRLUSD' AND GRUPO in {BRLUSD, Custos}` → "FX Basis Risk & Carry" / "FX Spot & Futuros"
+- `CLASSE='FX'` → "FX Basis Risk & Carry" / "FX Spot & Futuros"
+- Demais → unchanged
+
+**Total preservado**: pura reordenação categórica, sem recálculo. Cada relatório inclui bloco de verificação numérica (✓/⚠) confirmando que Total + buckets preservados (Commodities, RV Intl, RF Intl) batem em DIA/MTD/YTD/12M com diff < 0.05 bps. Top contribuintes/detratores excluem FX Basis (efeito-ativo puro).
+
+UX: toolbar Expandir / Colapsar / Reset + sort por header (DIA/MTD/YTD/12M). Drill-down preservado no tree.
 
 ---
 
@@ -386,9 +446,25 @@ Gancho (vermelho) quando `remaining ≤ 0`.
 
 ## 5. Estrutura de código
 
-### 5.1 Top-level arquivo único
+### 5.1 Arquivo orquestrador + módulos auxiliares
 
-Todo o generator vive em `generate_risk_report.py` (~7900 linhas, ~66 funções). Mono-arquivo por design — simples de executar, simples de ler, simples de versionar. Split em módulos pode vir se chegar a 10k+.
+Orquestrador: `generate_risk_report.py` (~4280 linhas após refactor de 2026-04). Split em módulos auxiliares (ver CLAUDE.md §3 para tabela completa):
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `risk_runtime.py` | DATA_STR, fmt_br_num, parse_date_arg |
+| `risk_config.py` | FUNDS dicts, mandatos, _PM_LIVRO, _FUND_PEERS_GROUP, peer groups |
+| `db_helpers.py` | _latest_nav, _prev_bday, fetch_all_latest_navs |
+| `data_fetch.py` | Todos os fetch_* (36 funções públicas) |
+| `metrics.py` | compute_pm_hs_var, compute_frontier_bvar_hs, compute_pa_outliers, vol regime, compute_top_windows |
+| `svg_renderers.py` | range_bar_svg, stop_bar_svg, range_line_svg, sparklines |
+| `pa_renderers.py` | PA tree, lazy-render JSON, section assembler |
+| `evo_renderers.py` | 4 camadas EVOLUTION + Camada 4 (Bull Market Alignment) |
+| `expo_renderers.py` | 8 build_*_exposure_section incl. ALBATROZ + BALTRA generalizados |
+| `fund_renderers.py` | build_stop_section, briefings, distribuição (com 1d/21d), peers, vol regime |
+| `summary_renderers.py` | summary cards (Status, Top Movers, Outliers, Mudanças, Top Posições) |
+| `html_assets.py` | UEXPO_JS blob |
+| `evolution_diversification_card.py` | placeholder pra futuro card consolidado (não wireado ainda) |
 
 ### 5.2 Layout interno
 
@@ -423,7 +499,7 @@ Todo o generator vive em `generate_risk_report.py` (~7900 linhas, ~66 funções)
 
 ### 5.4 Skills
 
-9 skills em `.claude/skills/`:
+10 skills em `.claude/skills/`:
 - `risk-manager` — framework de referência
 - `risk-daily-monitor` — semáforo diário (MM)
 - `macro-stop-monitor` — stops por PM (MACRO)

@@ -1,6 +1,6 @@
 ---
 name: risk-morning-call
-description: Orquestrador final do briefing diário de risco e performance. Consome o manifesto de dados do risk-data-collector e os outputs das 7 outras skills de análise (risk-manager, risk-daily-monitor, macro-stop-monitor, macro-risk-breakdown, evolution-risk-concentration, rf-idka-monitor, performance-attribution), consolida tudo em um painel HTML com sumário executivo, visão horizontal (comparativo de todos os fundos) e visão vertical (análise A-Z por fundo). Identifica destaques de performance e risco, sugere pontos de aprofundamento e marca claramente dados ausentes ou degradados. Use sempre que o usuário pedir "Morning Call", "briefing diário", "painel de risco", "resumo de risco", "relatório consolidado", "como estão os fundos hoje", "rodar o morning call", "montar o briefing" ou equivalentes.
+description: Orquestrador final do briefing diário de risco e performance. Consome manifesto do risk-data-collector + outputs das 7 skills de análise, consolida em painel HTML com sumário executivo, visão horizontal (cross-fund) e vertical (por fundo). Marca dados ausentes/degradados. Use para pedidos sobre Morning Call, briefing diário, painel de risco, ou resumo consolidado dos fundos.
 ---
 
 # Risk Morning Call

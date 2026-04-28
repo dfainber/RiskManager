@@ -1,6 +1,6 @@
 ---
 name: macro-stop-monitor
-description: Monitora o orçamento de perda (stop) mensal e anual por PM (gestor) dentro do fundo Galapagos Macro FIM. Lê PnL diário e mensal por PM direto da tabela q_models.REPORT_ALPHA_ATRIBUTION, compara com stop vigente (base 63 bps/mês, 252 bps/ano + regra de carrego) e emite estado verde/amarelo/vermelho por PM. Também executa o fechamento mensal — grava um snapshot em JSON com PnL do mês e YTD por PM, necessário para calcular o carrego do mês seguinte. Use sempre que o usuário pedir "stop dos PMs", "orçamento do MACRO", "como está o PnL dos gestores", "carrego do mês", "quanto sobrou de stop", "PnL por PM", "fechar mês", "fechamento de <mês>", "rodar snapshot mensal", "refazer fechamento" ou mencionar qualquer um dos PMs do MACRO (CI, LF, JD, RJ, QM) no contexto de orçamento/stop. Complementa a `risk-daily-monitor`, que monitora o fundo agregado.
+description: Monitora orçamento de perda (stop) mensal/anual por PM (CI, LF, JD, RJ, QM) no Galapagos Macro FIM. Lê PnL de REPORT_ALPHA_ATRIBUTION, compara com stop (base 63 bps/mês, 252 bps/ano + carrego), emite estado verde/amarelo/vermelho. Faz também fechamento mensal (snapshot JSON p/ carrego). Use para pedidos sobre stop/orçamento dos PMs, carrego, PnL por PM, fechar mês, ou menções aos PMs do MACRO no contexto de stop.
 ---
 
 # Macro Stop Monitor — Orçamento por PM

@@ -1,6 +1,6 @@
 ---
 name: rf-idka-monitor
-description: Monitor de risco dos fundos IDKA IPCA 3Y FIRF e IDKA IPCA 10Y FIRF. Trata risco relativo a benchmark (BVaR/tracking error), qualidade da réplica (comparação do perfil do book Benchmark_IDKA contra o índice oficial), risco ativo alocado via book RF_LF (que pode direcionar para Albatroz), controle de perda relativa ao longo do mês e critérios de redução de risco. Trabalha com a métrica canônica ANO_EQ (ano-equivalente de exposição IPCA/juros), DV01 calculado por instrumento (NTN-B via PB.NTNB, LFT via PB.LFT, DI1 manual). Use sempre que o usuário pedir "IDKA", "monitor do IDKA", "como está o IDKA 3Y ou 10Y", "tracking error do IDKA", "BVaR do IDKA", "desvio do benchmark", "risco ativo do IDKA", "alocação do Albatroz", "perda relativa ao IPCA", "réplica do benchmark", ou mencionar qualquer dos dois fundos RF benchmarked.
+description: Monitor de risco dos IDKA IPCA 3Y/10Y FIRF. Cobre BVaR/tracking error, qualidade da réplica (Benchmark_IDKA vs índice), risco ativo via book RF_LF (que pode dirigir Albatroz), perda relativa mensal, critérios de redução. Métrica canônica ANO_EQ; DV01 por instrumento (NTN-B/LFT/DI1). Use para pedidos sobre IDKA, BVaR/tracking error do IDKA, desvio do benchmark, risco ativo, alocação Albatroz, ou réplica.
 ---
 
 # RF IDKA Monitor
