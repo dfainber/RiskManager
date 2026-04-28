@@ -1526,9 +1526,15 @@ def build_html(d: ReportData) -> str:
         threshold = _DOD_THRESHOLD.get(fund_key, _DOD_THRESHOLD_DEFAULT)
         if abs(delta_total) < threshold:
             return None
-        # Top by |delta|
-        top_idx = df["delta_bps"].abs().idxmax()
-        top = df.loc[top_idx]
+        # Top by |delta| — exclude the bench primitive for IDKAs (passivo, not a
+        # gestor decision; it's mechanical 100% NAV tracking with override applied).
+        cfg = _VAR_DOD_DISPATCH.get(fund_key)
+        bench_primitive = cfg[3] if cfg else None
+        df_drivers = df[df["label"] != bench_primitive] if bench_primitive else df
+        if df_drivers.empty:
+            df_drivers = df  # fallback when only the bench primitive exists
+        top_idx = df_drivers["delta_bps"].abs().idxmax()
+        top = df_drivers.loc[top_idx]
         # Fund-level pos/marg decomp (sum across rows when available)
         pos_eff_total = None
         marg_eff_total = None
