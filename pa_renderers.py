@@ -185,7 +185,7 @@ def _build_pa_view(fund_short: str, df: pd.DataFrame, view_id: str,
             "d":  r["display"],
             "pa": r["path"],
             "pr": r["parent"],
-            "a":  [round(x, 4) for x in r["agg"]],
+            "a":  [round(x, 3) for x in r["agg"]],
             "hc": 1 if r["has_children"] else 0,
             "pi": 1 if r["pinned"] else 0,
             "dp": r["depth"],
@@ -205,7 +205,7 @@ def _build_pa_view(fund_short: str, df: pd.DataFrame, view_id: str,
     # Compact JSON: keep all levels (including root) so filter/expand-all can work uniformly
     data_id = f"pa-data-{fund_short}-{view_id}"
     json_blob = json.dumps(
-        {"maxAbs": [round(x, 4) for x in max_abs], "byParent": by_parent},
+        {"maxAbs": [round(x, 3) for x in max_abs], "byParent": by_parent},
         separators=(",", ":"), ensure_ascii=False,
     ).replace("</", "<\\/")
 
