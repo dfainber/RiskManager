@@ -17,10 +17,40 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import pandas as pd
 
 from risk_config import FUND_ORDER, FUND_LABELS, _FUND_PA_KEY
+
+
+# Brazilian futures pattern: <prefix letters/digits><month letter><2-digit year>.
+# Examples: WDOK26 (USD mini), DI1F33 (DI), DAPK35 (DAP), WINJ26 (IBOV mini),
+# WSPM26 (S&P mini), DAC*, BGI* (boi gordo), CCM* (corn), etc.
+# month codes: F G H J K M N Q U V X Z (Jan-Dec)
+_FUT_RE = re.compile(r"^([A-Z]+\d*)[FGHJKMNQUVXZ]\d{2}$")
+
+# LIVROs that are FX hedge collateral (not alpha) — USD futures held there
+# offset Cash USD movements, not gestor decisions. Drop entirely from movers.
+_FX_HEDGE_LIVROS = {"Caixa USD", "Cash USD", "Caixa USD Futures"}
+
+
+def _consolidate_product(product: str) -> str:
+    """Strip month+year suffix from futures tickers so different maturities
+    aggregate as one position. Non-futures pass through unchanged.
+    Examples:
+      WDOK26  → WDO*
+      WDOG26  → WDO*
+      DI1F33  → DI1*
+      DAPK35  → DAP*
+      QQQ US 06/18/26 C650 → unchanged (option, not a future)
+    """
+    if not isinstance(product, str):
+        return product
+    m = _FUT_RE.match(product.strip())
+    if m:
+        return f"{m.group(1)}*"
+    return product
 
 
 # Periods to render: (period_key, df_column, header_label)
@@ -74,8 +104,20 @@ def _fund_movers(df_pa: pd.DataFrame, pa_key: str, n: int = 5) -> dict | None:
     # Filter accounting/cash/cost rows
     sub = sub[~sub["CLASSE"].isin(_EXCLUDE_CLASSES)]
     sub = sub[~sub["PRODUCT"].astype(str).str.startswith("Provision")]
+    # Exclude PRODUCT='Cash USD' (FX hedge collateral, not alpha)
+    sub = sub[sub["PRODUCT"].astype(str) != "Cash USD"]
+    # Exclude rows in FX hedge collateral books (LIVRO='Caixa USD' etc.) — USD
+    # futures held there offset Cash USD movements, not gestor decisions.
+    if "LIVRO" in sub.columns:
+        sub = sub[~sub["LIVRO"].astype(str).isin(_FX_HEDGE_LIVROS)]
     if sub.empty:
         return None
+
+    # Consolidate futures by underlying (strip month+year suffix). Different
+    # maturities of the same contract aggregate as one position (e.g., WDOK26
+    # + WDOG26 + WDOH26 → WDO*).
+    sub = sub.copy()
+    sub["PRODUCT"] = sub["PRODUCT"].astype(str).map(_consolidate_product)
 
     out = {}
     for period_key, col_name, _hdr in _PERIODS:
@@ -154,7 +196,8 @@ def build_pmovers_modal_scaffold() -> str:
   <div id="pmovers-body" class="pmovers-body"></div>
   <div class="pmovers-footnote">
     5 piores + 5 melhores instrumentos por período · agregação por (CLASSE, PRODUCT)
-    · filtra Caixa / Custos / Provisões · |contrib| ≥ 0,005%.
+    · filtra Caixa / Custos / Provisões / Cash USD / livros de FX hedge ·
+    futuros consolidados por ativo subjacente (sufixo *) · |contrib| ≥ 0,005%.
   </div>
 </div>
 """.strip()
