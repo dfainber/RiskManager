@@ -5028,6 +5028,15 @@ def main():  # noqa: C901
     out.write_text(html, encoding="utf-8")
     print(f"Saved: {out}")
 
+    # Mirror copy to shared Risk_Manager Morningcall folder for distribution.
+    mirror = Path(r"F:\Bloomberg\Risk_Manager\Data\Morningcall") / f"{DATA_STR}_risk_monitor.html"
+    try:
+        mirror.parent.mkdir(parents=True, exist_ok=True)
+        mirror.write_text(html, encoding="utf-8")
+        print(f"Saved (mirror): {mirror}")
+    except Exception as e:
+        print(f"Mirror save failed: {e}")
+
 
 if __name__ == "__main__":
     main()
