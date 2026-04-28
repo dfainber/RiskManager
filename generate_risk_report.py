@@ -75,6 +75,7 @@ from summary_renderers import (
 )
 from data_fetch import (
     fetch_pm_pnl_history,
+    fetch_pm_book_pnl_history,
     fetch_risk_history,
     fetch_risk_history_raw,
     fetch_risk_history_idka,
@@ -177,6 +178,7 @@ class ReportData:
     peers_data:       Optional[dict]            = None
     peers_data_eopm:  Optional[dict]            = None
     market_snap:      Optional[dict]            = None
+    df_pm_book_pnl:   Optional[pd.DataFrame]    = None
 
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
@@ -784,7 +786,15 @@ def build_html(d: ReportData) -> str:
     # Risk Budget tab = stop monitor (PnL × carry) + Budget vs VaR card combined
     # into a single section wrapper (avoids duplicate DOM ids for the same tab).
     if stop_hist and df_today is not None:
-        _stop_html = build_stop_section(stop_hist, df_today)
+        # Position presence per PM — used to downgrade STOP→FLAT when book is closed.
+        # Threshold: >0.05% of NAV in absolute exposure across the PM's books.
+        pm_has_position = {}
+        if df_expo is not None and not df_expo.empty and macro_aum:
+            thr_brl = 0.0005 * macro_aum
+            for _pm in ("CI", "LF", "JD", "RJ"):
+                _sub = df_expo[df_expo["pm"] == _pm]
+                pm_has_position[_pm] = bool(_sub["delta"].abs().sum() > thr_brl) if not _sub.empty else False
+        _stop_html = build_stop_section(stop_hist, df_today, d.df_pm_book_pnl, pm_has_position)
         _bvv_html  = ""
         # Derive hybrid HS-based VaR per PM from today's dist_map (same source as
         # Distribuição 252d card: PORTIFOLIO_DAILY_HISTORICAL_SIMULATION).
@@ -1691,7 +1701,9 @@ def build_html(d: ReportData) -> str:
     --line:#232a33;
     --line-2:#2d3540;
     --text:#e7ecf2;
-    --muted:#8892a0;
+    --muted:#a8b3c2;
+    --muted-strong:#c9d1dd;
+    --muted-soft:#6b7480;
     --accent:#0071BB;
     --accent-2:#1a8fd1;
     --accent-deep:#183C80;
@@ -1822,6 +1834,8 @@ def build_html(d: ReportData) -> str:
       --line-2:    #b0b5c0;
       --text:      #111111;
       --muted:     #555555;
+      --muted-strong: #333333;
+      --muted-soft:   #888888;
       --accent:    #003d5c;
       --accent-2:  #004a70;
       --up:        #0e7a32;
@@ -2054,7 +2068,7 @@ def build_html(d: ReportData) -> str:
     font-size:11px; letter-spacing:.18em; text-transform:uppercase;
     color:var(--text); font-weight:700;
   }}
-  .card-sub {{ font-size:11px; color:var(--muted); letter-spacing:.05em; }}
+  .card-sub {{ font-size:11px; color:var(--muted-strong); letter-spacing:.05em; }}
   .card-sub .fund-name {{
     color:var(--accent); font-weight:700; letter-spacing:.08em;
     padding:1px 6px; border-radius:4px;
@@ -2116,7 +2130,7 @@ def build_html(d: ReportData) -> str:
   .util-cell {{ font-size:12px; color:var(--muted); width:90px; text-align:right; }}
   .spark-cell {{ width:180px; padding:2px 8px; }}
   .metric-row:hover {{ background:var(--panel-2); }}
-  .bar-legend {{ margin-top:10px; font-size:10px; color:var(--muted); line-height:1.8; }}
+  .bar-legend {{ margin-top:10px; font-size:10px; color:var(--muted-strong); font-weight:500; line-height:1.8; }}
   .tick {{ color:#fb923c; font-size:9px; }}
 
   .sum-movers-card .card-head {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; }}
@@ -2266,7 +2280,7 @@ def build_html(d: ReportData) -> str:
     font-size:11px; color:var(--text); letter-spacing:.1em; text-transform:uppercase;
     font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--line);
   }}
-  .comment-empty {{ font-size:11.5px; color:var(--muted); font-style:italic; padding:4px 0; }}
+  .comment-empty {{ font-size:11.5px; color:var(--muted-strong); font-style:italic; padding:4px 0; }}
   .comment-list  {{ list-style:none; padding:0; margin:0; font-size:11.5px; line-height:1.7; }}
   .comment-list li {{ padding:3px 0; border-bottom:1px dotted var(--line); }}
   .comment-list li:last-child {{ border-bottom:none; }}
@@ -3050,6 +3064,17 @@ def build_html(d: ReportData) -> str:
     modal.querySelectorAll('.stop-pm-view').forEach(function(v) {{
       v.style.display = (v.dataset.stopPm === pm) ? '' : 'none';
     }});
+  }};
+  // Stop history: expand/collapse BOOK-level breakdown for a month row
+  window.toggleStopHistRow = function(rowId, cell) {{
+    var row = document.getElementById(rowId);
+    if (!row) return;
+    var opening = row.style.display === 'none';
+    row.style.display = opening ? '' : 'none';
+    if (cell) {{
+      var caret = cell.querySelector('.sh-caret');
+      if (caret) caret.textContent = opening ? '▼' : '▶';
+    }}
   }};
   // ESC closes modal
   document.addEventListener('keydown', function(e) {{
@@ -4505,6 +4530,7 @@ def main():  # noqa: C901
         fut_risk_idka  = ex.submit(fetch_risk_history_idka)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl       = ex.submit(fetch_pm_pnl_history)
+        fut_pm_book_pnl  = ex.submit(fetch_pm_book_pnl_history)
         fut_pm_book_var  = ex.submit(fetch_macro_pm_book_var,  DATA_STR)
         fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
         fut_expo_d1    = ex.submit(fetch_macro_exposure, d1_str)
@@ -4578,6 +4604,11 @@ def main():  # noqa: C901
         df_risk_idka = None
     df_aum      = fut_aum.result()
     df_pm_pnl   = fut_pm_pnl.result()
+    try:
+        df_pm_book_pnl = fut_pm_book_pnl.result()
+    except Exception as e:
+        print(f"  PM book-level PnL history failed ({e})")
+        df_pm_book_pnl = None
     try:
         pm_book_var = fut_pm_book_var.result()
     except Exception as e:
@@ -4917,6 +4948,7 @@ def main():  # noqa: C901
         expo_date_label=expo_date_label, data_manifest=data_manifest,
         book_pnl=book_pnl, peers_data=peers_data, peers_data_eopm=peers_data_eopm,
         market_snap=market_snap,
+        df_pm_book_pnl=df_pm_book_pnl,
     )
     html = build_html(report_data)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"

@@ -56,6 +56,30 @@ def fetch_pm_pnl_history() -> pd.DataFrame:
     return df
 
 
+def fetch_pm_book_pnl_history() -> pd.DataFrame:
+    """Per-month PnL by (LIVRO, BOOK) for MACRO PMs — drill-down for stop history modal.
+       Returns columns: mes (datetime, normalized BRT), LIVRO, BOOK, pnl_mes_bps (float)."""
+    q = f"""
+    SELECT DATE_TRUNC('month', "DATE") AS mes,
+           "LIVRO", "BOOK",
+           SUM("DIA") * 10000 AS pnl_mes_bps
+    FROM q_models."REPORT_ALPHA_ATRIBUTION"
+    WHERE "FUNDO" = 'MACRO'
+      AND "DATE" >= DATE '2025-01-01'
+      AND "DATE" <= DATE '{DATA_STR}'
+      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ','Macro_QM')
+    GROUP BY DATE_TRUNC('month', "DATE"), "LIVRO", "BOOK"
+    ORDER BY "LIVRO", mes, "BOOK"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return df
+    s = pd.to_datetime(df["mes"], utc=True)
+    df["mes"] = s.dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
+    df["pnl_mes_bps"] = df["pnl_mes_bps"].astype(float)
+    return df
+
+
 def fetch_macro_pm_pnl_daily(date_str: str = DATA_STR) -> pd.DataFrame:
     """Daily PnL per (LIVRO, DATE) for MACRO over the last ~400 days (≥ 252 business).
        Returns columns: VAL_DATE (datetime), LIVRO, pnl_bps.

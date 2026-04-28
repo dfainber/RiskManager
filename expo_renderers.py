@@ -2009,7 +2009,7 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
         drill_id = f"pmv-{pm_name}"
         pm_summary_rows += f"""
         <tr class="metric-row" style="cursor:pointer" onclick="toggleDrillPM('{drill_id}')">
-          <td style="font-size:12px;font-weight:bold;color:{pm_color};padding:5px 12px;width:50px" colspan="2" data-val="{pm_name}">▶ {pm_name}</td>
+          <td style="font-size:12px;font-weight:bold;color:{pm_color};padding:5px 12px;width:50px" colspan="2" data-val="{pm_name}"><span class="pmv-caret">▶</span> {pm_name}</td>
           <td style="font-size:13px;font-family:monospace;font-weight:bold;color:#94a3b8;text-align:right;width:58px" data-val="{dv(pm_sigma)}">{sig_s_pm}</td>
           <td style="font-size:10px;font-family:monospace;color:{dexp_c};text-align:right;width:48px" data-val="{dv(dexp_raw_pm)}">{dexp_s}%</td>
           <td style="font-size:12px;font-family:monospace;color:{vc};text-align:right;width:58px" data-val="{pm_var:.6f}">{pm_var:.1f}</td>
@@ -2137,7 +2137,14 @@ function setMacroView(v) {
 }
 function toggleDrillPM(id) {
     var row = document.getElementById(id);
-    if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+    if (!row) return;
+    var opening = row.style.display === 'none';
+    row.style.display = opening ? '' : 'none';
+    var parent = row.previousElementSibling;
+    if (parent) {
+        var caret = parent.querySelector('.pmv-caret');
+        if (caret) caret.textContent = opening ? '▼' : '▶';
+    }
 }
 </script>"""
 

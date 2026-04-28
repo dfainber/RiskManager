@@ -252,13 +252,13 @@ def build_vol_regime_section(fund_short: str, vol_regime_map: dict) -> str:
         # Parent fund row = pinned, never sorts away. Children = hidden by default,
         # toggled via the ▶ caret in the parent.
         if is_fund:
-            caret = f'<span class="vr-caret" data-fs="{fund_short}" style="cursor:pointer;user-select:none;color:var(--accent-2);font-weight:700;margin-right:4px">▶</span>'
+            caret = f'<span class="vr-caret" data-fs="{fund_short}" style="cursor:pointer;user-select:none;color:var(--accent-2);font-weight:700;margin-right:4px">▼</span>'
             row_cls = 'metric-row vr-row vr-fund'
             row_attr = f' data-pinned="1" data-fs="{fund_short}"'
         else:
             caret = ""
             row_cls = 'metric-row vr-row vr-book'
-            row_attr = f' data-parent="{fund_short}" style="display:none"'
+            row_attr = f' data-parent="{fund_short}"'
 
         if not r:
             rows += (
@@ -768,13 +768,24 @@ def _build_forward_table(fund_short: str, dist_map: dict, window_days: int = 1) 
       </div>"""
 
 
-def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
+def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame],
+                               df_pm_book_pnl: pd.DataFrame | None = None) -> str:
     """Modal with month-by-month PnL + carry evolution per PM + overrides editor.
-       Triggered by a button in the Risk Budget Monitor card head."""
+       Triggered by a button in the Risk Budget Monitor card head.
+       df_pm_book_pnl: optional (mes, LIVRO, BOOK, pnl_mes_bps) — when present, each
+       month row becomes expandable to show per-BOOK breakdown of that month's PnL."""
     PM_ORDER  = ["CI", "LF", "JD", "RJ"]
     PM_LABELS = {"CI": "CI (Comitê)", "LF": "Luiz Felipe", "JD": "Joca Dib",
                  "RJ": "Rodrigo Jafet"}
     LIVRO_OF  = {"CI": "CI", "LF": "Macro_LF", "JD": "Macro_JD", "RJ": "Macro_RJ"}
+
+    # Index BOOK breakdown by (livro, mes) → list of (book, pnl) sorted by |pnl| desc.
+    book_idx: dict[tuple[str, pd.Timestamp], list[tuple[str, float]]] = {}
+    if df_pm_book_pnl is not None and not df_pm_book_pnl.empty:
+        for (livro, mes), sub in df_pm_book_pnl.groupby(["LIVRO", "mes"]):
+            items = [(str(r.BOOK), float(r.pnl_mes_bps)) for r in sub.itertuples(index=False)]
+            items.sort(key=lambda x: -abs(x[1]))
+            book_idx[(livro, pd.Timestamp(mes).normalize())] = items
 
     # Overrides ativos (para exibir no sub-tab Overrides)
     active_overrides = _load_risk_budget_overrides()
@@ -813,7 +824,8 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
             f'<button class="pa-tgl {active_cls}" data-stop-pm="{pm}" '
             f'onclick="selectStopPm(this,\'{pm}\')">{PM_LABELS[pm]}</button>'
         )
-        # Build rows — month-by-month
+        # Build rows — month-by-month (with optional BOOK drill)
+        livro_for_pm = LIVRO_OF[pm]
         rows_html = ""
         for r in hist.itertuples(index=False):
             mes_lbl  = r.mes.strftime("%b/%y")
@@ -826,16 +838,53 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
             pnl_c = "var(--up)" if pnl >= 0 else "var(--down)"
             ytd_c = "var(--up)" if ytd >= 0 else "var(--down)"
             dc_c  = "var(--up)" if delta_c > 0.1 else ("var(--down)" if delta_c < -0.1 else "var(--muted)")
+
+            mes_key = pd.Timestamp(r.mes).normalize()
+            books = book_idx.get((livro_for_pm, mes_key), [])
+            row_id = f"sh-{pm}-{mes_key.strftime('%Y%m')}"
+            if books:
+                caret = (f'<span class="sh-caret" style="cursor:pointer;color:var(--accent-2);'
+                         f'font-weight:700;margin-right:4px;user-select:none">▶</span>')
+                mes_cell = (f'<td style="padding:5px 8px;cursor:pointer" '
+                            f'onclick="toggleStopHistRow(\'{row_id}\', this)">'
+                            f'{caret}{mes_lbl}</td>')
+            else:
+                mes_cell = f'<td style="padding:5px 8px;color:var(--muted)">{mes_lbl}</td>'
             rows_html += (
                 '<tr>'
-                f'<td style="padding:5px 8px">{mes_lbl}</td>'
-                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{pnl_c}">{pnl:+.1f}</td>'
-                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{ytd_c}">{ytd:+.1f}</td>'
-                f'<td class="mono" style="text-align:right;padding:5px 8px;color:var(--muted)">{base:.0f}</td>'
-                f'<td class="mono" style="text-align:right;padding:5px 8px;color:{dc_c}">{delta_c:+.1f}</td>'
-                f'<td class="mono" style="text-align:right;padding:5px 8px;font-weight:700">{budget:.1f}</td>'
+                + mes_cell
+                + f'<td class="mono" style="text-align:right;padding:5px 8px;color:{pnl_c}">{pnl:+.1f}</td>'
+                + f'<td class="mono" style="text-align:right;padding:5px 8px;color:{ytd_c}">{ytd:+.1f}</td>'
+                + f'<td class="mono" style="text-align:right;padding:5px 8px;color:var(--muted)">{base:.0f}</td>'
+                + f'<td class="mono" style="text-align:right;padding:5px 8px;color:{dc_c}">{delta_c:+.1f}</td>'
+                + f'<td class="mono" style="text-align:right;padding:5px 8px;font-weight:700">{budget:.1f}</td>'
                 '</tr>'
             )
+
+            if books:
+                # Drill child row — book × pnl, sorted by |pnl| desc, sums to month pnl.
+                book_rows = ""
+                for bk, bpnl in books:
+                    bc = "var(--up)" if bpnl >= 0 else "var(--down)"
+                    book_rows += (
+                        f'<tr>'
+                        f'<td style="padding:3px 8px 3px 28px;font-size:11px;color:var(--muted)">{bk}</td>'
+                        f'<td class="mono" style="text-align:right;padding:3px 8px;font-size:11px;color:{bc}">{bpnl:+.1f}</td>'
+                        f'<td colspan="4"></td>'
+                        f'</tr>'
+                    )
+                rows_html += (
+                    f'<tr id="{row_id}" style="display:none;background:rgba(0,0,0,0.18)">'
+                    f'<td colspan="6" style="padding:0">'
+                    f'<table style="width:100%;border-collapse:collapse">'
+                    f'<thead><tr>'
+                    f'<th style="text-align:left;padding:4px 28px;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Book</th>'
+                    f'<th style="text-align:right;padding:4px 8px;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">PnL (bps)</th>'
+                    f'<th colspan="4"></th>'
+                    f'</tr></thead>'
+                    f'<tbody>{book_rows}</tbody>'
+                    f'</table></td></tr>'
+                )
         display_style = "" if pm == first_pm else 'style="display:none"'
         tables_html += (
             f'<div class="stop-pm-view" data-stop-pm="{pm}" {display_style}>'
@@ -992,23 +1041,33 @@ def _build_stop_history_modal(stop_history: dict[str, pd.DataFrame]) -> str:
         <div class="stop-modal-body">{tables_html}{overrides_view}</div>
         <div class="bar-legend" style="margin-top:14px">
           <b>Base</b>: stop fixo por mandato (63 bps p/ PMs · 233 bps CI hard stop).
-          <b>Δ Carry</b>: ajuste em cima da base — negativo = base erodida por perda anterior; positivo só quando YTD cruza de negativo pra positivo (bonus).
+          <b>Δ Carry</b>: ajuste em cima da base — positivo = bônus pelo ganho do mês anterior; negativo = base erodida por perda anterior.
           <b>Budget total</b> = Base + Δ Carry.<br>
-          <b>Regras de carry (novo, em vigor):</b>
-          (1) <b>pnl negativo</b> → consome 50% do budget atual (até o valor do budget) + 100% do excedente;
-              novo budget = budget atual − consumido.
-          (2) <b>pnl positivo</b> → reseta a 63 (carry acumulado do mês anterior é perdido).
-          (3) <b>YTD cruza 0 neg→pos</b> → bonus = 50% × (YTD_após que ficou positivo). Ex: YTD −10 + ganho 18 → budget = 63 + 0.5·8 = 67.
-          (4) <b>Cap semestral</b>: se STOP_SEM − |YTD| &lt; budget monthly, usa o semestral (mais apertado).
-          YTD reseta em janeiro. CI não tem carry (hard stop fixo 233 bps).
+          <b>Regras de carry (em vigor):</b>
+          (1) <b>pnl positivo</b> → novo budget = 63 + 50% × ganho. Ex: ganho +60 → budget = 63 + 30 = 93.
+          (2) <b>pnl negativo</b> → 3 camadas de penalty pro próximo mês:
+              <span style="color:var(--up)">extra (acima de 63) = 25%</span> ·
+              <span style="color:var(--warn)">base (até 63) = 50%</span> ·
+              <span style="color:var(--down)">excedente (acima de B_t) = 100%</span>.
+              Novo budget = <code>max(0, min(B_t, 63) − penalty)</code>. Carry extra não consumido evapora ("use it or lose it").
+              Ex: B=88, perda=60 → 25%·25 + 50%·35 = 23.75 → 63−23.75 = <b>39.25</b>.
+          (3) <b>Reset anual</b>: Janeiro reseta budget=63 (PMs) ou 233 (CI) e YTD=0, independente do carry de Dez.
+          (4) <b>Cap semestral</b>: se STOP_SEM − |YTD| &lt; budget mensal, usa o semestral (mais apertado).
+          (5) <b>Override</b>: entry no <code>risk_budget_overrides.json</code> substitui o budget calculado naquele mês.
+          CI não tem carry (hard stop fixo 233 bps; soft mark 150 bps apenas alerta).
         </div>
       </div>
       {ovr_script}
     </div>"""
 
 
-def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.DataFrame) -> str:
-    """Build the stop monitor HTML section."""
+def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.DataFrame,
+                       df_pm_book_pnl: pd.DataFrame | None = None,
+                       pm_has_position: dict[str, bool] | None = None) -> str:
+    """Build the stop monitor HTML section.
+       df_pm_book_pnl: optional (mes, LIVRO, BOOK, pnl_mes_bps) for modal drill-down.
+       pm_has_position: optional {pm: bool} — when False and PM is in STOP territory,
+       status downgrades from 🔴 STOP to ⚪ FLAT (stopped but no live exposure)."""
     PM_ORDER  = ["CI", "LF", "JD", "RJ"]
     PM_LABELS = {"CI": "CI (Comitê)", "LF": "Luiz Felipe", "JD": "Joca Dib",
                  "RJ": "Rodrigo Jafet"}
@@ -1042,6 +1101,7 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
 
         # Status
         CI_SOFT = 150.0
+        has_pos = True if pm_has_position is None else bool(pm_has_position.get(pm, True))
         if budget == 0:
             status_label = "⚡ GANCHO"
             status_color = "#fb923c"
@@ -1060,6 +1120,10 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
                 status_label, status_color = "🟡 ATENÇÃO", "#facc15"
             else:
                 status_label, status_color = "🟢 OK", "#4ade80"
+        # Downgrade STOP → FLAT when PM has zero live exposure (already closed positions).
+        # Applies to non-CI PMs (CI is a committee with hard cap; semantics differ).
+        if pm != "CI" and not has_pos and status_label == "🔴 STOP":
+            status_label, status_color = "⚪ FLAT", "#94a3b8"
 
         bar = stop_bar_svg(budget, pnl_mtd, bmax, soft_mark=soft_mark if pd.notna(soft_mark) else None)
         spark = make_sparkline(hist.set_index("mes")["budget_abs"], "#60a5fa", width=140)
@@ -1103,7 +1167,7 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
           <td class="spark-cell"><img src="data:image/png;base64,{spark}" height="34"/></td>
         </tr>"""
 
-    modal_html = _build_stop_history_modal(stop_history)
+    modal_html = _build_stop_history_modal(stop_history, df_pm_book_pnl)
     return f"""
     <section class="card">
       <div class="card-head">
@@ -2467,7 +2531,7 @@ def _build_fund_mini_briefing(
         {chips}
       </div>
       <ul class="brief-list">{"".join(bullets)}</ul>
-      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted); line-height:1.5">
+      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted-strong); font-weight:500; line-height:1.5">
         <b>Convenção de juros:</b>
         <span style="color:var(--up);font-weight:700">dado</span> = DV01 &lt; 0 (long bond · ex: NTN-B comprado, long DI1F) ·
         <span style="color:var(--down);font-weight:700">tomado</span> = DV01 &gt; 0 (short bond · ex: DI1F vendido).
@@ -2777,7 +2841,7 @@ def _build_executive_briefing(
         <a href="#" onclick="document.querySelector('[class*=rf-brl-body]')?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Breakdown por Fator</a> ·
         <a href="#" onclick="Array.from(document.querySelectorAll('.card-title')).find(function(x){{return x.textContent.indexOf('Top Posi')===0}})?.closest('.card')?.scrollIntoView({{behavior:'smooth'}});return false">Top Posições</a>
       </div>
-      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted); line-height:1.5">
+      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted-strong); font-weight:500; line-height:1.5">
         <b>Convenção de juros:</b>
         <span style="color:var(--up);font-weight:700">dado</span> = DV01 &lt; 0 (long bond · ex: NTN-B comprado, long DI1F) ·
         <span style="color:var(--down);font-weight:700">tomado</span> = DV01 &gt; 0 (short bond · ex: DI1F vendido).
@@ -2792,13 +2856,18 @@ def carry_step(budget_abs: float, pnl: float, ytd: float) -> tuple[float, bool]:
     """Calcula budget do próximo mês e flag gancho.
 
     Regras:
-      - pnl NEGATIVO: referência = budget atual. 50% até budget (dentro) +
-        100% acima (excedente). Novo budget = budget_atual − consumido.
-        Gancho se resultado ≤ 0.
-      - pnl POSITIVO: reset para STOP_BASE (63), perdendo qualquer carry
-        acumulado do mês anterior.
-      - YTD CROSSOVER (neg → pos dentro do mês): bonus = 50% × (YTD_após > 0).
-        Ex: YTD −10 + pnl +18 → YTD_após +8 → budget = 63 + 0.5·8 = 67.
+      - pnl POSITIVO: novo budget = STOP_BASE + 50% × pnl. Bônus aplicado sempre
+        que o mês fechou ganhando.
+        Ex: pnl +60 → budget = 63 + 0.5·60 = 93.
+
+      - pnl NEGATIVO: 3 camadas de penalty para o mês seguinte.
+        · Extra (B_t > 63 → portion above base): 25% penalty
+        · Base (até 63):                          50% penalty
+        · Excess (acima de B_t):                  100% penalty
+        Próximo budget = max(0, min(B_t, 63) − penalty). Carry extra não usado
+        é "use it or lose it" — não rola pra o mês seguinte.
+        Ex: B=88 (=63+25 extra), perda=60 → 25%·25 + 50%·35 = 23.75 → 63−23.75 = 39.25.
+
       - SEMESTRAL: se STOP_SEM − |YTD_após| < monthly budget, usa o semestral.
 
     Args:
@@ -2808,21 +2877,23 @@ def carry_step(budget_abs: float, pnl: float, ytd: float) -> tuple[float, bool]:
     Returns:
         (next_month_budget, gancho_flag)
     """
-    ytd_before = ytd - pnl   # YTD no começo do mês (antes do pnl)
 
     if pnl >= 0:
-        next_abs = STOP_BASE
-        # Bonus de crossover: só se YTD cruzou de negativo para positivo
-        if ytd_before < 0 and ytd > 0:
-            crossover = ytd          # quanto YTD ficou acima de zero
-            next_abs = STOP_BASE + 0.5 * crossover
+        next_abs = STOP_BASE + 0.5 * pnl
         gancho = False
     else:
         loss = abs(pnl)
-        within = min(loss, budget_abs)            # dentro do budget — 50%
-        excess = max(0.0, loss - budget_abs)      # acima — 100%
-        consumed = within * 0.5 + excess * 1.0
-        next_abs = budget_abs - consumed
+        extra_avail = max(0.0, budget_abs - STOP_BASE)
+        base_avail  = min(budget_abs, STOP_BASE)
+
+        loss_in_extra = min(loss, extra_avail)
+        remaining     = loss - loss_in_extra
+        loss_in_base  = min(remaining, base_avail)
+        remaining    -= loss_in_base
+        loss_excess   = max(0.0, remaining)
+
+        penalty = 0.25 * loss_in_extra + 0.50 * loss_in_base + 1.00 * loss_excess
+        next_abs = max(0.0, min(budget_abs, STOP_BASE) - penalty)
         gancho = next_abs <= 0
         if gancho:
             next_abs = 0.0

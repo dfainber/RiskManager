@@ -12,6 +12,12 @@
       "month":      "2026-04",
       "budget_bps": 63.0,
       "note":       "management override — reset para base"
+    },
+    {
+      "livro":      "Macro_LF",
+      "month":      "2026-04",
+      "budget_bps": 20.0,
+      "note":       "management override — orçamento reduzido"
     }
   ]
 }
