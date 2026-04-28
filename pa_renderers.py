@@ -406,6 +406,32 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
     </div>"""
 
 
+def _apply_fx_split_remap(df: pd.DataFrame) -> pd.DataFrame:
+    """Reagrupa CLASSE='BRLUSD' e CLASSE='FX' em "FX Basis Risk & Carry" antes de
+    construir a árvore PA. Linhas BRLUSD com GRUPO específico (Commodities / RV
+    Intl / RF Intl) ganham GRUPO='FX em <X>' pra preservar drill-down.
+    Demais linhas — unchanged. Total preservado (pura recategorização)."""
+    if df.empty or "CLASSE" not in df.columns:
+        return df
+    out = df.copy()
+    is_brlusd = out["CLASSE"] == "BRLUSD"
+    is_fx     = out["CLASSE"] == "FX"
+    if not (is_brlusd.any() or is_fx.any()):
+        return out
+    # Map GRUPO sub-bucket only for BRLUSD rows (FX cross stays "FX Spot & Futuros")
+    if "GRUPO" in out.columns:
+        grp_map = {
+            "Commodities": "FX em Commodities",
+            "RV Intl":     "FX em RV Intl",
+            "RF Intl":     "FX em RF Intl",
+        }
+        new_grupo = out.loc[is_brlusd, "GRUPO"].map(grp_map).fillna("FX Spot & Futuros")
+        out.loc[is_brlusd, "GRUPO"] = new_grupo
+        out.loc[is_fx,     "GRUPO"] = "FX Spot & Futuros"
+    out.loc[is_brlusd | is_fx, "CLASSE"] = "FX Basis Risk & Carry"
+    return out
+
+
 def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
                            idka_index_ret: dict = None, w_alb: float = None,
                            albatroz_pa_sum: dict = None, ibov: dict = None) -> str:
@@ -413,6 +439,10 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     PA card with hierarchical views (Por Classe / Por Livro).
     For IDKA funds, adds a 3rd view "Por Bench" with bench decomposition
     (Direct α / Via Albatroz / Swap leg / Total vs. IDKA index).
+
+    FX-split sempre aplicado: CLASSE='BRLUSD' e CLASSE='FX' viram
+    "FX Basis Risk & Carry" antes do tree builder. Substitui a árvore canônica
+    pela versão FX-split (decisão 2026-04-28). Para fundos sem FX, no-op.
     """
     pa_key = _FUND_PA_KEY.get(fund_short)
     if pa_key is None or df_pa is None or df_pa.empty:
@@ -420,6 +450,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     df = df_pa[df_pa["FUNDO"] == pa_key].copy()
     if df.empty:
         return ""
+    df = _apply_fx_split_remap(df)
 
     # For IDKAs, the "Por Bench" decomposition is the default active view —
     # it's the most useful lens for a benchmarked RF fund.

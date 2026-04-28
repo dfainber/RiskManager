@@ -374,7 +374,10 @@ _PA_PINNED_BOTTOM = {"Caixa", "Caixa USD", "Taxas e Custos", "Custos", "Caixa & 
 _PA_ORDER_CLASSE = {
     "RF BZ": 10, "RF BZ IPCA": 11, "RF BZ IGP-M": 12, "RV BZ": 13,
     "RF Intl": 20, "RV Intl": 21,
-    "BRLUSD": 30, "FX": 31, "Commodities": 32, "ETF Options": 33,
+    "Commodities": 32, "ETF Options": 33,
+    "FX Basis Risk & Carry": 35,
+    # Legacy keys kept p/ retrocompat caso o remap não esteja ativo
+    "BRLUSD": 30, "FX": 31,
     "Credito": 50, "Crédito": 50, "CRÉDITO": 50, "CredEstr": 51,
 }
 _PA_ORDER_LIVRO = {
