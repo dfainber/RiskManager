@@ -434,7 +434,8 @@ def _apply_fx_split_remap(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
                            idka_index_ret: dict = None, w_alb: float = None,
-                           albatroz_pa_sum: dict = None, ibov: dict = None) -> str:
+                           albatroz_pa_sum: dict = None, ibov: dict = None,
+                           pmovers_trigger: str = "") -> str:
     """
     PA card with hierarchical views (Por Classe / Por Livro).
     For IDKA funds, adds a 3rd view "Por Bench" with bench decomposition
@@ -502,6 +503,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
       <div class="card-head">
         <span class="card-title">Performance Attribution</span>
         <span class="card-sub">— {fund_short} · alpha (%) vs. benchmark · click p/ drill-down</span>
+        {pmovers_trigger}
         <div class="pa-toolbar">
           <input class="pa-search" type="search" placeholder="🔍 buscar..." oninput="filterPa(this)" title="Filtrar por nome (busca parcial)"/>
           <button class="pa-btn" onclick="expandAllPa(this)"    title="Expandir tudo">⤢ Expandir</button>

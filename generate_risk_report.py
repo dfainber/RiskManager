@@ -55,6 +55,13 @@ from vardod_renderers import (
     VARDOD_CSS,
     VARDOD_JS,
 )
+from pmovers_renderers import (
+    build_pmovers_modal_scaffold,
+    build_pmovers_data_payload,
+    build_pmovers_trigger,
+    PMOVERS_CSS,
+    PMOVERS_JS,
+)
 from fund_renderers import (
     build_albatroz_risk_budget,
     build_single_names_section,
@@ -857,6 +864,11 @@ def build_html(d: ReportData) -> str:
     if sn_evo:
         sections.append(("EVOLUTION", "single-name", sn_evo))
 
+    # Product-level top movers payload (per-fund popup from PA card) — built
+    # before the PA loop so each card can render its trigger button.
+    pmovers_data_script, _pmovers_funds = build_pmovers_data_payload(df_pa)
+    pmovers_modal_html = build_pmovers_modal_scaffold()
+
     # Performance Attribution — one card per fund (MACRO, QUANT, EVOLUTION, MACRO_Q, ALBATROZ)
     if df_pa is not None and not df_pa.empty:
         cdi_row = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
@@ -880,6 +892,7 @@ def build_html(d: ReportData) -> str:
                 short, df_pa, cdi_row,
                 idka_index_ret=idx_ret, w_alb=w_alb,
                 albatroz_pa_sum=albatroz_pa_sum, ibov=ibov,
+                pmovers_trigger=build_pmovers_trigger(short, has_data=(short in _pmovers_funds)),
             )
             if pa_html:
                 sections.append((short, "performance", pa_html))
@@ -968,6 +981,7 @@ def build_html(d: ReportData) -> str:
         cdi_row_fr = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
         pa_hier_html = build_pa_section_hier(
             "FRONTIER", df_pa, cdi_row_fr, ibov=ibov,
+            pmovers_trigger=build_pmovers_trigger("FRONTIER", has_data=("FRONTIER" in _pmovers_funds)),
         ) if (df_pa is not None and not df_pa.empty) else ""
         frontier_html = build_frontier_lo_section(
             df_frontier, DATA_STR,
@@ -2553,6 +2567,7 @@ def build_html(d: ReportData) -> str:
   }}
 </style>
 {VARDOD_CSS}
+{PMOVERS_CSS}
 <script>
 (function() {{
   function getBRT() {{
@@ -4561,6 +4576,10 @@ window.refreshRptPnl = function() {{
 {vardod_modal_html}
 {vardod_data_script}
 {VARDOD_JS}
+
+{pmovers_modal_html}
+{pmovers_data_script}
+{PMOVERS_JS}
 </body>
 </html>"""
     return html
