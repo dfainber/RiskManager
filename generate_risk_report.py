@@ -148,6 +148,8 @@ class ReportData:
     # ALBATROZ
     df_alb_expo:      Optional[pd.DataFrame]    = None
     alb_nav:          Optional[float]           = None
+    df_baltra_expo:   Optional[pd.DataFrame]    = None
+    baltra_nav:       Optional[float]           = None
     # FRONTIER
     df_frontier:      Optional[pd.DataFrame]    = None
     frontier_bvar:    Optional[dict]            = None
@@ -480,6 +482,7 @@ def build_html(d: ReportData) -> str:
      df_quant_sn, quant_nav, quant_legs,
      df_evo_sn, evo_nav, evo_legs, df_evo_direct,
      df_alb_expo, alb_nav,
+     df_baltra_expo, baltra_nav,
      df_frontier, frontier_bvar, frontier_bvar_d1, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
      df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
      position_changes, dist_map, dist_map_prev, dist_actuals,
@@ -492,6 +495,7 @@ def build_html(d: ReportData) -> str:
         d.df_quant_sn, d.quant_nav, d.quant_legs,
         d.df_evo_sn, d.evo_nav, d.evo_legs, d.df_evo_direct,
         d.df_alb_expo, d.alb_nav,
+        d.df_baltra_expo, d.baltra_nav,
         d.df_frontier, d.frontier_bvar, d.frontier_bvar_d1, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
         d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
         d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
@@ -863,9 +867,15 @@ def build_html(d: ReportData) -> str:
 
     # ALBATROZ — RF exposure card (under the "exposure" report tab)
     if df_alb_expo is not None and not df_alb_expo.empty and alb_nav:
-        alb_html = build_albatroz_exposure(df_alb_expo, alb_nav)
+        alb_html = build_albatroz_exposure(df_alb_expo, alb_nav, fund_label="ALBATROZ")
         if alb_html:
             sections.append(("ALBATROZ", "exposure", alb_html))
+
+    # BALTRA — RF exposure card (same shape as ALBATROZ, CDI rows excluded)
+    if df_baltra_expo is not None and not df_baltra_expo.empty and baltra_nav:
+        baltra_html = build_albatroz_exposure(df_baltra_expo, baltra_nav, fund_label="BALTRA")
+        if baltra_html:
+            sections.append(("BALTRA", "exposure", baltra_html))
 
     # QUANT — exposure card (by factor + by livro × factor)
     if df_quant_expo is not None and not df_quant_expo.empty and quant_expo_nav:
@@ -898,6 +908,8 @@ def build_html(d: ReportData) -> str:
         "IDKA_3Y":   {"desk": "IDKA IPCA 3Y FIRF",              "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
         "IDKA_10Y":  {"desk": "IDKA IPCA 10Y FIRF",             "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
         "ALBATROZ":  {"desk": "GALAPAGOS ALBATROZ FIRF LP",     "bench_dur": 0.0,  "bench_label": "CDI"},
+        "BALTRA":    {"desk": "Galapagos Baltra Icatu Qualif Prev FIM CP",
+                                                                 "bench_dur": 0.0,  "bench_label": "IPCA+"},
         "MACRO":     {"desk": "Galapagos Macro FIM",            "bench_dur": 0.0,  "bench_label": "—"},
         "EVOLUTION": {"desk": "Galapagos Evolution FIC FIM CP", "bench_dur": 0.0,  "bench_label": "—"},
     }
@@ -1985,6 +1997,8 @@ def build_html(d: ReportData) -> str:
   .dist-btn:hover, .dist-bench-btn:hover {{ color:var(--text); }}
   .dist-btn.active, .dist-bench-btn.active {{ color:#fff; background:linear-gradient(180deg,var(--accent-2),var(--accent)); }}
   .dist-bench-btn:disabled {{ opacity:.35; cursor:default; }}
+  .dist-btn.dist-btn-disabled {{ color:var(--muted); opacity:.35; cursor:not-allowed; background:transparent !important; }}
+  .dist-btn.dist-btn-disabled:hover {{ color:var(--muted); }}
   .dist-view {{ margin-top:10px; }}
   .dist-top-modal {{ position:fixed; top:0; left:0; right:0; bottom:0; z-index:9998; }}
   .dist-top-backdrop {{ position:absolute; inset:0; background:rgba(0,0,0,0.55); }}
@@ -2872,10 +2886,16 @@ def build_html(d: ReportData) -> str:
     card.querySelectorAll('.dist-top21-btn').forEach(function(b) {{
       b.style.display = (win === '21') ? '' : 'none';
     }});
+    // Gray-out the Backward button on 21d (combo not relevant — overlay omitted)
+    card.querySelectorAll('.dist-btn[data-mode="backward"]').forEach(function(b) {{
+      b.classList.toggle('dist-btn-disabled', win === '21');
+    }});
   }}
   window.setDistMode = function(cardId, mode) {{
     var card = document.getElementById(cardId);
     if (!card) return;
+    // Block backward when window=21
+    if (mode === 'backward' && (card.dataset.activeWindow || '1') === '21') return;
     card.dataset.activeMode = mode;
     card.querySelectorAll('.dist-btn[data-mode]').forEach(function(b) {{
       b.classList.toggle('active', b.dataset.mode === mode);
@@ -2918,6 +2938,9 @@ def build_html(d: ReportData) -> str:
     card.querySelectorAll('[data-bench-section]').forEach(function(s) {{
       s.style.display = (s.dataset.benchSection === bench) ? '' : 'none';
     }});
+    // Re-apply mode/window visibility so views inside the new bench section
+    // show the right Backward/Forward × 1d/21d combo (otherwise all 4 stay hidden).
+    _applyDistVisibility(card);
   }};
   // ── PDF export ─────────────────────────────────────────────────────────
   // mode === 'current' → imprime só o que está visível (respeita mode/fund)
@@ -4467,10 +4490,13 @@ def main():  # noqa: C901
         fut_evo_var_d1    = ex.submit(fetch_evolution_var,      d1_str)
         fut_evo_pnl_prod  = ex.submit(fetch_evolution_pnl_products, DATA_STR)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
+        fut_baltra     = ex.submit(fetch_albatroz_exposure, DATA_STR,
+                                   "Galapagos Baltra Icatu Qualif Prev FIM CP")
         fut_rf_expo = {
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
             "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
             "ALBATROZ":  ex.submit(fetch_rf_exposure_map, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR),
+            "BALTRA":    ex.submit(fetch_rf_exposure_map, "Galapagos Baltra Icatu Qualif Prev FIM CP", DATA_STR),
             "MACRO":     ex.submit(fetch_rf_exposure_map, "Galapagos Macro FIM", DATA_STR),
             "EVOLUTION": ex.submit(fetch_rf_exposure_map, "Galapagos Evolution FIC FIM CP",
                                    DATA_STR, True),
@@ -4647,6 +4673,12 @@ def main():  # noqa: C901
         df_alb_expo, alb_nav = None, None
 
     try:
+        df_baltra_expo, baltra_nav = fut_baltra.result()
+    except Exception as e:
+        print(f"  BALTRA exposure fetch failed ({e})")
+        df_baltra_expo, baltra_nav = None, None
+
+    try:
         df_quant_expo, quant_expo_nav = fut_quant_expo.result()
     except Exception as e:
         print(f"  QUANT exposure fetch failed ({e})")
@@ -4815,6 +4847,7 @@ def main():  # noqa: C901
         df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav, df_evo_expo_d1=df_evo_expo_d1,
         df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1, df_evo_pnl_prod=df_evo_pnl_prod,
         df_alb_expo=df_alb_expo, alb_nav=alb_nav,
+        df_baltra_expo=df_baltra_expo, baltra_nav=baltra_nav,
         df_frontier=df_frontier, frontier_bvar=frontier_bvar, frontier_bvar_d1=frontier_bvar_d1,
         df_frontier_ibov=df_frontier_ibov, df_frontier_smll=df_frontier_smll,
         df_frontier_sectors=df_frontier_sectors,

@@ -1016,14 +1016,17 @@ def fetch_quant_var(date_str: str = DATA_STR) -> pd.DataFrame:
     return df
 
 
-def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
+def fetch_albatroz_exposure(date_str: str = DATA_STR,
+                            desk: str = "GALAPAGOS ALBATROZ FIRF LP") -> tuple:
     """
-    RF exposure snapshot for ALBATROZ — position-level from LOTE_PRODUCT_EXPO.
+    RF exposure snapshot for an RF desk — position-level from LOTE_PRODUCT_EXPO.
     Returns (df, nav) where df columns are:
       BOOK, PRODUCT_CLASS, PRODUCT, delta_brl, mod_dur (years), dv01_brl (R$/bp), indexador
     DV01 ≈ |DELTA × MOD_DURATION × 0.0001|.
+
+    Default desk = ALBATROZ. Pass `desk=...` to reuse for BALTRA / IDKAs.
     """
-    nav = _latest_nav("GALAPAGOS ALBATROZ FIRF LP", date_str)
+    nav = _latest_nav(desk, date_str)
     if nav is None:
         return None, None
 
@@ -1033,8 +1036,8 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR) -> tuple:
                MAX("MOD_DURATION")                                          AS mod_dur,
                SUM("DELTA" * COALESCE("MOD_DURATION", 0) * 0.0001)          AS dv01_brl
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-        WHERE "TRADING_DESK"              = 'GALAPAGOS ALBATROZ FIRF LP'
-          AND "TRADING_DESK_SHARE_SOURCE" = 'GALAPAGOS ALBATROZ FIRF LP'
+        WHERE "TRADING_DESK"              = '{desk}'
+          AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
           AND "VAL_DATE"                  = DATE '{date_str}'
           AND "DELTA" <> 0
         GROUP BY "BOOK", "PRODUCT_CLASS", "PRODUCT"

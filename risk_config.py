@@ -109,7 +109,7 @@ _FUND_PEERS_GROUP: dict[str, str | None] = {
     "MACRO":     "MACRO",
     "QUANT":     "MACRO",
     "EVOLUTION": "EVOLUTION",
-    "MACRO_Q":   "EVOLUTION",
+    "MACRO_Q":   "GLOBAL",
     "ALBATROZ":  "ALBATROZ",
     "BALTRA":    None,
     "FRONTIER":  "FRONTIER",

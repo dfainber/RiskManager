@@ -508,20 +508,25 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
             return (f'<button class="{cls}" data-bench="{bench}"'
                     f' onclick="setDistBench(\'{dck_id}\',\'{bench}\')"{dis}>{label}</button>')
 
+        # Default bench section: Comparação when available (IDKAs), else vs Benchmark.
+        _cmp_default = bool(has_cmp)
+
         bench_toggle_html = (
             f'<div class="dist-toggle" style="margin-right:6px">'
-            + _bench_btn("benchmark",  "vs Benchmark",  active=True)
+            + _bench_btn("benchmark",  "vs Benchmark",  active=not _cmp_default)
             + _bench_btn("replication","vs Replication", disabled=not has_rep)
-            + _bench_btn("comparison", "Comparação",     disabled=not has_cmp)
+            + _bench_btn("comparison", "Comparação",    active=_cmp_default,
+                          disabled=not has_cmp)
             + '</div>'
         )
 
+        _bench_hidden = ' style="display:none"' if _cmp_default else ''
         sections_html = (
-            f'<div data-bench-section="benchmark">'
-            f'{_view("backward","1",  bw252 or _EMPTY_BW, True)}'
-            f'{_view("forward","1",   fw252 or _EMPTY_FW, True)}'
-            f'{_view("backward","21", bw21  or _EMPTY_BW, True)}'
-            f'{_view("forward","21",  fw21  or _EMPTY_FW, True)}'
+            f'<div data-bench-section="benchmark"{_bench_hidden}>'
+            f'{_view("backward","1",  bw252 or _EMPTY_BW, not _cmp_default)}'
+            f'{_view("forward","1",   fw252 or _EMPTY_FW, not _cmp_default)}'
+            f'{_view("backward","21", bw21  or _EMPTY_BW, not _cmp_default)}'
+            f'{_view("forward","21",  fw21  or _EMPTY_FW, not _cmp_default)}'
             f'</div>'
         )
         if has_rep:
@@ -543,11 +548,11 @@ def build_distribution_card(fund_short: str, dist_map_now: dict, dist_map_prev: 
                 '</div>'
             )
             sections_html += (
-                f'<div data-bench-section="comparison" style="display:none">'
-                f'{_view("backward","1",  (bw_cmp_1  or _EMPTY_BW)+_cmp_note, False)}'
-                f'{_view("forward","1",   (fw_cmp_1  or _EMPTY_FW)+_cmp_note, False)}'
-                f'{_view("backward","21", (bw_cmp_21 or _EMPTY_BW)+_cmp_note, False)}'
-                f'{_view("forward","21",  (fw_cmp_21 or _EMPTY_FW)+_cmp_note, False)}'
+                f'<div data-bench-section="comparison">'
+                f'{_view("backward","1",  (bw_cmp_1  or _EMPTY_BW)+_cmp_note, True)}'
+                f'{_view("forward","1",   (fw_cmp_1  or _EMPTY_FW)+_cmp_note, True)}'
+                f'{_view("backward","21", (bw_cmp_21 or _EMPTY_BW)+_cmp_note, True)}'
+                f'{_view("forward","21",  (fw_cmp_21 or _EMPTY_FW)+_cmp_note, True)}'
                 f'</div>'
             )
         # Modal: 5 worst + 5 best 21d non-overlapping windows. 3 sections by series:
@@ -661,15 +666,14 @@ def _build_backward_table(fund_short: str, dist_map_prev: dict, actuals: dict,
         tag, tag_c = _kind_tag(kind)
 
         if kind == "fund":
-            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▶</span> '
+            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▼</span> '
             row_attrs = (f'class="metric-row dist-row-fund" data-dist-kind="fund" '
                          f'data-dist-key="{fund_short}" '
                          f'onclick="toggleDistChildren(this)" style="cursor:pointer"')
         else:
             caret = ''
             row_attrs = (f'class="metric-row dist-row-child" '
-                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}" '
-                         f'style="display:none"')
+                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}"')
 
         rows += f"""
         <tr {row_attrs}>
@@ -721,15 +725,14 @@ def _build_forward_table(fund_short: str, dist_map: dict, window_days: int = 1) 
             continue
         tag, tag_c = _kind_tag(kind)
         if kind == "fund":
-            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▶</span> '
+            caret = f'<span class="dist-caret" data-dist-parent="{fund_short}">▼</span> '
             row_attrs = (f'class="metric-row dist-row-fund" data-dist-kind="fund" '
                          f'data-dist-key="{fund_short}" '
                          f'onclick="toggleDistChildren(this)" style="cursor:pointer"')
         else:
             caret = ''
             row_attrs = (f'class="metric-row dist-row-child" '
-                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}" '
-                         f'style="display:none"')
+                         f'data-dist-kind="{kind}" data-dist-parent="{fund_short}"')
         rows += f"""
         <tr {row_attrs}>
           <td class="dist-tag" style="color:{tag_c}">{tag}</td>

@@ -1130,7 +1130,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
             f'onclick="toggleIdkaFac(this,\'{f}\')">'
             f'<td style="padding:6px 8px" colspan="2">'
             f'<span class="idka-fac-caret" style="color:var(--accent-2);margin-right:5px;'
-            f'display:inline-block;transition:transform .15s">▼</span>'
+            f'display:inline-block;transition:transform .15s">▶</span>'
             f'<b>{FACTOR_LABEL[f]}</b> '
             f'<span style="color:var(--muted);font-weight:400;font-size:11px">· {n_pos} pos</span></td>'
             f'<td></td><td></td>'
@@ -1152,7 +1152,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
                     col = "var(--up)" if p >= 0 else "var(--down)"
                     ae_cell = f'<td class="mono" style="text-align:right;color:{col}">{p:+.1f}%</td>'
             body += (
-                f'<tr class="idka-pos-row" data-idka-child="{f}" style="font-size:11.5px">'
+                f'<tr class="idka-pos-row" data-idka-child="{f}" style="display:none;font-size:11.5px">'
                 f'<td style="padding:4px 20px;color:var(--muted)">{r.PRODUCT}</td>'
                 f'<td class="mono" style="color:var(--muted);font-size:10.5px">{r.PRODUCT_CLASS}</td>'
                 + _dur_cell(r.mod_dur, r.yrs_to_mat)
@@ -1387,14 +1387,20 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     bar_w_abs = (band_w - inter_bucket) / 3   # absoluto: 3 bars flush
     bar_w_rel = (band_w - inter_bucket) / 2   # relativo: 2 bars flush
 
-    # Y scale — fit both absoluto and relativo series
+    # Y scale — fit both absoluto and relativo series.
+    # If positions are tiny (max abs < 0.5 yr), snap to a fixed ±0.5 yr window
+    # so the chart actually shows the movements instead of looking empty.
     all_vals = (fund_real_b + fund_nom_b + bench_real_b + bench_nom_b +
                 rel_real_b + rel_nom_b +
                 cum_real + cum_nom + bench_cum_real + rel_cum_real + rel_cum_nom)
-    y_max = max([abs(v) for v in all_vals] + [1.0]) * 1.15
-    y_min = min([0.0] + [v for v in all_vals]) * 1.15
-    if y_min >= 0:
-        y_min = -y_max * 0.10
+    max_abs = max([abs(v) for v in all_vals] + [0.0])
+    if max_abs < 0.5:
+        y_max, y_min = 0.5, -0.5
+    else:
+        y_max = max_abs * 1.15
+        y_min = min([0.0] + [v for v in all_vals]) * 1.15
+        if y_min >= 0:
+            y_min = -y_max * 0.10
 
     def y_scale(v):
         return pad_t + plot_h * (1.0 - (v - y_min) / (y_max - y_min))
@@ -1638,9 +1644,21 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     </section>"""
 
 
-def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
-    """RF exposure card for ALBATROZ — summary by indexador + top positions by |DV01|."""
+def build_albatroz_exposure(df: pd.DataFrame, nav: float,
+                            fund_label: str = "ALBATROZ") -> str:
+    """RF exposure card for an RF fund — summary by indexador + top positions by |DV01|.
+
+    CDI rows are excluded from the breakdown and totals — LFTs are floating-rate
+    (duration ≈ 0) and only inflate the gross / net %NAV columns without
+    representing actual rate risk. Surfaced via Σ DV01 elsewhere if needed.
+
+    Default label = ALBATROZ; pass `fund_label="BALTRA"` to reuse for BALTRA.
+    """
     if df is None or df.empty or not nav:
+        return ""
+
+    df = df[df["indexador"] != "CDI"].copy()
+    if df.empty:
         return ""
 
     # Duration-weighted aggregate (only rows with non-zero delta contribute)
@@ -1650,7 +1668,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
     total_delta = df["delta_brl"].sum()
 
     # ── By Indexador summary ───────────────────────────────────────────
-    idx_order = ["Pré", "IPCA", "IGP-M", "CDI", "Outros"]
+    idx_order = ["Pré", "IPCA", "IGP-M", "Outros"]
     by_idx = df.groupby("indexador").agg(
         delta_brl=("delta_brl", "sum"),
         dv01_brl=("dv01_brl", "sum"),
@@ -1750,7 +1768,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float) -> str:
     <section class="card">
       <div class="card-head">
         <span class="card-title">Exposure RF</span>
-        <span class="card-sub">— ALBATROZ · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {dv01_fmt}k R$/bp</span>
+        <span class="card-sub">— {fund_label} · NAV R$ {nav_fmt}M · Duration agregada {dur_w:.2f}y · DV01 {dv01_fmt}k R$/bp</span>
       </div>
 
       <div class="sn-inline-stats mono" style="margin-bottom:8px; display:flex; align-items:center; gap:10px">

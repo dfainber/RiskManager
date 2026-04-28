@@ -1,0 +1,335 @@
+RISK MONITOR — COMO CADA CARD/TABELA E EXIBIDA POR DEFAULT
+============================================================
+
+Estado atual do relatorio (data/morning-calls/2026-04-24_risk_monitor.html).
+Quando voce abre a pagina, cada card tem um estado inicial. Este txt documenta
+qual e esse estado para cada tabela/sub-tab/drill-down em cada aba do relatorio.
+
+Legenda:
+  [view]      = sub-tab ativa por default (qual botao do toggle aparece azul)
+  [drill]     = profundidade de expansao inicial das linhas hierarquicas
+  [scope]     = filtros/escopo aplicados de saida
+
+
+==============================================================
+NAVEGACAO TOP-LEVEL (selectMode)
+==============================================================
+Default ao abrir o relatorio:  mode = Summary
+Modes disponiveis:  Summary | Por Fundo | Por Report | Qualidade | P&L | Peers | Markets
+
+
+==============================================================
+1. SUMMARY (default ao abrir)
+==============================================================
+1.1 Briefing Executivo
+    [view]  texto narrativo, todas as secoes visiveis
+
+1.2 Status consolidado
+    [view]  tabela flat (sem drill)
+    [scope] todos os fundos da casa, alpha do dia em bps
+
+1.3 Risco VaR e BVaR por fundo
+    [view]  tabela flat — cada linha clicavel (selectFund)
+    [scope] VaR 95% 1d absoluto + vs benchmark, todos os fundos
+
+1.4 Breakdown por Fator
+    [view]  Liquido (toggle: Liquido | Bruto)
+    [scope] exposicao por fator x fundo
+
+1.5 Vol Regime (consolidado)
+    [drill] level-0 (so linha do fundo) — clicar expande livro/RF
+    [scope] vol 21d / vol janela total HS, todos os fundos
+
+1.6 Comments — Outliers do Dia
+    [view]  cards lado a lado por fundo
+    [scope] produtos com |z| >= 2sigma (vs 90d) e |contrib| >= 3 bps · VaR Delta >= 5 bps vs D-1
+    [drill] none (lista flat por fundo)
+
+1.7 Top Movers — DIA (consolidado)
+    [view]  Por Livro (toggle: Por Livro | Por Classe | Por Classe (sem FX))
+    [scope] alpha do dia, drop < 0.5 bps, Taxas/Custos excluidos
+    [drill] none
+
+1.8 Mudancas Significativas (consolidado)
+    [view]  secao MACRO PM x fator no topo + cards dos demais fundos
+    [scope] exposicao D-0 vs D-1, |Delta| >= 0.30 pp
+    [drill] none
+
+1.9 Top Posicoes — consolidado
+    [view]  tabela hierarquica (Factor → Instrumento → Fundo)
+    [drill] level-0 (so o Factor visivel) — clicar expande
+    [scope] top 15 posicoes da casa por |exposure|, com via_albatroz desambiguado
+
+
+==============================================================
+2. POR FUNDO (selectFund)
+==============================================================
+Default ao entrar:  fundo = MACRO  (primeiro de FUND_ORDER)
+
+
+------------------------------------------------------------
+2.1 MACRO (12 cards)
+------------------------------------------------------------
+1.  Performance Attribution
+    [view]  Por Classe (toggle: Por Classe | Por Livro)
+    [drill] level-0 (so CLASSE visivel)
+    [sort]  YTD desc (default DFS)
+
+2.  Exposicao — MACRO
+    [view]  tabela por fator x PM
+    [drill] none — todas as celulas visiveis
+    [sort]  default por fator
+
+3.  Risk Monitor
+    [view]  semaforo VaR/Stress + sparkline
+    [drill] none
+
+4.  Outliers do dia
+    [view]  lista flat
+    [scope] |z| >= 2sigma (vs 90d), |contrib| >= 3 bps
+
+5.  Top Movers — DIA
+    [view]  Por Livro (toggle: Por Livro | Por Classe | Por Classe (sem FX))
+    [scope] consolidado da casa, drop < 0.5 bps
+
+6.  Mudancas Significativas
+    [view]  tabela PM x fator
+    [scope] |Delta| >= 0.30 pp
+
+7.  Distribuicao 252d
+    [view]  Forward (toggle: Backward | Forward) x 1d (toggle: 1d | 21d)
+    [drill] level-0 (so linha do fundo) — clicar expande livro/RF
+    [extra] em 21d aparece botao azul "5 piores · 5 melhores" (modal)
+
+8.  Vol Regime
+    [drill] level-0 (so fundo) — expande livro/RF
+
+9.  Risk Budget Monitor
+    [view]  semaforo stop por PM, com historico/sparkline
+
+10. Budget vs VaR por PM
+    [view]  tabela 21d/63d/252d
+
+11. Briefing — Macro
+    [view]  texto narrativo
+
+12. Peers — Macro
+    [view]  Graficos (toggle: Graficos | Tabela) — 4 strips MTD/YTD/12M/24M + 2 scatters
+    [scope] grupo MACRO
+
+
+------------------------------------------------------------
+2.2 QUANT (11 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Classe · [drill] level-0 · [sort] YTD desc
+2.  Exposicao — QUANT           — tabela por fator x livro · sort por header (sortQuantExpoPositions)
+3.  Single-Name Exposure        — L/S real pos-decomposicao WIN/BOVA · [drill] level-0
+4.  Risk Monitor                — semaforo
+5.  Outliers do dia             — lista flat
+6.  Top Movers — DIA            — [view] Por Livro
+7.  Mudancas Significativas     — tabela
+8.  Distribuicao 252d           — [view] Forward x 1d · [drill] level-0
+9.  Vol Regime                  — [drill] level-0
+10. Briefing — Quantitativo     — texto
+11. Peers — Quantitativo        — [view] Graficos · grupo MACRO (peers)
+
+
+------------------------------------------------------------
+2.3 EVOLUTION (18 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Classe (toggle: Por Classe | Por Livro)
+                                  Por Livro = Strategy → Livro → Produto
+                                  [drill] level-0 · [sort] YTD desc
+
+2.  Exposicao — EVOLUTION       — [view] Strat (toggle: Factor | Strat) · 3 niveis
+                                  [drill] level-0
+
+3.  Exposure Map RF             — bucket maturidade x ANO_EQ · tabela flat
+
+4.  Single-Name Exposure        — L/S look-through (QUANT + Evo Strategies)
+                                  [drill] level-0
+
+5.  Risk Monitor                — semaforo
+
+6.  Diversificacao — Evolution  — [view] Resumo (toggle: Resumo | Camada 1 | Camada 2 | Camada 3 | Direcional)
+                                  abre em Resumo (Camada 4 — bull market alignment)
+
+7.  Camada 4 (bull alignment)   — painel com 5 condicoes, todas visiveis
+
+8.  Camada 1 (utilizacao VaR)   — tabela flat, percentil 252d por estrategia
+
+9.  Camada 2 (diversification)  — serie rolling, grafico SVG
+
+10. Camada 3 (correlacao)       — tabela rolling 63d
+
+11. Matriz Direcional           — matriz SIST x DISC (DELTA_SIST x DELTA_DISC)
+
+12. Outliers do dia             — lista flat
+
+13. Top Movers — DIA            — [view] Por Livro
+
+14. Mudancas Significativas     — tabela
+
+15. Distribuicao 252d           — [view] Forward x 1d · [drill] level-0
+
+16. Vol Regime                  — [drill] level-0
+
+17. Briefing — Evolution        — texto
+
+18. Peers — Evolution           — [view] Graficos
+
+
+------------------------------------------------------------
+2.4 MACRO_Q (7 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Classe · [drill] level-0 · [sort] YTD desc
+2.  Risk Monitor                — semaforo (LOTE_FUND_STRESS SUM)
+3.  Outliers do dia             — lista flat
+4.  Top Movers — DIA            — [view] Por Livro
+5.  Mudancas Significativas     — tabela
+6.  Briefing — Macro Q          — texto
+7.  Peers — Macro Q             — [view] Graficos · grupo EVOLUTION (peers)
+
+
+------------------------------------------------------------
+2.5 ALBATROZ (11 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Classe · [drill] level-0
+2.  Exposure RF                 — tabela por instrumento + duration agregada · drill por bucket
+3.  Exposure Map RF             — bucket maturidade x ANO_EQ
+4.  Risk Monitor                — semaforo
+5.  Outliers do dia             — lista
+6.  Top Movers — DIA            — [view] Por Livro
+7.  Mudancas Significativas     — tabela
+8.  Distribuicao 252d           — [view] Forward x 1d · HS gross · [drill] level-0
+9.  Risk Budget                 — semaforo + historico (stop mensal 150 bps)
+10. Briefing — Albatroz         — texto
+11. Peers — Albatroz            — [view] Graficos · grupo ALBATROZ
+
+
+------------------------------------------------------------
+2.6 BALTRA (5 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Classe · [drill] level-0
+2.  Risk Monitor                — semaforo (limites provisorios)
+3.  Outliers do dia             — lista
+4.  Top Movers — DIA            — [view] Por Livro
+5.  Briefing — Baltra           — texto
+
+
+------------------------------------------------------------
+2.7 FRONTIER (9 cards)
+------------------------------------------------------------
+1.  Performance Attribution (Long Only)
+                                — sub-tab data-tab=lo (default)
+                                  tabela Frontier Acoes · NAV/Beta/PnL · Active Weight
+
+2.  Performance Attribution (PA hier.)
+                                — sub-tab data-tab=pa
+                                  arvore (GFA — alpha vs IBOV)
+                                  [drill] level-0
+
+3.  Exposicao vs Benchmark      — [view] name (toggle: name | sector)
+                                  active weight por nome ou setor
+
+4.  Risk Monitor                — semaforo BVaR
+
+5.  Outliers do dia             — lista
+
+6.  Top Movers — DIA            — [view] Por Livro · α vs IBOV (liquido do bench)
+
+7.  Mudancas Significativas     — tabela
+
+8.  Briefing — Frontier         — texto
+
+9.  Peers — Frontier            — [view] Graficos
+
+
+------------------------------------------------------------
+2.8 IDKA_3Y (8 cards)
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Bench (toggle: Por Classe | Por Livro | Por Bench)
+                                  Por Bench e default soh para IDKA · [drill] level-0
+                                  Por Bench = decomposicao 3-linhas (replica vs ativo)
+
+2.  Exposicao — IDKA 3Y         — [view] Liq vs Benchmark (toggle: Bruto | Liq vs Benchmark | Liq vs Replication)
+                                  posicoes por fator · NAV R$ 57,9M
+
+3.  Exposure Map RF             — bucket maturidade x ANO_EQ
+
+4.  Risk Monitor                — semaforo BVaR (parametric)
+
+5.  Outliers do dia             — lista
+
+6.  Top Movers — DIA            — [view] Por Livro
+
+7.  Distribuicao 252d           — [view] vs Benchmark x Forward x 1d
+                                  (toggle bench: vs Benchmark | vs Replication | Comparacao)
+                                  (toggle mode: Backward | Forward)
+                                  (toggle window: 1d | 21d)
+                                  [drill] level-0
+                                  [extra] em 21d aparece botao "5 piores · 5 melhores"
+                                          → modal com 3 secoes (vs Benchmark, vs Replication, Repl-Bench)
+                                          → secao default = vs Benchmark
+
+8.  Briefing — IDKA 3Y          — texto
+
+
+------------------------------------------------------------
+2.9 IDKA_10Y (8 cards) — mesma estrutura do IDKA_3Y
+------------------------------------------------------------
+1.  Performance Attribution     — [view] Por Bench (default) · [drill] level-0
+2.  Exposicao — IDKA 10Y        — [view] Liq vs Benchmark (toggle: Bruto | Liq vs Benchmark | Liq vs Replication)
+3.  Exposure Map RF             — bucket maturidade x ANO_EQ
+4.  Risk Monitor                — semaforo BVaR
+5.  Outliers do dia             — lista
+6.  Top Movers — DIA            — [view] Por Livro
+7.  Distribuicao 252d           — [view] vs Benchmark x Forward x 1d · [drill] level-0
+                                  modal Top 21d disponivel quando window=21
+8.  Briefing — IDKA 10Y         — texto
+
+
+==============================================================
+3. POR REPORT (mode alternativo da Summary)
+==============================================================
+Mesmo conteudo da Summary, organizado em ordem de leitura linear (sem priorizar
+fundo individual). Defaults identicos aos itens 1.1 — 1.9.
+
+
+==============================================================
+4. QUALIDADE
+==============================================================
+- Status dos Dados        — tabela flat, manifesto da rotina noturna
+- Qualidade de Dados      — tabela flat, drift / staleness por base
+
+
+==============================================================
+5. P&L
+==============================================================
+- Daily P&L               — tabela flat (D-1) por book/classe/posicao
+
+
+==============================================================
+6. PEERS
+==============================================================
+- Peers (consolidado)     — cards/grafico comparativo vs pares
+
+
+==============================================================
+7. MARKETS
+==============================================================
+- Mercado                 — [view] primeiro tab (Janelas) x primeiro window (1d)
+                            sub-tabs: Janelas | Moedas | Commodities (selectMktTab)
+                            window: 1d | 5d | 1m (selectMktWin)
+
+
+==============================================================
+GLOBALS / PADROES TRANSVERSAIS
+==============================================================
+- Toda tabela que estende metric-table tem sort por header (attachUniversalSort)
+  e botao CSV no canto direito do card-head (injectCsvButtons).
+- PA trees: por default level-0 only, ordenadas por |YTD| desc com Caixa/Custos
+  pinados no fim.
+- Distribuicao default: Forward x 1d. Em 21d aparece botao Top janelas.
+- Drill-downs (toggleTopPos, toggleDistChildren, paToggle): todos comecam fechados.
+- Modais (Top 21d, Stop history, etc.): comecam ocultos, abrem sob clique.

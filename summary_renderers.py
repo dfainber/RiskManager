@@ -125,7 +125,10 @@ _MOVERS_EXCLUDE = {
 }
 
 
-def _movers_rows(df_pa: pd.DataFrame, group_col: str) -> str:
+def _movers_rows(df_pa: pd.DataFrame, group_col: str,
+                 exclude_fx: bool = False) -> str:
+    """Build movers table rows. If exclude_fx=True, drop CLASSE in {BRLUSD, FX}
+    so contributions reflect asset effect only (used by 'Por Classe sem FX')."""
     if df_pa is None or df_pa.empty:
         return ""
     exclude = _MOVERS_EXCLUDE.get(group_col, set())
@@ -137,6 +140,8 @@ def _movers_rows(df_pa: pd.DataFrame, group_col: str) -> str:
         sub = df_pa[df_pa["FUNDO"] == pa_key]
         if sub.empty:
             continue
+        if exclude_fx and "CLASSE" in sub.columns:
+            sub = sub[~sub["CLASSE"].isin({"BRLUSD", "FX"})]
         sub = sub[~sub[group_col].isin(exclude)]
         by = sub.groupby(group_col)["dia_bps"].sum()
         by = by[by.abs() > 0.5]
@@ -175,9 +180,10 @@ def _movers_table(view_id: str, rows: str, active: bool) -> str:
 
 
 def build_movers_card(df_pa: pd.DataFrame) -> str:
-    livro_rows  = _movers_rows(df_pa, "LIVRO")
-    classe_rows = _movers_rows(df_pa, "CLASSE")
-    if not livro_rows and not classe_rows:
+    livro_rows         = _movers_rows(df_pa, "LIVRO")
+    classe_rows        = _movers_rows(df_pa, "CLASSE")
+    classe_no_fx_rows  = _movers_rows(df_pa, "CLASSE", exclude_fx=True)
+    if not livro_rows and not classe_rows and not classe_no_fx_rows:
         return ""
     return f"""
     <section class="card sum-movers-card">
@@ -189,10 +195,14 @@ def build_movers_card(df_pa: pd.DataFrame) -> str:
                   onclick="selectMoversView(this,'livro')">Por Livro</button>
           <button class="pa-tgl" data-mov-view="classe"
                   onclick="selectMoversView(this,'classe')">Por Classe</button>
+          <button class="pa-tgl" data-mov-view="classe_no_fx"
+                  onclick="selectMoversView(this,'classe_no_fx')"
+                  title="Agrupa por CLASSE excluindo BRLUSD e FX (só efeito-ativo)">Por Classe (sem FX)</button>
         </div>
       </div>
-      {_movers_table("livro",  livro_rows,  True)}
-      {_movers_table("classe", classe_rows, False)}
+      {_movers_table("livro",         livro_rows,         True)}
+      {_movers_table("classe",        classe_rows,        False)}
+      {_movers_table("classe_no_fx",  classe_no_fx_rows,  False)}
     </section>"""
 
 
