@@ -188,8 +188,10 @@ _QUANT_VAR_BOOK_FACTOR = {
 # Nominal = pre-fixed rate. CDI = floating (no rate sensitivity). Other = everything else.
 _RF_FACTOR_MAP = {
     # Real rates (IPCA-linked)
-    "NTN-B": "real", "NTN-C": "real",
-    "DAP Future": "real", "DAPFuture": "real", "DAC Future": "real",
+    "NTN-B": "real",
+    "DAP Future": "real", "DAPFuture": "real",
+    # Real rates (IGP-M-linked) — separated from IPCA real
+    "NTN-C": "real_igpm", "DAC Future": "real_igpm",
     # Nominal rates (pre)
     "DI1Future": "nominal", "NTN-F": "nominal", "LTN": "nominal",
     # CDI / floating

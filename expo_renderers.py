@@ -1006,22 +1006,24 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     if df is None or df.empty or not nav:
         return ""
 
-    FACTOR_ORDER = ["real", "ipca_idx", "nominal", "cdi", "other"]
+    FACTOR_ORDER = ["real", "ipca_idx", "real_igpm", "igpm_idx", "nominal", "cdi", "other"]
     FACTOR_LABEL = {
-        "real":     "Duration Real (IPCA Coupon)",
-        "ipca_idx": "Indexação IPCA (carry)",
-        "nominal":  "Juros Nominais",
-        "cdi":      "CDI / LFT",
-        "other":    "Outros",
+        "real":      "Duration Real (IPCA Coupon)",
+        "ipca_idx":  "Indexação IPCA (carry)",
+        "real_igpm": "Duration Real (IGPM Coupon)",
+        "igpm_idx":  "Indexação IGPM (carry)",
+        "nominal":   "Juros Nominais",
+        "cdi":       "CDI / LFT",
+        "other":     "Outros",
     }
 
     df = df.copy()
     df["yrs_to_mat"] = pd.to_numeric(df.get("yrs_to_mat", 0), errors="coerce").fillna(0.0)
     df["mod_dur"]    = pd.to_numeric(df.get("mod_dur",    0), errors="coerce").fillna(0.0)
-    # DV01 convention para duration factors (real + nominal): long bond = negative.
-    # ipca_idx / cdi / other são face-value notional (%NAV), NÃO duration — não flipar
+    # DV01 convention para duration factors (real + real_igpm + nominal): long bond = negative.
+    # ipca_idx / igpm_idx / cdi / other são face-value notional (%NAV), NÃO duration — não flipar
     # (e não vão no total de yrs).
-    _DUR_FAC = {"real", "nominal"}
+    _DUR_FAC = {"real", "real_igpm", "nominal"}
     df["ano_eq_brl"] = df.apply(
         lambda r: -r["ano_eq_brl"] if r["factor"] in _DUR_FAC else r["ano_eq_brl"],
         axis=1,
@@ -1068,10 +1070,10 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
         return f'<td class="mono" style="text-align:right;color:var(--muted)">{val:.2f}y</td>'
 
     body = ""
-    # Duration totals in yrs — SOMENTE fatores 'real' + 'nominal'.
-    # ipca_idx (carry) e cdi são notional (BRL face value) — mostrados como %NAV,
+    # Duration totals in yrs — SOMENTE fatores 'real' + 'real_igpm' + 'nominal'.
+    # ipca_idx / igpm_idx (carry) e cdi são notional (BRL face value) — mostrados como %NAV,
     # EXCLUÍDOS dos totais de yrs pra não misturar unidades.
-    _DUR_FACTORS = {"real", "nominal"}
+    _DUR_FACTORS = {"real", "real_igpm", "nominal"}
     total_ano_eq        = 0.0
     total_ano_eq_via    = 0.0
     total_ano_eq_direct = 0.0
@@ -1323,7 +1325,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     if df is None or df.empty or not nav:
         return ""
 
-    rel = df[df["factor"].isin(["real", "nominal"])].copy()
+    rel = df[df["factor"].isin(["real", "real_igpm", "nominal"])].copy()
     if rel.empty:
         return ""
     # Express ANO_EQ in years (ano_eq_brl / NAV).
@@ -1333,10 +1335,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     pivot = (rel.pivot_table(index="bucket", columns="factor", values="yr",
                              aggfunc="sum", fill_value=0.0))
     bucket_order = [b[0] for b in _RF_BUCKETS]
-    pivot = pivot.reindex(index=bucket_order, columns=["real", "nominal"], fill_value=0.0)
+    pivot = pivot.reindex(index=bucket_order, columns=["real", "real_igpm", "nominal"], fill_value=0.0)
 
-    # Per-bucket arrays in years-equivalent (DV01 conv: long bond = negative)
-    fund_real_b = pivot["real"].tolist()
+    # Per-bucket arrays in years-equivalent (DV01 conv: long bond = negative).
+    # Real factor = IPCA real + IGPM real (visually combined; broken out in stat row + table).
+    fund_real_ipca_b = pivot["real"].tolist()
+    fund_real_igpm_b = pivot["real_igpm"].tolist()
+    fund_real_b = [a + b for a, b in zip(fund_real_ipca_b, fund_real_igpm_b)]
     fund_nom_b  = pivot["nominal"].tolist()
 
     cdi_bench = (bench_dur_yrs == 0)
@@ -1492,11 +1497,13 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     """
 
     # ── Summary stats ─────────────────────────────────────────────────────────
-    dur_real  = sum(fund_real_b)
-    dur_nom   = sum(fund_nom_b)
-    dur_total = dur_real + dur_nom
-    bench_total = bench_dur_yrs
-    gap_total = dur_total - bench_total
+    dur_real_ipca = sum(fund_real_ipca_b)
+    dur_real_igpm = sum(fund_real_igpm_b)
+    dur_real      = dur_real_ipca + dur_real_igpm   # combined (used in chart + Total)
+    dur_nom       = sum(fund_nom_b)
+    dur_total     = dur_real + dur_nom
+    bench_total   = bench_dur_yrs
+    gap_total     = dur_total - bench_total
     cdi_weight = float(df[df["factor"] == "cdi"]["delta_brl"].sum() / nav * 100) if nav else 0.0
 
     # Table: one row per bucket, showing Fund / Bench / Relative totals (sum real+nominal).
@@ -1534,10 +1541,16 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     via_chip = (f'<span class="sn-stat"><span class="sn-lbl">via Albatroz</span>'
                 f'<span class="sn-val mono">{via_alb_total:+.2f}yr</span></span>'
                 if abs(via_alb_total) > 0.005 and short.startswith("IDKA") else "")
+    igpm_chip = (
+        f'<span class="sn-stat"><span class="sn-lbl">Juros Reais (IGPM)</span>'
+        f'<span class="sn-val mono">{dur_real_igpm:+.2f}yr</span></span>'
+        if abs(dur_real_igpm) > 0.005 else ""
+    )
     stat_row = (
         '<div class="sn-inline-stats mono" style="margin-bottom:12px; flex-wrap:wrap; gap:6px 18px">'
         f'<span class="sn-stat"><span class="sn-lbl">NAV</span><span class="sn-val mono">R$ {nav_fmt}M</span></span>'
-        f'<span class="sn-stat"><span class="sn-lbl">Juros Reais (IPCA)</span><span class="sn-val mono">{dur_real:+.2f}yr</span></span>'
+        f'<span class="sn-stat"><span class="sn-lbl">Juros Reais (IPCA)</span><span class="sn-val mono">{dur_real_ipca:+.2f}yr</span></span>'
+        + igpm_chip +
         f'<span class="sn-stat"><span class="sn-lbl">Juros Nominais</span><span class="sn-val mono">{dur_nom:+.2f}yr</span></span>'
         f'<span class="sn-stat"><span class="sn-lbl">Total Fund</span><span class="sn-val mono">{dur_total:+.2f}yr</span></span>'
         f'<span class="sn-stat"><span class="sn-lbl">Bench</span><span class="sn-val mono">{bench_total:+.2f}yr</span></span>'
@@ -1549,7 +1562,7 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     )
 
     # ── Position-level table (by asset) ───────────────────────────────────────
-    pos = df[df["factor"].isin(["real", "nominal", "ipca_idx"])].copy()
+    pos = df[df["factor"].isin(["real", "real_igpm", "nominal", "ipca_idx", "igpm_idx"])].copy()
     pos["ano_eq_yr"] = pos["ano_eq_brl"] / nav if nav else 0.0
     pos["pct_nav"]   = pos["position_brl"] / nav * 100 if nav else 0.0
     pos = pos.sort_values("ano_eq_yr", key=lambda s: s.abs(), ascending=False)

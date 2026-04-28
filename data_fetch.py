@@ -125,7 +125,10 @@ def fetch_risk_history() -> pd.DataFrame:
 
 
 def fetch_risk_history_raw() -> pd.DataFrame:
-    """Fetch VaR/stress from LOTE_FUND_STRESS (product-level) for RAW_FUNDS, summed to fund level."""
+    """Fetch VaR/stress from LOTE_FUND_STRESS (product-level) for RAW_FUNDS, summed to fund level.
+    Filter TREE='Main' to avoid 3× double-count on BALTRA (which has 3 TREE views:
+    Main, Main_Macro_Gestores, Main_Macro_Ativos — each containing the full fund).
+    Other RAW_FUNDS only have TREE='Main', so the filter is no-op for them."""
     tds = ", ".join(f"'{td}'" for td in RAW_FUNDS)
     q = f"""
     SELECT "TRADING_DESK", "VAL_DATE",
@@ -135,6 +138,7 @@ def fetch_risk_history_raw() -> pd.DataFrame:
     FROM "LOTE45"."LOTE_FUND_STRESS"
     WHERE "VAL_DATE" >= DATE '{DATE_1Y.date()}'
       AND "TRADING_DESK" IN ({tds})
+      AND "TREE" = 'Main'
     GROUP BY "TRADING_DESK", "VAL_DATE"
     ORDER BY "TRADING_DESK", "VAL_DATE"
     """
@@ -801,7 +805,7 @@ _VAR_DOD_DISPATCH = {
     "EVOLUTION": ("rpm_book",   "Galapagos Evolution FIC FIM CP",          "VaR",  None),
     "ALBATROZ":  ("lote_fund",  "GALAPAGOS ALBATROZ FIRF LP",              "VaR",  None),
     "MACRO_Q":   ("lote_fund",  "Galapagos Global Macro Q",                "VaR",  None),
-    "BALTRA":    ("lote_fund",  "Galapagos Baltra Icatu Qualif Prev FIM CP","VaR", None),
+    "BALTRA":    ("rpm_book",   "Galapagos Baltra Icatu Qualif Prev FIM CP","VaR", None),
     "FRONTIER":  ("frontier_hs","Frontier Long Only",                       "BVaR", None),
 }
 
@@ -1189,12 +1193,14 @@ def _fetch_pos_per_product(desk: str, date_str: str) -> dict[str, float]:
 
 
 def _var_dod_lote_fund(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd.DataFrame:
-    """ALBATROZ/MACRO_Q/BALTRA VaR DoD via LOTE_FUND_STRESS (per PRODUCT, BOOK as group)."""
+    """ALBATROZ/MACRO_Q VaR DoD via LOTE_FUND_STRESS (per PRODUCT, BOOK as group).
+    BALTRA uses _var_dod_rpm now (LOTE_FUND_STRESS_RPM populated 2026-04-07+)."""
     q = f"""
     SELECT "VAL_DATE", "BOOK", "PRODUCT", "PVAR1DAY"
     FROM "LOTE45"."LOTE_FUND_STRESS"
     WHERE "VAL_DATE" IN (DATE '{date_d}', DATE '{date_d1}')
       AND "TRADING_DESK" = '{desk}'
+      AND "TREE" = 'Main'
       AND "PVAR1DAY" IS NOT NULL
     """
     try:
@@ -1563,8 +1569,9 @@ def fetch_var_dod_decomposition(fund_key: str, date_str: str = DATA_STR) -> pd.D
     Returns empty DataFrame if fund unsupported, no data, or D-1 missing.
     Source by family:
       IDKAs                    → LOTE_PARAMETRIC_VAR_TABLE (BOOKS='{*}')
-      MACRO/QUANT/EVOLUTION    → LOTE_FUND_STRESS_RPM (LEVEL=10, BOOK aggregate)
-      ALBATROZ/MACRO_Q/BALTRA  → LOTE_FUND_STRESS (per PRODUCT)
+      MACRO/QUANT/EVO/BALTRA   → LOTE_FUND_STRESS_RPM (LEVEL=10, BOOK aggregate)
+      ALBATROZ/MACRO_Q         → LOTE_FUND_STRESS (per PRODUCT, TREE='Main')
+      FRONTIER                 → frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD + EQUITIES_PRICES (HS BVaR per ticker)
     """
     cfg = _VAR_DOD_DISPATCH.get(fund_key)
     if cfg is None:
@@ -1961,7 +1968,16 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR,
     RF exposure snapshot for an RF desk — position-level from LOTE_PRODUCT_EXPO.
     Returns (df, nav) where df columns are:
       BOOK, PRODUCT_CLASS, PRODUCT, delta_brl, mod_dur (years), dv01_brl (R$/bp), indexador
-    DV01 ≈ |DELTA × MOD_DURATION × 0.0001|.
+
+    DELTA is already duration-weighted (= POSITION × MOD_DURATION) for rate
+    primitives ('IPCA Coupon', 'IGPM Coupon', 'BRL Rate Curve'), so:
+      DV01_R$/bp = DELTA × 0.0001  (NOT × MOD_DURATION again)
+
+    Each bond decomposes into multiple primitives (sovereign spread + inflation
+    index face + rate curve coupon) with INCONSISTENT signs across primitives.
+    Naive SUM(DELTA) gives garbage (e.g. NTN-C delta_d1 + delta_d sum cancellations
+    don't reflect any real position concept). Pick ONE primitive per PRODUCT_CLASS
+    that represents the dominant rate exposure.
 
     Default desk = ALBATROZ. Pass `desk=...` to reuse for BALTRA / IDKAs.
     """
@@ -1973,12 +1989,31 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR,
         SELECT "BOOK", "PRODUCT_CLASS", "PRODUCT",
                SUM("DELTA")                                                 AS delta_brl,
                MAX("MOD_DURATION")                                          AS mod_dur,
-               SUM("DELTA" * COALESCE("MOD_DURATION", 0) * 0.0001)          AS dv01_brl
+               SUM(CASE WHEN "MOD_DURATION" IS NOT NULL
+                        THEN "DELTA" * 0.0001 ELSE 0 END)                   AS dv01_brl
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
         WHERE "TRADING_DESK"              = '{desk}'
           AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
           AND "VAL_DATE"                  = DATE '{date_str}'
           AND "DELTA" <> 0
+          AND (
+            -- IPCA-linked rate primitive (NTN-B / DAP)
+            ("PRODUCT_CLASS" IN ('NTN-B','DAP Future','DAPFuture')
+                AND "PRIMITIVE_CLASS" = 'IPCA Coupon')
+            OR
+            -- IGP-M-linked rate primitive (NTN-C / DAC)
+            ("PRODUCT_CLASS" IN ('NTN-C','DAC Future')
+                AND "PRIMITIVE_CLASS" = 'IGPM Coupon')
+            OR
+            -- Nominal rate primitive (DI / NTN-F / LTN)
+            ("PRODUCT_CLASS" IN ('DI1Future','NTN-F','LTN')
+                AND "PRIMITIVE_CLASS" = 'BRL Rate Curve')
+            OR
+            -- Floating / cash / collateral — no primitive decomposition needed
+            "PRODUCT_CLASS" NOT IN ('NTN-B','DAP Future','DAPFuture',
+                                     'NTN-C','DAC Future',
+                                     'DI1Future','NTN-F','LTN')
+          )
         GROUP BY "BOOK", "PRODUCT_CLASS", "PRODUCT"
     """)
     if df.empty:
@@ -2090,20 +2125,25 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
 
     # Pick ONE primitive per (PRODUCT_CLASS, PRODUCT, EXPIRY) to represent the
     # dominant rate factor (avoids double-counting the decomposed legs).
+    # NTN-C/DAC are IGP-M-linked (not IPCA) — engine emits 'IGPM Coupon' for
+    # the rate curve and 'IGPM' for the inflation-index carry, analogous to
+    # 'IPCA Coupon' / 'IPCA' for NTN-B/DAP. Mapping them to IPCA Coupon used
+    # to silently drop NTN-C rows (keep_mask wouldn't match).
     _RATE_PRIM_BY_CLASS = {
-        "NTN-B": "IPCA Coupon", "NTN-C": "IPCA Coupon",
+        "NTN-B": "IPCA Coupon",
         "DAP Future": "IPCA Coupon", "DAPFuture": "IPCA Coupon",
-        "DAC Future": "IPCA Coupon",
+        "NTN-C": "IGPM Coupon",
+        "DAC Future": "IGPM Coupon",
         "DI1Future": "BRL Rate Curve", "NTN-F": "BRL Rate Curve",
         "LTN": "BRL Rate Curve",
         "LFT": "Brazil Sovereign Yield",
     }
     df["_rate_prim"] = df["PRODUCT_CLASS"].map(_RATE_PRIM_BY_CLASS)
-    # Keep only the chosen rate primitive per product, OR the 'IPCA' primitive
-    # (which separately represents inflation-index carry, never double-counts rates).
+    # Keep only the chosen rate primitive per product, OR the inflation-index
+    # primitive ('IPCA' or 'IGPM' — face-value carry, never double-counts rates).
     keep_mask = (
         (df["PRIMITIVE_CLASS"] == df["_rate_prim"]) |
-        (df["PRIMITIVE_CLASS"] == "IPCA") |
+        (df["PRIMITIVE_CLASS"].isin(["IPCA", "IGPM"])) |
         df["_rate_prim"].isna()  # keep unknown product classes as 'other'
     )
     df = df[keep_mask].drop(columns="_rate_prim").copy()
@@ -2112,16 +2152,17 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
     df["position_brl"] = df["position_brl"].fillna(0.0)
     # DELTA in LOTE_PRODUCT_EXPO is the duration-weighted notional (= POSITION × MOD_DURATION)
     # but with hedge-side sign convention: a long bond position carries NEGATIVE delta in the
-    # IPCA Coupon / BRL Rate Curve primitives (representing the short-DI hedge).
+    # rate-curve primitives (representing the short-DI hedge).
     # Negate it to recover the position's actual rate exposure (long bond → positive ANO_EQ).
-    rate_prims = {"IPCA Coupon", "BRL Rate Curve"}
+    rate_prims = {"IPCA Coupon", "IGPM Coupon", "BRL Rate Curve"}
     df["ano_eq_brl"] = df.apply(
         lambda r: -r["delta_brl"] if r["PRIMITIVE_CLASS"] in rate_prims else r["delta_brl"],
         axis=1,
     )
     df["factor"]    = df["PRODUCT_CLASS"].map(_rf_classify).fillna("other")
-    # 'IPCA' primitive rows represent inflation-index carry (face value); override factor.
+    # Inflation-index primitives represent face-value carry — override factor.
     df.loc[df["PRIMITIVE_CLASS"] == "IPCA", "factor"] = "ipca_idx"
+    df.loc[df["PRIMITIVE_CLASS"] == "IGPM", "factor"] = "igpm_idx"
     df["bucket"]    = df["yrs_to_mat"].apply(_rf_bucket)
     # 'via' already set by the SQL ('direct' | 'via_albatroz')
     return df
