@@ -2541,6 +2541,7 @@ def build_frontier_exposure_section(df_lo: pd.DataFrame,
       <div class="card-head">
         <span class="card-title">Exposição vs Benchmark</span>
         <span class="card-sub">— Frontier Ações · Active Weight por nome e setor</span>
+        {build_vardod_trigger("FRONTIER")}
       </div>
       {stats_bar}
       {toggle_bar}

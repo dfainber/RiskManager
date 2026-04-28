@@ -802,6 +802,7 @@ _VAR_DOD_DISPATCH = {
     "ALBATROZ":  ("lote_fund",  "GALAPAGOS ALBATROZ FIRF LP",              "VaR",  None),
     "MACRO_Q":   ("lote_fund",  "Galapagos Global Macro Q",                "VaR",  None),
     "BALTRA":    ("lote_fund",  "Galapagos Baltra Icatu Qualif Prev FIM CP","VaR", None),
+    "FRONTIER":  ("frontier_hs","Frontier Long Only",                       "BVaR", None),
 }
 
 _VAR_DOD_COLUMNS = [
@@ -1374,6 +1375,177 @@ def _regroup_lookthrough(out_df: pd.DataFrame, desk: str, date_d: str) -> pd.Dat
     return pd.concat([direct, parents_df])
 
 
+def _var_dod_frontier(date_d: str, date_d1: str, window_days: int = 756) -> pd.DataFrame:
+    """FRONTIER BVaR DoD via per-ticker component-VaR at the q05 worst-day scenario.
+
+    For each date t in {D, D-1}:
+      portfolio_active_return_s = Σ_i (w_i_t − w_ibov_i) × r_i_s   (s in 756d window)
+      s* = arg s where portfolio_active_return_s = q05(series)
+      component_i_t = (w_i_t − w_ibov_i) × r_i_s*
+      Σ_i component_i_t = portfolio_active_return_s* = −BVaR_pct_t
+      contrib_i_t (bps NAV) = −10000 × component_i_t   (positive = adds to BVaR)
+
+    DoD per ticker:
+      delta_bps = contrib_i_d − contrib_i_d1
+    Decomposition uses _decompose_pos_constant_today on (active_weight, contrib_bps).
+    Note: s* on D may differ from s* on D-1 — both effects are real.
+    """
+    def _frontier_weights(date_str: str) -> dict[str, float]:
+        q = f"""
+        SELECT "PRODUCT", "% Cash" AS w
+        FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+        WHERE "VAL_DATE" = (
+            SELECT MAX("VAL_DATE") FROM frontier."LONG_ONLY_DAILY_REPORT_MAINBOARD"
+            WHERE "VAL_DATE" <= DATE '{date_str}'
+        )
+          AND "BOOK" IS NOT NULL AND TRIM("BOOK"::text) <> ''
+          AND "PRODUCT" NOT IN ('TOTAL', 'SUBTOTAL')
+          AND "% Cash" IS NOT NULL
+        """
+        try:
+            df = read_sql(q)
+        except Exception:
+            return {}
+        if df.empty:
+            return {}
+        return dict(zip(df["PRODUCT"].astype(str), df["w"].astype(float)))
+
+    w_d  = _frontier_weights(date_d)
+    w_d1 = _frontier_weights(date_d1)
+    # Frontier mainboard upstream only persists current snapshot — fall back to
+    # today's weights for D-1 when D-1 not available. Matches compute_frontier_bvar_hs
+    # convention: D-1 BVaR is today's weights × D-1 history.
+    weights_held_constant = False
+    if not w_d:
+        return _empty_var_dod()
+    if not w_d1:
+        w_d1 = w_d
+        weights_held_constant = True
+
+    q_ibov = """
+    SELECT "INSTRUMENT", "VALUE" AS w
+    FROM public."EQUITIES_COMPOSITION"
+    WHERE "LIST_NAME" = 'IBOV'
+      AND "DATE" = (SELECT MAX("DATE") FROM public."EQUITIES_COMPOSITION" WHERE "LIST_NAME" = 'IBOV')
+    """
+    try:
+        df_ibov = read_sql(q_ibov)
+    except Exception:
+        return _empty_var_dod()
+    ibov_wt = dict(zip(df_ibov["INSTRUMENT"].astype(str), df_ibov["w"].astype(float))) \
+              if not df_ibov.empty else {}
+
+    tickers = sorted(set(w_d) | set(w_d1) | set(ibov_wt))
+    if not tickers:
+        return _empty_var_dod()
+
+    tks_sql = ",".join(f"'{t}'" for t in tickers + ["IBOV"])
+    q_px = f"""
+    SELECT "INSTRUMENT", "DATE", "CLOSE"
+    FROM public."EQUITIES_PRICES"
+    WHERE "INSTRUMENT" IN ({tks_sql})
+      AND "DATE" >= DATE '{date_d}' - INTERVAL '{window_days + 120} days'
+      AND "DATE" <= DATE '{date_d}'
+    """
+    try:
+        df_px = read_sql(q_px)
+    except Exception:
+        return _empty_var_dod()
+    if df_px.empty or "IBOV" not in df_px["INSTRUMENT"].unique():
+        return _empty_var_dod()
+
+    df_px["DATE"] = pd.to_datetime(df_px["DATE"])
+    wide = (df_px.pivot_table(index="DATE", columns="INSTRUMENT",
+                              values="CLOSE", aggfunc="last")
+                 .sort_index()
+                 .dropna(subset=["IBOV"])
+                 .ffill())
+    rets = wide.pct_change().dropna(subset=["IBOV"])
+    stock_cols = [c for c in rets.columns if c != "IBOV"]
+    rets[stock_cols] = rets[stock_cols].mask(rets[stock_cols].abs() > 0.30, 0.0)
+
+    def _scenario_for(date_anchor: str, w_fund: dict[str, float]) -> tuple[pd.Series, str] | None:
+        end = pd.to_datetime(date_anchor)
+        rets_anchor = rets[rets.index <= end].tail(window_days)
+        if len(rets_anchor) < 50:
+            return None
+        active = pd.Series(0.0, index=rets_anchor.index)
+        for t, w in w_fund.items():
+            aw = w - ibov_wt.get(t, 0.0)
+            if abs(aw) < 1e-9 or t not in rets_anchor.columns:
+                continue
+            active = active + aw * rets_anchor[t].fillna(0.0)
+        for t, w in ibov_wt.items():
+            if t in w_fund:
+                continue
+            aw = -w
+            if t not in rets_anchor.columns:
+                continue
+            active = active + aw * rets_anchor[t].fillna(0.0)
+        if len(active.dropna()) < 30:
+            return None
+        q05 = active.quantile(0.05)
+        s_star = (active - q05).abs().idxmin()
+        return rets_anchor.loc[s_star], s_star.strftime("%Y-%m-%d")
+
+    sc_d  = _scenario_for(date_d,  w_d)
+    sc_d1 = _scenario_for(date_d1, w_d1)
+    if sc_d is None or sc_d1 is None:
+        return _empty_var_dod()
+    r_d_row,  s_d  = sc_d
+    r_d1_row, s_d1 = sc_d1
+
+    rows = []
+    for t in tickers:
+        aw_d  = w_d.get(t,  0.0) - ibov_wt.get(t, 0.0)
+        aw_d1 = w_d1.get(t, 0.0) - ibov_wt.get(t, 0.0)
+        r_t_d  = float(r_d_row.get(t, 0.0))  if t in r_d_row.index  else 0.0
+        r_t_d1 = float(r_d1_row.get(t, 0.0)) if t in r_d1_row.index else 0.0
+        contrib_d_bps  = -aw_d  * r_t_d  * 10_000.0
+        contrib_d1_bps = -aw_d1 * r_t_d1 * 10_000.0
+        if abs(contrib_d_bps) < 0.05 and abs(contrib_d1_bps) < 0.05:
+            continue
+        # Pos in bps NAV (active weight), vol_d_bps = stress return × 10000 (bps)
+        pos_d  = aw_d  * 10_000.0
+        pos_d1 = aw_d1 * 10_000.0
+        vol_d_bps  = -r_t_d  * 10_000.0
+        vol_d1_bps = -r_t_d1 * 10_000.0
+        den = abs(pos_d1) if abs(pos_d1) > 1e-3 else None
+        d_pos_pct = ((pos_d - pos_d1) / den * 100.0) if den else np.nan
+        d_vol_bps = vol_d_bps - vol_d1_bps
+        pe, ve = _decompose_pos_constant_today(pos_d1, pos_d, contrib_d1_bps, contrib_d_bps)
+        rows.append({
+            "label":          t,
+            "group":          ("IBOV" if t in ibov_wt else "Out-of-bench"),
+            "contrib_d1_bps": contrib_d1_bps,
+            "contrib_d_bps":  contrib_d_bps,
+            "delta_bps":      contrib_d_bps - contrib_d1_bps,
+            "pos_d1":         pos_d1,
+            "pos_d":          pos_d,
+            "d_pos_pct":      d_pos_pct,
+            "vol_d1_bps":     vol_d1_bps,
+            "vol_d_bps":      vol_d_bps,
+            "d_vol_bps":      d_vol_bps,
+            "pos_effect_bps": pe,
+            "vol_effect_bps": ve,
+            "sign":           _sign_of(contrib_d_bps - contrib_d1_bps),
+            "override_note":  "",
+            "children":       None,
+        })
+
+    if not rows:
+        return _empty_var_dod()
+    out = pd.DataFrame(rows)[_VAR_DOD_COLUMNS]
+    out = out.sort_values("delta_bps", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+    if weights_held_constant:
+        out.attrs["modal_note"] = (
+            "Frontier mainboard upstream sem histórico — D-1 usa pesos de hoje. "
+            "BVaR DoD captura só shift de cenário (sem efeito de posição). "
+            "Tabela mostra a composição atual do BVaR por ticker."
+        )
+    return out
+
+
 def fetch_var_dod_decomposition(fund_key: str, date_str: str = DATA_STR) -> pd.DataFrame:
     """Day-over-day decomposition of VaR/BVaR by leaf factor.
 
@@ -1416,6 +1588,8 @@ def fetch_var_dod_decomposition(fund_key: str, date_str: str = DATA_STR) -> pd.D
         if nav_d is None or nav_d <= 0:
             return _empty_var_dod()
         return _var_dod_lote_fund(desk, date_d, date_d1, float(nav_d))
+    if source == "frontier_hs":
+        return _var_dod_frontier(date_d, date_d1)
     return _empty_var_dod()
 
 

@@ -28,6 +28,7 @@ _FUND_LABEL = {
     "ALBATROZ":  "ALBATROZ",
     "MACRO_Q":   "MACRO_Q",
     "BALTRA":    "BALTRA",
+    "FRONTIER":  "FRONTIER",
 }
 
 
@@ -164,6 +165,7 @@ def _df_to_payload(df: pd.DataFrame, fund_key: str) -> dict:
         "has_decomp": has_decomp,
         "has_vol_proxy": has_vol_proxy,
         "has_pos_info": has_pos_info,
+        "modal_note": str(df.attrs.get("modal_note", "")) or None,
         "rows": rows,
     }
 
@@ -367,7 +369,7 @@ VARDOD_JS = r"""
     ];
     if (d.has_decomp) {
       cols.push(['pos_effect_bps', 'Pos eff', 'right']);
-      cols.push(['vol_effect_bps', 'Vol eff', 'right']);
+      cols.push(['vol_effect_bps', 'Marg eff', 'right']);
     }
     if (d.has_pos_info) cols.push(['d_pos_pct', 'Δ pos %', 'right']);
     if (d.has_vol_proxy || d.has_decomp) cols.push(['d_vol_bps', 'Δ vol', 'right']);
@@ -495,18 +497,25 @@ VARDOD_JS = r"""
     var headline = 'Δ' + d.metric + ' = <span class="' + dtCls + '">' + _fmtBps(dt) + ' bps</span>';
     if (d.has_decomp && d.pos_effect_total_bps !== null && d.vol_effect_total_bps !== null) {
       headline += '  &nbsp;·&nbsp;  posição: ' + _fmtBps(d.pos_effect_total_bps) +
-                  ' bps  ·  vol/marginal: ' + _fmtBps(d.vol_effect_total_bps) + ' bps';
+                  ' bps  ·  marginal (Δg): ' + _fmtBps(d.vol_effect_total_bps) + ' bps';
     }
     document.getElementById('vardod-headline').innerHTML = headline;
 
-    // Override warning
-    var hasOverride = d.rows.some(function(r) { return r.override && r.override.length; });
+    // Warning bar: modal-level note (e.g. FRONTIER caveat) OR row-level overrides (IDKA passivo)
     var w = document.getElementById('vardod-warning');
+    var msgs = [];
+    if (d.modal_note) {
+      msgs.push('ℹ ' + d.modal_note);
+    }
+    var hasOverride = d.rows.some(function(r) { return r.override && r.override.length; });
     if (hasOverride) {
       var notes = d.rows.filter(function(r) { return r.override; })
                         .map(function(r) { return r.label + ': ' + r.override; })
                         .join(' · ');
-      w.innerHTML = '⚠ Override aplicado no passivo: ' + notes;
+      msgs.push('⚠ Override aplicado no passivo: ' + notes);
+    }
+    if (msgs.length) {
+      w.innerHTML = msgs.join('<br>');
       w.style.display = 'block';
     } else {
       w.style.display = 'none';
@@ -516,8 +525,11 @@ VARDOD_JS = r"""
     // Footnote
     var fn = '';
     if (d.has_decomp) {
-      fn = 'Decomposição symmetric: pos_effect = (Δpos × ḡ) e vol_effect = (Δg × p̄), onde g = contrib/pos. ' +
-           'Soma exata: pos_effect + vol_effect = Δ.';
+      fn = 'Decomposição: g = contrib/pos é a contribuição marginal de VaR por BRL de exposição ' +
+           '(absorve mudanças de vol E correlação — engine não isola σ). ' +
+           'Pos eff = Δpos × g_(D-1) (mudou tamanho da posição na vol/correlação de ontem). ' +
+           'Marg eff = pos_D × Δg (mesma posição, novo regime de risco). ' +
+           'Soma exata: Pos eff + Marg eff = Δ.';
     } else {
       fn = 'Engine deste fundo não publica vol/posição por linha — só ΔContribuição é mostrado. ' +
            'Δ = D - D-1 em bps de NAV.';
