@@ -175,6 +175,7 @@ class ReportData:
     data_manifest:    Optional[dict]            = None
     book_pnl:         Optional[dict]            = None
     peers_data:       Optional[dict]            = None
+    peers_data_eopm:  Optional[dict]            = None
     market_snap:      Optional[dict]            = None
 
 
@@ -1387,8 +1388,11 @@ def build_html(d: ReportData) -> str:
                 f'<section class="card">'
                 f'<div class="card-head">'
                 f'<span class="card-title">Peers — {FUND_LABELS.get(f, f)}</span>'
-                f'<span class="card-sub">— {_peers_val_date} · grupo {_pg}</span>'
+                f'<span class="card-sub" data-peers-sub="1">— {_peers_val_date} · grupo {_pg}</span>'
                 f'<div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">'
+                f'<button class="pa-tgl active rpt-peers-anchor" data-anchor="current" onclick="rptSetPeersAnchor(\'current\')">Atual</button>'
+                f'<button class="pa-tgl rpt-peers-anchor"        data-anchor="eopm"    onclick="rptSetPeersAnchor(\'eopm\')">Fim Mês Ant.</button>'
+                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
                 f'<button class="pa-tgl active" onclick="rptSetPeersMode(\'abs\')">Absoluto</button>'
                 f'<button class="pa-tgl"        onclick="rptSetPeersMode(\'alpha\')">Alpha</button>'
                 f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
@@ -1413,11 +1417,11 @@ def build_html(d: ReportData) -> str:
         for short_k, df_k in rf_expo_maps.items():
             if df_k is None or df_k.empty:
                 continue
-            d = df_k[(df_k["via"] == "direct") & (df_k["factor"].isin(["real", "nominal"]))].copy()
-            if d.empty:
+            df_direct = df_k[(df_k["via"] == "direct") & (df_k["factor"].isin(["real", "nominal"]))].copy()
+            if df_direct.empty:
                 continue
             # ANO_EQ ×  NAV not needed — ano_eq_brl is already signed BRL-years
-            for r in d.itertuples(index=False):
+            for r in df_direct.itertuples(index=False):
                 brl = float(r.ano_eq_brl)
                 if abs(brl) < 1_000: continue
                 agg_rows.append({
@@ -1570,8 +1574,10 @@ def build_html(d: ReportData) -> str:
     market_section_html = _build_market_section(market_snap)
 
     # ── P&L tab section (house-level) ─────────────────────────────────────────
-    _book_pnl_json = json.dumps(_book_pnl, separators=(",", ":"), ensure_ascii=False)
-    _peers_json    = json.dumps(_peers,    separators=(",", ":"), ensure_ascii=False)
+    _book_pnl_json   = json.dumps(_book_pnl,        separators=(",", ":"), ensure_ascii=False)
+    _peers_json      = json.dumps(_peers,           separators=(",", ":"), ensure_ascii=False)
+    _peers_eopm      = d.peers_data_eopm or {}
+    _peers_eopm_json = json.dumps(_peers_eopm,      separators=(",", ":"), ensure_ascii=False)
 
     _pnl_baked_date = _book_pnl.get("val_date") or str(_prev_bday(DATA))
     pnl_section_html = f"""<div class="section-wrap" data-view="pnl">
@@ -1593,8 +1599,11 @@ def build_html(d: ReportData) -> str:
   <section class="card">
     <div class="card-head">
       <span class="card-title">Peers</span>
-      <span class="card-sub">— {_peers_val_date} · comparativo vs. pares</span>
+      <span class="card-sub" data-peers-sub="1">— {_peers_val_date} · comparativo vs. pares</span>
       <div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">
+        <button class="pa-tgl active rpt-peers-anchor" data-anchor="current" onclick="rptSetPeersAnchor('current')">Atual</button>
+        <button class="pa-tgl rpt-peers-anchor"        data-anchor="eopm"    onclick="rptSetPeersAnchor('eopm')">Fim Mês Ant.</button>
+        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
         <select id="rpt-peers-grp-sel" onchange="rptOnGroupChange()"
                 style="background:var(--panel-2);border:1px solid var(--line-2);border-radius:4px;
                        color:var(--text);font-size:12px;padding:4px 8px;cursor:pointer"></select>
@@ -3605,8 +3614,16 @@ def build_html(d: ReportData) -> str:
 </main>
 <script>
 // ── P&L + Peers data (baked at report generation time) ──────────────────────
-const _RPT_PNL   = {_book_pnl_json};
-const _RPT_PEERS = {_peers_json};
+const _RPT_PNL        = {_book_pnl_json};
+// Peers tem dois snapshots: 'current' = data do relatório (closest ≤ DATA_STR);
+// 'eopm' = fim do mês anterior (apples-to-apples, peers reportam mensalmente).
+// Toggle no UI alterna qual está ativo via window._RPT_PEERS = ...
+const _RPT_PEERS_CURRENT = {_peers_json};
+const _RPT_PEERS_EOPM    = {_peers_eopm_json};
+let   _RPT_PEERS         = _RPT_PEERS_CURRENT;
+window._RPT_PEERS_CURRENT = _RPT_PEERS_CURRENT;
+window._RPT_PEERS_EOPM    = _RPT_PEERS_EOPM;
+window._RPT_PEERS         = _RPT_PEERS;
 
 // ── PnL helpers ──────────────────────────────────────────────────────────────
 (function() {{
@@ -4277,6 +4294,31 @@ window.refreshRptPnl = function() {{
     renderAllPeersTables();
   }};
 
+  // Anchor toggle: 'current' (data do relatório) vs 'eopm' (fim do mês anterior).
+  // Troca window._RPT_PEERS pra mudar a fonte que strips/scatters/table consomem.
+  window.rptSetPeersAnchor = function(anchor) {{
+    var src = (anchor === 'eopm') ? window._RPT_PEERS_EOPM : window._RPT_PEERS_CURRENT;
+    if (!src) return;  // snapshot indisponível
+    window._RPT_PEERS = src;
+    _RPT_PEERS = src;  // local var no closure (mesma referência)
+    // Atualiza estado visual dos botões + subtitle de cada card
+    document.querySelectorAll('.rpt-peers-anchor').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.anchor === anchor);
+    }});
+    var vd = src.val_date || '—';
+    var stale = !!src._is_stale;
+    var anchorTxt = (anchor === 'eopm')
+      ? ('Fim do mês anterior · ' + vd + (stale ? ' ⚠' : ''))
+      : ('Atual · ' + vd + (stale ? ' ⚠' : ''));
+    document.querySelectorAll('[data-peers-sub="1"]').forEach(function(el) {{
+      // Mantém o "grupo X" original; substitui só a parte da data
+      var grp = (el.textContent.match(/grupo\\s+\\S+/) || [''])[0];
+      el.textContent = '— ' + anchorTxt + (grp ? ' · ' + grp : '');
+    }});
+    // Re-render tudo que depende de _RPT_PEERS
+    renderAllPeersTables();
+  }};
+
   window.rptSetPeriod = function(win) {{
     _rptWin  = win;
     _sortKey = win;
@@ -4512,7 +4554,8 @@ def main():  # noqa: C901
         }
         _pnl_date      = str(_prev_bday(DATA))
         fut_book_pnl    = ex.submit(fetch_book_pnl,        _pnl_date)
-        fut_peers_data  = ex.submit(fetch_peers_data)
+        fut_peers_data       = ex.submit(fetch_peers_data, DATA_STR, "current")
+        fut_peers_data_eopm  = ex.submit(fetch_peers_data, DATA_STR, "eopm")
         fut_market_snap = ex.submit(fetch_market_snapshot, DATA_STR)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
@@ -4784,6 +4827,11 @@ def main():  # noqa: C901
         print(f"  Peers data fetch failed ({e})")
         peers_data = {}
     try:
+        peers_data_eopm = fut_peers_data_eopm.result()
+    except Exception as e:
+        print(f"  Peers data EOPM fetch failed ({e})")
+        peers_data_eopm = {}
+    try:
         market_snap = fut_market_snap.result()
     except Exception as e:
         print(f"  Market snapshot fetch failed ({e})")
@@ -4857,7 +4905,8 @@ def main():  # noqa: C901
         dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
         vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
         expo_date_label=expo_date_label, data_manifest=data_manifest,
-        book_pnl=book_pnl, peers_data=peers_data, market_snap=market_snap,
+        book_pnl=book_pnl, peers_data=peers_data, peers_data_eopm=peers_data_eopm,
+        market_snap=market_snap,
     )
     html = build_html(report_data)
     out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"

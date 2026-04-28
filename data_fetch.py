@@ -2141,14 +2141,99 @@ def fetch_market_snapshot(date_str: str) -> dict:
     }
 
 
-def fetch_peers_data() -> dict:
-    """Latest peers snapshot from the shared JSON file.
+_PEERS_ARCHIVE_DIR = Path(__file__).parent / "data" / "peers_archive"
 
-    Returns {val_date, benchmarks, groups}. Handles both the legacy
-    wrapped format ({latest: {...}}) and the current flat format.
-    Empty dict if file is not accessible.
-    """
-    data = json.loads(_PEERS_FILE.read_text(encoding="utf-8"))
+
+def _peers_unwrap(data: dict) -> dict:
+    """Strip legacy {latest: {...}} wrapper if present."""
     if "val_date" in data:
         return data
     return data.get("latest", {})
+
+
+def _peers_auto_archive(snap: dict) -> None:
+    """Persist the network snapshot under data/peers_archive/peers_data_<val_date>.json
+    (idempotent — only writes if file doesn't exist yet)."""
+    val_date = snap.get("val_date")
+    if not val_date:
+        return
+    _PEERS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    target = _PEERS_ARCHIVE_DIR / f"peers_data_{val_date}.json"
+    if target.exists():
+        return
+    try:
+        target.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # archive is best-effort; don't break the run if it fails
+
+
+def _end_of_prev_month(date_str: str) -> str:
+    """Last calendar day of the month preceding date_str (YYYY-MM-DD).
+    Peers data is monthly cadence, so we compare apples-to-apples by anchoring
+    to month-end snapshots (e.g. report on 15/Apr → March-end peers).
+    """
+    import calendar
+    dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+    if dt.month == 1:
+        py, pm = dt.year - 1, 12
+    else:
+        py, pm = dt.year, dt.month - 1
+    last = calendar.monthrange(py, pm)[1]
+    return f"{py:04d}-{pm:02d}-{last:02d}"
+
+
+def fetch_peers_data(date_str: str = DATA_STR, mode: str = "current") -> dict:
+    """Peers snapshot for a target date — picks archived JSON.
+
+    Modes:
+      - "current": latest snapshot with val_date ≤ date_str (closest before).
+                   Use this for "live" view at report date.
+      - "eopm":    snapshot with val_date ≤ end-of-previous-month relative to
+                   date_str. Use for apples-to-apples month-end comparison
+                   (peers report monthly).
+
+    Behaviour for both modes:
+      1. Read the network JSON (latest) and auto-archive under
+         data/peers_archive/peers_data_<val_date>.json (idempotent).
+      2. Pick best archive ≤ anchor. If none, fall back to network with
+         `_is_stale=True`.
+
+    Returns {val_date, benchmarks, groups, _target_date, _anchor_date,
+    _mode, _is_stale}. Empty dict if no source available.
+    """
+    network_snap: dict = {}
+    try:
+        network_snap = _peers_unwrap(json.loads(_PEERS_FILE.read_text(encoding="utf-8")))
+        _peers_auto_archive(network_snap)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    anchor = _end_of_prev_month(date_str) if mode == "eopm" else date_str
+
+    best: tuple[str, dict] | None = None
+    if _PEERS_ARCHIVE_DIR.exists():
+        for f in sorted(_PEERS_ARCHIVE_DIR.glob("peers_data_*.json")):
+            vd = f.stem.replace("peers_data_", "")
+            if vd <= anchor and (best is None or vd > best[0]):
+                try:
+                    best = (vd, json.loads(f.read_text(encoding="utf-8")))
+                except (OSError, json.JSONDecodeError):
+                    continue
+
+    if best is not None:
+        snap = dict(best[1])
+        snap["_target_date"] = date_str
+        snap["_anchor_date"] = anchor
+        snap["_mode"] = mode
+        snap["_is_stale"] = (best[0] != anchor)
+        return snap
+
+    if network_snap:
+        snap = dict(network_snap)
+        snap["_target_date"] = date_str
+        snap["_anchor_date"] = anchor
+        snap["_mode"] = mode
+        snap["_is_stale"] = (snap.get("val_date") != anchor)
+        return snap
+
+    return {}
