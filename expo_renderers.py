@@ -1675,6 +1675,12 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
         return ""
 
     df = df[df["indexador"] != "CDI"].copy()
+    # Drop rows with no rate sensitivity (mod_dur ≈ 0): Equity, IBOVSPFuture
+    # noise, USDBRLFuture, FIDCs (Funds BR), Corn Futures, etc. These appear
+    # as "Outros" in the by-indexador breakdown and inflate %NAV / Gross /
+    # Top Posições without representing actual RF risk. CRIs (mod_dur 2-4y)
+    # are preserved.
+    df = df[df["mod_dur"].astype(float) > 0.01].copy()
     if df.empty:
         return ""
 
