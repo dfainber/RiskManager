@@ -2692,7 +2692,7 @@ def _build_executive_briefing(
             dpp = float(r.get("delta_pp", 0))
             direction = "↑" if dpp > 0 else "↓"
             parts_risk.append(
-                f'<li><span class="mono">{direction} {abs(dpp):.1f} pp</span> · '
+                f'<li><span class="mono">{direction} {abs(dpp):.1f}%</span> · '
                 f'<b>{lbl}</b> mudou exposição em <i>{factor}</i></li>'
             )
 
@@ -3031,7 +3031,7 @@ def _an_delta_pp(delta: float, pct_d0: float) -> str:
     reduces_risk = abs(pct_d0) < abs(pct_d1)
     color = "var(--up)" if reduces_risk else "var(--down)"
     sign = "+" if delta > 0 else ""
-    return f'<span style="color:{color}; font-weight:700">{sign}{delta:.2f} pp</span>'
+    return f'<span style="color:{color}; font-weight:700">{sign}{delta:.2f}%</span>'
 
 
 def build_analise_sections(d, df_pa_daily) -> list:
@@ -3251,7 +3251,7 @@ def build_analise_sections(d, df_pa_daily) -> list:
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Mudanças Significativas</span>
-                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
+                <span class="card-sub">— MACRO · PM × fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f}% · 🟢 reduz risco · 🔴 aumenta risco</span>
               </div>
               <table class="summary-movers">
                 <thead><tr>
@@ -3287,7 +3287,7 @@ def build_analise_sections(d, df_pa_daily) -> list:
             <section class="card">
               <div class="card-head">
                 <span class="card-title">Mudanças Significativas</span>
-                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f} pp · 🟢 reduz risco · 🔴 aumenta risco</span>
+                <span class="card-sub">— {FUND_LABELS.get(short, short)} · por fator · |Δ| ≥ {_ANALISE_THRESHOLD_PP:.2f}% · 🟢 reduz risco · 🔴 aumenta risco</span>
               </div>
               <table class="summary-movers">
                 <thead><tr>
