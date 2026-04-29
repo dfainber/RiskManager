@@ -1706,6 +1706,17 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
         color = "var(--up)" if v_brl >= 0 else "var(--down)"
         return f'<td class="t-num mono" style="color:{color}">{pct:+.2f}%</td>'
 
+    def yr_cell(v_brl):
+        # delta_brl is already duration-weighted (POSITION × MOD_DURATION) for
+        # the rate primitive (post-fix in fetch_albatroz_exposure). Therefore
+        # delta_brl / NAV gives duration in yrs directly. Long bond = positive
+        # yrs in the engine's sign convention (DV01 negative = long).
+        if v_brl is None or pd.isna(v_brl):
+            return '<td class="t-num mono" style="color:var(--muted)">—</td>'
+        yrs = v_brl / nav if nav else 0.0
+        color = "var(--up)" if v_brl >= 0 else "var(--down)"
+        return f'<td class="t-num mono" style="color:{color}">{yrs:+.2f}yr</td>'
+
     def mm(v):
         return _fmt_br_num(f"{v/1e6:,.1f}")
 
@@ -1734,7 +1745,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
             f'<td class="pa-name" style="font-weight:600">'
             f'<span class="alb-idx-arrow" style="font-size:9px;margin-right:6px;color:var(--accent-2)">▶</span>'
             f'{r.indexador}</td>'
-            + bp_pct(r.delta_brl)
+            + yr_cell(r.delta_brl)
             + mm_cell(r.gross_brl)
             + dur_cell(r.dur_w)
             + dv01_cell(r.dv01_brl)
@@ -1751,7 +1762,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
                 f'<td class="pa-name" style="padding-left:28px">'
                 f'{c.PRODUCT} '
                 f'<span style="color:var(--muted); font-size:10px">({c.BOOK})</span></td>'
-                + bp_pct(c.delta_brl)
+                + yr_cell(c.delta_brl)
                 + mm_cell(_gross_c)
                 + dur_cell(c.mod_dur)
                 + dv01_cell(c.dv01_brl)
@@ -1760,7 +1771,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
     idx_total_row = (
         '<tr class="pa-total-row">'
         '<td class="pa-name" style="font-weight:700">Total</td>'
-        + bp_pct(total_delta)
+        + yr_cell(total_delta)
         + f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{mm(abs_delta)}</td>'
         + (f'<td class="t-num mono" style="color:var(--muted); font-weight:700">{dur_w:.2f}</td>'
            if dur_w else '<td class="t-num mono" style="color:var(--muted)">—</td>')
@@ -1778,7 +1789,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
         f'<td class="pa-name">{r.PRODUCT}</td>'
         f'<td class="pa-name" style="color:var(--muted); font-size:11px">{r.indexador}</td>'
         f'<td class="pa-name" style="color:var(--muted); font-size:11px">{r.BOOK}</td>'
-        + bp_pct(r.delta_brl)
+        + yr_cell(r.delta_brl)
         + dur_cell(r.mod_dur)
         + dv01_cell(r.dv01_brl)
         + "</tr>"
@@ -1808,7 +1819,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
       <table class="pa-table" data-no-sort="1">
         <thead><tr>
           <th style="text-align:left">Indexador</th>
-          <th style="text-align:right">Net (%NAV)</th>
+          <th style="text-align:right">Net (yrs)</th>
           <th style="text-align:right">Gross (R$M)</th>
           <th style="text-align:right">Mod Dur (y)</th>
           <th style="text-align:right">DV01 (kR$/bp)</th>
@@ -1852,7 +1863,7 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
           <th style="text-align:left">Produto</th>
           <th style="text-align:left">Idx</th>
           <th style="text-align:left">Book</th>
-          <th style="text-align:right">Net (%NAV)</th>
+          <th style="text-align:right">Net (yrs)</th>
           <th style="text-align:right">Mod Dur (y)</th>
           <th style="text-align:right">DV01 (kR$/bp)</th>
         </tr></thead>
