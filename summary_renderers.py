@@ -29,6 +29,8 @@ _FUND_PORTFOLIO_KEY = {
     "MACRO":     "MACRO",
     "EVOLUTION": "EVOLUTION",
     "QUANT":     "SIST",
+    "MACRO_Q":   "SIST_GLOBAL",
+    "ALBATROZ":  "ALBATROZ",
 }
 
 
@@ -214,7 +216,7 @@ _CHANGES_THRESHOLD_PP = 0.30
 def _delta_pp(v: float) -> str:
     color = "var(--up)" if v > 0 else "var(--down)"
     sign = "+" if v > 0 else ""
-    return f'<span style="color:{color}; font-weight:700">{sign}{v:.2f} pp</span>'
+    return f'<span style="color:{color}; font-weight:700">{sign}{v:.2f}%</span>'
 
 
 def build_changes_card(df_expo, df_expo_d1, position_changes) -> str:
@@ -298,7 +300,7 @@ def build_changes_card(df_expo, df_expo_d1, position_changes) -> str:
         <section class="card">
           <div class="card-head">
             <span class="card-title">Mudanças Significativas</span>
-            <span class="card-sub">— exposição D-0 vs D-1 · |Δ| ≥ {_CHANGES_THRESHOLD_PP:.2f} pp · MACRO por PM×fator, outros por fator agregado</span>
+            <span class="card-sub">— exposição D-0 vs D-1 · |Δ| ≥ {_CHANGES_THRESHOLD_PP:.2f}% · MACRO por PM×fator, outros por fator agregado</span>
           </div>
           <div class="comments-grid">{''.join(change_blocks)}</div>
         </section>"""
@@ -413,14 +415,17 @@ def build_comments_card(
 # ── Factor Breakdown ─────────────────────────────────────────────────────────
 
 _FACTOR_LIST = [
-    "Juros Reais (IPCA)", "Juros Nominais", "IPCA Idx",
+    "Juros Reais (IPCA)", "Juros Reais (IGPM)", "Juros Nominais",
+    "IPCA Idx", "IGPM Idx",
     "Equity BR", "Equity DM", "Equity EM", "FX", "Commodities",
 ]
 
 _FACTOR_UNIT = {
     "Juros Reais (IPCA)": "yrs",
+    "Juros Reais (IGPM)": "yrs",
     "Juros Nominais":     "yrs",
     "IPCA Idx":           "pct",
+    "IGPM Idx":           "pct",
     "Equity BR":          "pct",
     "Equity DM":          "pct",
     "Equity EM":          "pct",

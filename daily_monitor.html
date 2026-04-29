@@ -229,12 +229,20 @@ const BPNL_LS_ORDER = 'rm_bpnl_order';
 let BPNL_STATE = { expanded: {}, order: {} };
 
 function bpnlLoadState() {
+  // Persist book ORDER across sessions, but always start with everything
+  // collapsed on page load. Drill-down state is session-only.
   try { BPNL_STATE = JSON.parse(localStorage.getItem(BPNL_LS_KEY) || '{}'); } catch(e) {}
-  if (!BPNL_STATE.expanded) BPNL_STATE.expanded = {};
-  if (!BPNL_STATE.order)    BPNL_STATE.order    = {};
+  if (!BPNL_STATE.order) BPNL_STATE.order = {};
+  BPNL_STATE.expanded = {};  // always reset expand state
 }
 function bpnlSaveState() {
-  try { localStorage.setItem(BPNL_LS_KEY, JSON.stringify(BPNL_STATE)); } catch(e) {}
+  // Only persist `order` — strip expanded before save so reload starts collapsed.
+  try {
+    localStorage.setItem(
+      BPNL_LS_KEY,
+      JSON.stringify({ order: BPNL_STATE.order || {} })
+    );
+  } catch(e) {}
 }
 
 // ── renderBookPnl ──────────────────────────────────────────────────────────
@@ -389,9 +397,10 @@ function renderBookPnl(container, funds) {
     BOOK_GROUP_DEFS.forEach(def => {
       const bucket = grpMap.get(def.id);
       if (!bucket || bucket.books.length === 0) return;
-      const gOpen  = fSt.bgroups[def.id] ?? true;
+      const gOpen  = fSt.bgroups[def.id] ?? false;
       const grpPl  = bucket.books.reduce((s, b) => s + (b.pl || 0), 0);
-      const grpPct = bucket.books.length > 0 ? bucket.books.reduce((s, b) => s + (b.pl_pct || 0), 0) / bucket.books.length : null;
+      // Sum (not average) — pl_pct is PL/fund_NAV per book, additive across books.
+      const grpPct = bucket.books.reduce((s, b) => s + (b.pl_pct || 0), 0);
 
       const grpRow = document.createElement('tr');
       grpRow.className = 'bpnl-row-bgrp' + (gOpen ? ' open' : '');

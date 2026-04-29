@@ -53,6 +53,7 @@ def _build_expo_unified_table(
     factor_order: list,
     table_id: str | None = None,
     diversified_var_bps: float | None = None,
+    diversified_var_bps_d1: float | None = None,
 ) -> str:
     """Render a unified Exposure factor × product table.
        Expected df columns: factor, PRODUCT, PRODUCT_CLASS, delta, pct_nav, sigma.
@@ -132,6 +133,7 @@ def _build_expo_unified_table(
             factor=f, net_pct=net_pct, net_brl=net_brl,
             gross_pct=gross_pct, gross_brl=gross_brl,
             sigma=sig, var_pct=var_pct,
+            d1_var_pct=d1_var_pct,
             d_expo=(net_pct - d1_net_pct) if d1_net_pct is not None else None,
             d_var=(var_pct - d1_var_pct) if (var_pct is not None and d1_var_pct is not None) else None,
             n_prods=len(sub),
@@ -174,6 +176,7 @@ def _build_expo_unified_table(
     body = ""
     tot_net = 0.0; tot_gross = 0.0; tot_net_brl = 0.0; tot_gross_brl = 0.0
     tot_var_abs = 0.0; any_var = False  # undiversified: Σ |VaR fator|
+    tot_var_abs_d1 = 0.0; any_var_d1 = False  # for Δ vs D-1
     for _default_idx, g in enumerate(factors):
         f = g["factor"]
         tot_net       += g["net_pct"]
@@ -195,6 +198,8 @@ def _build_expo_unified_table(
             var_s = f'{var_signed:+.1f}'
             var_c = "var(--up)" if var_signed < 0 else "var(--down)"
             tot_var_abs += abs(var_raw); any_var = True
+        if g.get("d1_var_pct") is not None:
+            tot_var_abs_d1 += abs(g["d1_var_pct"]); any_var_d1 = True
         dvar_s, dvar_c = _num(g["d_var"], 1)
 
         body += (
@@ -276,6 +281,10 @@ def _build_expo_unified_table(
     # not meaningful). Gross total kept — sum of |exposures| is the book size.
     # VaR total = Σ |VaR fator| (undiversified). Diversification benefit shown
     # in the next pinned row when diversified_var_bps is provided.
+    # Delta non-diversified (D-vs-D-1)
+    d_tot_var = (tot_var_abs - tot_var_abs_d1) if (any_var and any_var_d1) else None
+    d_tot_var_s, d_tot_var_c = _num(d_tot_var, 1)
+
     body += (
         '<tr class="pa-total-row" data-pinned="1" '
         'style="border-top:2px solid var(--border); font-weight:700">'
@@ -287,7 +296,7 @@ def _build_expo_unified_table(
         + _cell(f'{tot_var_abs:.1f}' if any_var else '—',
                 "var(--text)" if any_var else "var(--muted)",
                 "font-weight:700")
-        + '<td></td>'
+        + _cell(d_tot_var_s, d_tot_var_c, "font-weight:700")
         + '</tr>'
     )
 
@@ -298,6 +307,11 @@ def _build_expo_unified_table(
         div_bps = abs(float(diversified_var_bps))
         benefit = tot_var_abs - div_bps  # positive = correlation reduces risk
         bf_s = f' <span style="color:var(--muted);font-size:10px;font-weight:400">· benefício {benefit:+.1f} bps</span>'
+        # Delta diversified vs D-1
+        d_div = None
+        if diversified_var_bps_d1 is not None:
+            d_div = div_bps - abs(float(diversified_var_bps_d1))
+        d_div_s, d_div_c = _num(d_div, 1)
         body += (
             '<tr class="pa-total-row" data-pinned="1" '
             'style="font-weight:700">'
@@ -307,7 +321,7 @@ def _build_expo_unified_table(
             + '<td></td>'
             + '<td></td>'
             + _cell(f'{div_bps:.1f}{bf_s}', "var(--text)", "font-weight:700")
-            + '<td></td>'
+            + _cell(d_div_s, d_div_c, "font-weight:700")
             + '</tr>'
         )
 
@@ -351,7 +365,8 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
                                    df_d1: pd.DataFrame = None,
                                    df_var: pd.DataFrame = None,
                                    df_var_d1: pd.DataFrame = None,
-                                   diversified_var_bps: float | None = None) -> str:
+                                   diversified_var_bps: float | None = None,
+                                   diversified_var_bps_d1: float | None = None) -> str:
     """QUANT exposure card — two views:
        1. Por Fator: unified factor × product table (Net/Gross + σ + VaR + Δs).
        2. Por Livro: factor × livro matrix (which livro drives each factor).
@@ -378,6 +393,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
         df_var_d1=df_var_d1_tagged,
         factor_order=_QUANT_FACTOR_ORDER,
         diversified_var_bps=diversified_var_bps,
+        diversified_var_bps_d1=diversified_var_bps_d1,
     )
 
     # ── Por Livro summary (livro-level: Net, Δ Expo, σ, VaR signed, Δ VaR) ────
@@ -518,7 +534,8 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                                       df_var: pd.DataFrame = None,
                                       df_var_d1: pd.DataFrame = None,
                                       df_pnl_prod: pd.DataFrame = None,
-                                      diversified_var_bps: float | None = None) -> str:
+                                      diversified_var_bps: float | None = None,
+                                      diversified_var_bps_d1: float | None = None) -> str:
     """EVOLUTION exposure — full look-through card with two views:
        1. POR STRATEGY (default): Strategy → LIVRO → Instrumento, 3-level drill.
        2. POR FATOR: factor × product using the shared _build_expo_unified_table.
@@ -541,6 +558,7 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         df_var_d1=_var_d1_u,
         factor_order=_RF_ORDER,
         diversified_var_bps=diversified_var_bps,
+        diversified_var_bps_d1=diversified_var_bps_d1,
     )
 
     # ── Build the Por Strategy view (Strategy → LIVRO → Instrumento) ────────
@@ -1875,7 +1893,8 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
 def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: float,
                            df_expo_d1: pd.DataFrame = None, df_var_d1: pd.DataFrame = None,
                            df_pnl_prod: pd.DataFrame = None, pm_margem: dict = None,
-                           diversified_var_bps: float | None = None) -> str:
+                           diversified_var_bps: float | None = None,
+                           diversified_var_bps_d1: float | None = None) -> str:
     """POSIÇÕES (unified factor × produto table) + PM VaR toggle."""
 
     def delta_str(val):
@@ -1939,6 +1958,7 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
         df_var_d1=_var_d1_u,
         factor_order=_RF_ORDER,
         diversified_var_bps=diversified_var_bps,
+        diversified_var_bps_d1=diversified_var_bps_d1,
     )
 
     # ── D-1 PM totals (expo + VaR attribution) ───────────────────────────────

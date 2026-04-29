@@ -105,7 +105,7 @@ Nunca escrever `SISTEMATICO` em query — o nome real no banco é **`QUANT`**.
 | QUANT      | ✅ RPM              | ✅       | ✅                | ✅              | —               |
 | EVOLUTION  | ✅ RPM              | ✅       | ✅ 3-níveis       | ✅              | —               |
 | ALBATROZ   | ✅ LOTE_FUND_STRESS | ✅       | ✅ drill DV01     | ✅ HS gross     | ✅ 150bps/mês   |
-| BALTRA     | ✅ LOTE_FUND_STRESS_RPM | ✅       | ✅ drill DV01 + Map (incl. IGPM) | — (sem HS)      | — (prov. only)  |
+| BALTRA     | ✅ LOTE_FUND_STRESS_RPM | ✅       | ✅ drill DV01 + Map + look-through (IDKAs/Albatroz cotas) | — (sem HS)      | — (prov. only)  |
 | MACRO_Q    | ✅ LOTE_FUND_STRESS | ✅       | —                 | —               | —               |
 | FRONTIER   | ✅ BVaR HS          | ✅ (GFA) | ✅ active wt      | ✅ α vs IBOV   | —               |
 | IDKA 3Y    | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
@@ -216,6 +216,22 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Distribuição IDKA — reset Forward ao trocar bench** (`generate_risk_report.setDistBench` JS) — ao trocar entre Benchmark/Replication/Comparação tabs, force `card.dataset.activeMode='forward'` + atualiza visual dos `.dist-btn[data-mode]`. Evita landing em backward+empty quando bench-tab nova não tem realized 252d. Closes session_2026_04_28 TODO #3.
 - **BALTRA/ALBATROZ Exposure RF — Net (yrs)** (`expo_renderers.yr_cell`) — novo helper exibe `delta_brl/nav` como `±X.XXyr`. Aplicado em ambas tabelas (Indexador + Top 15) pra consistência parent/child. Headers `Net (%NAV)` → `Net (yrs)`. Possível porque `delta_brl` agora é POSITION × MOD_DURATION (rate primitive) — `delta_brl/nav` dá duração em yrs direto. Closes session_2026_04_28 TODO #1.
 
+**Features entregues 2026-04-29:**
+- **Vol Regime Summary — MACRO_Q + ALBATROZ** (`summary_renderers._FUND_PORTFOLIO_KEY`) — ampliado de 3 → 5 keys. ALBATROZ usa série HS gross própria; MACRO_Q usa SIST_GLOBAL (sub-book Global do QUANT) como proxy (MACRO_Q não tem HS própria upstream).
+- **Briefing — bench line ampliada** — IBOV/CDI/USDBRL/DI1F (3y constante, ~Jan/29). Fetchers novos `fetch_usdbrl_returns` (sign-flip BRL convention: USD/BRL ↑ = vermelho, "fortalecimento BRL" = positivo verde) + `fetch_di1_3y_rate` (target 756 BDAYS via `_di` pattern, rola com a data, mostra rate level + bps change).
+- **Breakdown por Fator — IGPM + outros** (`summary_renderers._FACTOR_LIST` + `generate_risk_report.py` factor_matrix loop) — ampliado de 3 → 9 fatores: Juros Reais (IPCA), **Juros Reais (IGPM)** (novo), Juros Nominais, IPCA Idx, **IGPM Idx** (novo), Equity BR/DM/EM, FX, Commodities. `_DV01_SIGN_FLIP` ganha `real_igpm: True, igpm_idx: False`. BALTRA aparece em IGPM (-1.02 yrs).
+- **Mudanças Significativas + Peers — pp → %** (`summary_renderers._delta_pp` + card-sub + `generate_risk_report.py` 3 sites JS) — substituído sufixo `pp` por `%` em todas as labels do report.
+- **VaR Histórico inline MACRO** (novo card, section-id `risk-monitor`) — chart SVG line ~820×320 px abaixo do Risk Monitor card, mostrando Fund total + 4 PMs (CI/LF/RJ/JD) últimos 121d úteis. Fetcher novo `data_fetch.fetch_macro_pm_var_history` (`LOTE_FUND_STRESS_RPM` LEVEL=10 TREE='Main_Macro_Ativos', |Σ signed VaR per PM prefix| × 10000 / NAV). Helper genérico `svg_renderers.multi_line_chart_svg` (multi-série + gridlines + legenda inline). Paleta brand-aligned (gold + 4 azuis/cyan/roxo). Unidade bps. QM excluído (descontinuado). **Section id == "risk-monitor"** (mesma aba do card pai); IDs novos não em `risk_config.REPORTS` ficam escondidos pelo filtro de aba.
+- **EVOLUTION PA — default Por Livro** (`pa_renderers.build_pa_section_hier`) — em vez de Por Classe. Strategy/Livro/Produto é mais informativo pra fundo multi-estratégia. Demais fundos mantêm Por Classe.
+- **Exposure VaR — delta D-vs-D-1** (`expo_renderers._build_expo_unified_table` + helper novo `_prev_hs_var_bps` em `generate_risk_report.py`) — novas células Δ tanto em "Total não-diversificado" (acumula `tot_var_abs_d1` no loop de fatores via `d1_var_pct`) quanto "Diversificado HS portfolio" (D-1 via `series_map.iloc[-2]`). Param novo `diversified_var_bps_d1` em `_build_expo_unified_table`, propagado via `build_exposure_section`/`build_quant_exposure_section`/`build_evolution_exposure_section`.
+
+**Bug fixes 2026-04-29:**
+- **Daily P&L bps mismatch (RJ +8bp vs fund +25bp)** — bug **DUPLO**:
+  1. **Backend** (`fetch_book_pnl`): somava `PL_PCT` (per-position PL/AMOUNT, não somável). Agora calcula tudo como `PL / fund_NAV` em todos os níveis. Adicionado campo `nav` no payload pra debug. Memory: `project_rule_book_pnl_per_position_pct.md`.
+  2. **Frontend** (2 cópias com mesmo bug): group header (RJ/JD/CI/LF) calculava `Σ pl_pct / books.length` — média em vez de soma. Fixado em `daily_monitor.html:402` e `generate_risk_report.py:3938`.
+- **Daily P&L sempre colapsado ao abrir**: `bpnlLoadState` agora descarta `expanded` no load + `bpnlSaveState` só persiste `order` (drag-drop de books). `bgroups` default mudou de `true` → `false` em ambas cópias. **Restart manual do `pnl_server.py` necessário** após editar `data_fetch.py` — Python não recarrega módulos importados.
+- **BALTRA Exposure RF look-through (gap 5.2 → 6.98 yrs vs Prev.xlsx 6.92)** — descoberta crítica: `fetch_albatroz_exposure` filtrava `TRADING_DESK = '{desk}' AND TRADING_DESK_SHARE_SOURCE = '{desk}'`. Removido o `TRADING_DESK = ...` filter. SHARE_SOURCE sozinho captura look-through nativo (BALTRA agora pega IDKA 10Y -1.28y + IDKA 3Y -0.44y + Albatroz cota -0.03y). ALBATROZ não regrediu (não é cotista). Memory: `project_rule_share_source_lookthrough.md`.
+
 ---
 
 ## 8. Armadilhas conhecidas
@@ -234,6 +250,9 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Exposure RF — LFTs (CDI) inflam métricas cosméticas** — `cls_to_idx["LFT"] = "CDI"` em `fetch_albatroz_exposure`. LFTs são floating-rate (mod_dur ≈ 0), e somam em Gross/Net %NAV sem representar risco real. `build_albatroz_exposure` filtra `indexador != "CDI"` no início. Adicionalmente filtra `mod_dur > 0.01` pra remover Equity / IBOVSPFuture / USDBRLFuture / FIDCs / Corn Futures que também não têm rate sensitivity (deixa só CRIs e bonds).
 - **Exposure RF — Net (yrs)** — após o fix de `fetch_albatroz_exposure` (filtro de rate primitive), `delta_brl` é POSITION × MOD_DURATION. Logo `delta_brl/nav` dá duração em yrs direto. Coluna "Net" mostra yrs, não %NAV. `yr_cell(v_brl)` em `expo_renderers.py` faz a conversão.
 - **`fetch_albatroz_exposure` — primitive filter** — engine decompõe NTN-B/DAP em 3 primitives (sovereign spread + IPCA face + IPCA Coupon rate), com sinais inconsistentes entre primitives. SUM(DELTA) sem filtro = garbage. Função filtra UM rate primitive por PRODUCT_CLASS via WHERE clause: NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`. CRIs ainda somam todos primitives (parking lot `memory/project_todo_cri_primitive_decomp.md`).
+- **TRADING_DESK_SHARE_SOURCE faz look-through nativo** — em `LOTE_PRODUCT_EXPO`, filtrar **só** `SHARE_SOURCE='X'` captura direto + look-through. Adicionar `AND TRADING_DESK='X'` filtra fora as cotas do fundo (IDKA, Albatroz, Estrat. Prev. CP) e quebra fundos cotistas (BALTRA, IDKAs). Memory: `project_rule_share_source_lookthrough.md`.
+- **`LOTE_PRODUCT_BOOK_POSITION_PL.PL_PCT` é per-position** — `PL_PCT = PL/AMOUNT` por linha, NÃO somável em agregação por book/PM. Sempre recomputar bps como `PL / fund_NAV` em qualquer agregação. Frontend group header deve **somar** os pl_pct dos books-filhos (que agora são `PL/NAV`), não calcular média. Memory: `project_rule_book_pnl_per_position_pct.md`.
+- **`pnl_server.py` precisa restart manual após editar `data_fetch.py`** — Python importa o módulo uma vez no startup; edits não fazem reload automático. Localizar PID via `wmic process where "CommandLine like '%pnl_server%'" get ProcessId,CommandLine` + `taskkill /PID <pid> /F` + relançar.
 
 ---
 

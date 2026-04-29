@@ -2558,6 +2558,7 @@ def _build_executive_briefing(
     house_rows, factor_matrix, bench_matrix, agg_rows,
     position_changes, vol_regime_map, pm_margem, df_pa,
     frontier_bvar, series_map, td_by_short, ibov, cdi,
+    usdbrl=None, di1_3y=None,
 ) -> str:
     """Curated 3–5 min briefing. Pulls from already-computed structures.
        Rotates headline category to avoid daily repetition; hides sections
@@ -2827,9 +2828,27 @@ def _build_executive_briefing(
             pct = v / 100 if v else 0
             col = "up" if pct >= 0 else "down"
             return f'<span class="mono {col}">{pct:+.2f}%</span>'
+        def _fmt_bps(v):
+            try: f = float(v)
+            except Exception: f = 0.0
+            col = "up" if f <= 0 else "down"  # rate up = juros mais altos = vermelho
+            return f'<span class="mono {col}">{f:+.0f} bps</span>'
+        parts = [
+            f'IBOV {_fmt(ibov.get("dia"))}',
+            f'CDI {_fmt(cdi.get("dia"))}',
+        ]
+        if usdbrl is not None:
+            parts.append(f'BRL {_fmt(usdbrl.get("dia"))}')
+        if di1_3y is not None and di1_3y.get("rate") is not None:
+            inst = di1_3y.get("instrument") or "DI1 3y"
+            rate = di1_3y.get("rate")
+            parts.append(
+                f'{inst} <span class="mono">{rate:.2f}%</span> '
+                f'({_fmt_bps(di1_3y.get("dia_bps"))})'
+            )
         bench_line = (
             f'<div class="brief-benchmarks">Benchmarks hoje: '
-            f'IBOV {_fmt(ibov.get("dia"))} · CDI {_fmt(cdi.get("dia"))}</div>'
+            + " · ".join(parts) + '</div>'
         )
 
     return f"""

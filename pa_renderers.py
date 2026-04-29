@@ -459,10 +459,15 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     bench_enabled = (is_idka and idka_index_ret and w_alb is not None
                      and albatroz_pa_sum is not None)
 
+    # EVOLUTION defaults to "Por Livro" (Strategy hierarchy is more meaningful);
+    # other funds default to "Por Classe" (when no bench view is shown).
+    livro_default = (fund_short == "EVOLUTION")
+    classe_default = (not bench_enabled) and not livro_default
+
     view_classe = _build_pa_view(
         fund_short, df, "classe",
         ["CLASSE", "PRODUCT"], "Classe / Produto",
-        active=(not bench_enabled),  # classe is default only if no bench view
+        active=classe_default,
         cdi=cdi,
     )
 
@@ -472,7 +477,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
         view_livro = _build_pa_view(
             fund_short, df_evo, "livro",
             ["STRATEGY", "LIVRO", "PRODUCT"], "Strategy / Livro / Produto",
-            active=False, cdi=cdi,
+            active=livro_default, cdi=cdi,
         )
     else:
         view_livro = _build_pa_view(
@@ -483,7 +488,8 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
     # 3rd view: bench decomposition — IDKA default
     view_bench = ""
     bench_toggle_btn = ""
-    classe_active_cls = "active" if not bench_enabled else ""
+    classe_active_cls = "active" if classe_default else ""
+    livro_active_cls  = "active" if livro_default  else ""
     if bench_enabled:
         view_bench = _build_pa_bench_decomp_view(
             fund_short, df, cdi, idka_index_ret, w_alb, albatroz_pa_sum, ibov=ibov
@@ -513,7 +519,7 @@ def build_pa_section_hier(fund_short: str, df_pa: pd.DataFrame, cdi: dict,
         <div class="pa-view-toggle">
           <button class="pa-tgl {classe_active_cls}" data-pa-view="classe"
                   onclick="selectPaView(this,'classe')">Por Classe</button>
-          <button class="pa-tgl" data-pa-view="livro"
+          <button class="pa-tgl {livro_active_cls}" data-pa-view="livro"
                   onclick="selectPaView(this,'livro')">Por Livro</button>
           {bench_toggle_btn}
         </div>

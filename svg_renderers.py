@@ -254,3 +254,114 @@ def evo_spark_svg(series: "pd.Series", today_val: float,
       <text x="{width - pad}" y="{my - 4:.1f}" text-anchor="end"
             font-size="10" fill="var(--muted)">média 252d: {mean_val:.2f}</text>
     </svg>"""
+
+
+def multi_line_chart_svg(dates, series, *, width=760, height=280,
+                          title="", y_suffix="%") -> str:
+    """Multi-series line chart over a shared date axis.
+
+    Parameters
+    ----------
+    dates  : iterable of pd.Timestamp / datetime / strings (will be cast)
+    series : list of dicts: {"label": str, "values": list[float], "color": str,
+                              "stroke": float (default 1.6), "dash": str|None}
+    """
+    dates = list(dates)
+    n = len(dates)
+    if n < 2 or not series:
+        return ""
+
+    # Top padding generous to fit horizontal legend without overlap.
+    pad_l, pad_r, pad_t, pad_b = 60, 18, 44, 38
+    plot_w = width  - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+
+    flat = [v for s in series
+              for v in s["values"]
+              if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if not flat:
+        return ""
+    y_min, y_max = float(min(flat)), float(max(flat))
+    if y_max == y_min:
+        y_max = y_min + 1.0
+    pad_y = (y_max - y_min) * 0.08
+    y_min, y_max = y_min - pad_y, y_max + pad_y
+
+    def xpx(i):  return pad_l + (i / (n - 1)) * plot_w
+    def ypx(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return None
+        return pad_t + (1 - (v - y_min) / (y_max - y_min)) * plot_h
+
+    # Y gridlines + labels (5 ticks)
+    grid_lines = []
+    for k in range(5):
+        v = y_min + (y_max - y_min) * k / 4
+        y = pad_t + (1 - k / 4) * plot_h
+        grid_lines.append(
+            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w:.1f}" y2="{y:.1f}" '
+            f'stroke="var(--line-2)" stroke-width="0.4" opacity="0.5"/>'
+            f'<text x="{pad_l - 6}" y="{y + 3:.1f}" text-anchor="end" '
+            f'font-size="10" fill="var(--muted)">{v:.0f}{y_suffix}</text>'
+        )
+
+    # X axis labels: 5 evenly spaced dates
+    x_labels = []
+    for k in range(5):
+        i = int(round(k * (n - 1) / 4))
+        d = pd.Timestamp(dates[i])
+        lbl = d.strftime("%d-%b")
+        x = xpx(i)
+        x_labels.append(
+            f'<text x="{x:.1f}" y="{pad_t + plot_h + 18:.1f}" text-anchor="middle" '
+            f'font-size="10" fill="var(--muted)">{lbl}</text>'
+        )
+
+    # Series polylines
+    line_svgs = []
+    for s in series:
+        pts = []
+        for i, v in enumerate(s["values"]):
+            yv = ypx(v)
+            if yv is None:
+                continue
+            pts.append(f"{xpx(i):.1f},{yv:.1f}")
+        if len(pts) < 2:
+            continue
+        stroke = s.get("stroke", 1.6)
+        dash = f' stroke-dasharray="{s["dash"]}"' if s.get("dash") else ""
+        line_svgs.append(
+            f'<polyline points="{" ".join(pts)}" fill="none" '
+            f'stroke="{s["color"]}" stroke-width="{stroke}"{dash} '
+            f'stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+
+    # Legend (top, horizontal)
+    leg_x = pad_l
+    leg_y = pad_t - 18
+    legend = []
+    for s in series:
+        legend.append(
+            f'<rect x="{leg_x}" y="{leg_y - 6:.1f}" width="14" height="3" '
+            f'rx="1.5" fill="{s["color"]}"/>'
+            f'<text x="{leg_x + 18}" y="{leg_y:.1f}" font-size="10.5" '
+            f'fill="var(--text)">{s["label"]}</text>'
+        )
+        leg_x += 18 + len(s["label"]) * 6.6 + 14
+
+    title_html = (f'<text x="{pad_l}" y="14" font-size="11" font-weight="600" '
+                   f'fill="var(--text)">{title}</text>') if title else ""
+
+    return f"""
+    <svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"
+         style="width:100%;max-width:{width}px;height:{height}px;display:block;font-family:inherit">
+      {title_html}
+      {"".join(grid_lines)}
+      <line x1="{pad_l}" y1="{pad_t + plot_h:.1f}" x2="{pad_l + plot_w:.1f}" y2="{pad_t + plot_h:.1f}"
+            stroke="var(--line-2)" stroke-width="0.6"/>
+      <line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + plot_h:.1f}"
+            stroke="var(--line-2)" stroke-width="0.6"/>
+      {"".join(x_labels)}
+      {"".join(line_svgs)}
+      {"".join(legend)}
+    </svg>"""

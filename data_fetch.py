@@ -1992,8 +1992,7 @@ def fetch_albatroz_exposure(date_str: str = DATA_STR,
                SUM(CASE WHEN "MOD_DURATION" IS NOT NULL
                         THEN "DELTA" * 0.0001 ELSE 0 END)                   AS dv01_brl
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-        WHERE "TRADING_DESK"              = '{desk}'
-          AND "TRADING_DESK_SHARE_SOURCE" = '{desk}'
+        WHERE "TRADING_DESK_SHARE_SOURCE" = '{desk}'
           AND "VAL_DATE"                  = DATE '{date_str}'
           AND "DELTA" <> 0
           AND (
@@ -2391,6 +2390,49 @@ def fetch_macro_pm_book_var(date_str: str = DATA_STR) -> dict[str, float]:
     return out
 
 
+def fetch_macro_pm_var_history(date_str: str = DATA_STR,
+                                lookback_days: int = 121) -> pd.DataFrame:
+    """MACRO PM-level VaR history (last `lookback_days` business days ending at
+       `date_str`). Source: LOTE_FUND_STRESS_RPM (TRADING_DESK='Galapagos Macro
+       FIM', TREE='Main_Macro_Ativos', LEVEL=10) — same query shape as the
+       snapshot helper `fetch_macro_pm_book_var`, just expanded to a date range
+       and pivoted to one column per PM.
+
+       Output columns: VAL_DATE, CI, LF, JD, RJ — values in bps of NAV (positive
+       loss magnitude). Within-PM book offsets are preserved before |·|, so this
+       is diversified within a PM but not across PMs (consistent with snapshot)."""
+    # Pull a wider date window (lookback × 1.45) so we cover weekends/holidays
+    # and still land lookback_days *business* observations. Trim later.
+    cal_window = max(lookback_days * 2, lookback_days + 30)
+    df = read_sql(f"""
+        SELECT "VAL_DATE", "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
+        FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
+        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+          AND "TREE"         = 'Main_Macro_Ativos'
+          AND "LEVEL"        = 10
+          AND "VAL_DATE"    >= DATE '{date_str}' - INTERVAL '{cal_window} days'
+          AND "VAL_DATE"    <= DATE '{date_str}'
+        GROUP BY "VAL_DATE", "BOOK"
+        ORDER BY "VAL_DATE"
+    """)
+    if df.empty:
+        return pd.DataFrame(columns=["VAL_DATE", "CI", "LF", "JD", "RJ"])
+
+    df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
+    rows: list[dict] = []
+    for vd, sub in df.groupby("VAL_DATE"):
+        nav = _latest_nav("Galapagos Macro FIM", vd.strftime("%Y-%m-%d")) or 1.0
+        rec: dict = {"VAL_DATE": vd}
+        for pm in ("CI", "LF", "JD", "RJ"):
+            mask = sub["BOOK"].str.startswith(f"{pm}_") | (sub["BOOK"] == pm)
+            v_brl_signed = float(sub.loc[mask, "var_brl"].sum())
+            rec[pm] = float(abs(v_brl_signed) * 10000 / nav) if nav else 0.0
+        rows.append(rec)
+
+    out = pd.DataFrame(rows).sort_values("VAL_DATE")
+    return out.tail(lookback_days).reset_index(drop=True)
+
+
 def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
     """
     Leaf-level PA rows for MACRO / QUANT / EVOLUTION / GLOBAL.
@@ -2478,6 +2520,55 @@ def fetch_fund_position_changes(short: str, date_str: str, d1_str: str) -> pd.Da
 
     pivot = df.pivot_table(
         index="factor", columns="date_key", values="pct_nav",
+        aggfunc="sum", fill_value=0.0,
+    )
+    if date_str not in pivot.columns: pivot[date_str] = 0.0
+    if d1_str   not in pivot.columns: pivot[d1_str]   = 0.0
+    pivot["pct_d0"] = pivot[date_str]
+    pivot["pct_d1"] = pivot[d1_str]
+    pivot["delta"] = pivot["pct_d0"] - pivot["pct_d1"]
+    return pivot[["pct_d0", "pct_d1", "delta"]].reset_index()
+
+
+def fetch_fund_position_changes_by_product(short: str, date_str: str, d1_str: str) -> pd.DataFrame:
+    """Instrument-level %NAV exposure D-0 vs D-1 for a fund.
+    Returns df with (PRODUCT, factor, pct_d0, pct_d1, delta) or None if no data.
+    Same scope rules as fetch_fund_position_changes."""
+    desk = _FUND_DESK_FOR_EXPO.get(short)
+    if not desk:
+        return None
+    nav = _latest_nav(desk, date_str)
+    if nav is None:
+        return None
+
+    if short == "EVOLUTION":
+        scope = f'"TRADING_DESK_SHARE_SOURCE" = \'{desk}\''
+    else:
+        scope = (f'"TRADING_DESK" = \'{desk}\' AND '
+                 f'"TRADING_DESK_SHARE_SOURCE" = \'{desk}\'')
+
+    df = read_sql(f"""
+        SELECT "VAL_DATE" AS val_date, "PRODUCT", "PRODUCT_CLASS",
+               SUM("DELTA") AS delta_brl
+        FROM "LOTE45"."LOTE_PRODUCT_EXPO"
+        WHERE {scope}
+          AND "VAL_DATE" IN (DATE '{date_str}', DATE '{d1_str}')
+          AND "DELTA" <> 0
+        GROUP BY "VAL_DATE", "PRODUCT", "PRODUCT_CLASS"
+    """)
+    if df.empty:
+        return None
+
+    df["factor"] = df["PRODUCT_CLASS"].map(lambda pc: _PRODCLASS_TO_FACTOR.get(pc))
+    df = df[df["factor"].notna()]
+    if df.empty:
+        return None
+
+    df["pct_nav"] = df["delta_brl"] * 100 / nav
+    df["date_key"] = pd.to_datetime(df["val_date"]).dt.strftime("%Y-%m-%d")
+
+    pivot = df.pivot_table(
+        index=["PRODUCT", "factor"], columns="date_key", values="pct_nav",
         aggfunc="sum", fill_value=0.0,
     )
     if date_str not in pivot.columns: pivot[date_str] = 0.0
@@ -2649,6 +2740,77 @@ def fetch_cdi_returns(date_str: str = DATA_STR) -> dict:
             "ytd": float(r["ytd_bps"]), "m12": float(r["m12_bps"])}
 
 
+def fetch_usdbrl_returns(date_str: str = DATA_STR) -> dict:
+    """BRL return vs USD over DIA/MTD/YTD/12M (bps). Source: public.FX_PRICES_SPOT
+       (INSTRUMENT='BRL', column CLOSE = USD/BRL). Sign convention: USD/BRL up
+       (BRL weakening) → negative (red); USD/BRL down (BRL strengthening) →
+       positive (green). Returns the *negative* of the USD/BRL pct change."""
+    q = f"""
+    SELECT "DATE", "CLOSE"
+    FROM public."FX_PRICES_SPOT"
+    WHERE "INSTRUMENT" = 'BRL'
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '400 days'
+      AND "DATE" <= DATE '{date_str}'
+      AND "CLOSE" IS NOT NULL
+    ORDER BY "DATE"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    df = df.drop_duplicates(subset=["DATE"]).set_index("DATE").sort_index()
+    target = pd.Timestamp(date_str)
+    last = df[df.index <= target]
+    if last.empty:
+        return {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
+    p_now = float(last["CLOSE"].iloc[-1])
+
+    def ret(anchor_date):
+        prior = df[df.index <= anchor_date]
+        if prior.empty:
+            return 0.0
+        p0 = float(prior["CLOSE"].iloc[-1])
+        return -(p_now / p0 - 1.0) * 10000 if p0 else 0.0
+
+    prev_day = last["CLOSE"].iloc[-2] if len(last) >= 2 else p_now
+    dia = -(p_now / float(prev_day) - 1.0) * 10000 if prev_day else 0.0
+    month_start = target.to_period("M").to_timestamp()
+    mtd = ret(month_start - pd.Timedelta(days=1))
+    year_start = pd.Timestamp(f"{target.year}-01-01")
+    ytd = ret(year_start - pd.Timedelta(days=1))
+    m12 = ret(target - pd.DateOffset(years=1))
+    return {"dia": dia, "mtd": mtd, "ytd": ytd, "m12": m12}
+
+
+def fetch_di1_3y_rate(date_str: str = DATA_STR, target_bdays: int = 756) -> dict:
+    """3y-forward DI1 rate (constant tenor, rolls with date). For each DATE, picks
+       the DI1 contract whose BDAYS is closest to target_bdays (default 756 ≈ 3y).
+       Returns: {"rate": pct a.a., "prev": pct a.a., "dia_bps": rate change in bps}."""
+    q = f"""
+    SELECT "DATE", "INSTRUMENT", "CLOSE", "BDAYS"
+    FROM public."FUTURES_PRICES"
+    WHERE "INSTRUMENT" ~ '^DI1'
+      AND "DATE" >= DATE '{date_str}' - INTERVAL '15 days'
+      AND "DATE" <= DATE '{date_str}'
+      AND "CLOSE" IS NOT NULL
+      AND "BDAYS" BETWEEN {max(1, target_bdays - 252)} AND {target_bdays + 252}
+    ORDER BY "DATE", "BDAYS"
+    """
+    df = read_sql(q)
+    if df.empty:
+        return {"rate": None, "prev": None, "dia_bps": 0.0, "instrument": None}
+    df["DATE"] = pd.to_datetime(df["DATE"])
+    df["dist"] = (df["BDAYS"] - target_bdays).abs()
+    nearest = df.loc[df.groupby("DATE")["dist"].idxmin()].sort_values("DATE")
+    if nearest.empty:
+        return {"rate": None, "prev": None, "dia_bps": 0.0, "instrument": None}
+    rate = float(nearest["CLOSE"].iloc[-1])
+    instrument = str(nearest["INSTRUMENT"].iloc[-1])
+    prev = float(nearest["CLOSE"].iloc[-2]) if len(nearest) >= 2 else rate
+    dia_bps = (rate - prev) * 100
+    return {"rate": rate, "prev": prev, "dia_bps": dia_bps, "instrument": instrument}
+
+
 # ── Book PnL + Peers ──────────────────────────────────────────────────────────
 
 _BOOK_PNL_FUND_MAP: dict[str, str] = {
@@ -2696,6 +2858,20 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
     funds: dict[str, dict] = {}
     for desk, fdf in df.groupby("TRADING_DESK", sort=False):
         short = _BOOK_PNL_FUND_MAP.get(desk, desk)
+        # Denominator for bps: fund NAV at val_date. Σ PL_PCT (per-position
+        # PL/AMOUNT) is meaningless when aggregated by book/PM. Recompute
+        # bps everywhere as PL / fund_nav so book/class/position bps add up.
+        fund_nav = _latest_nav(desk, val_date_str)
+        if not fund_nav:
+            # Fallback: |sum AMOUNT| as NAV proxy (less accurate)
+            fund_nav = abs(float(fdf["AMOUNT"].sum())) or None
+
+        def _bps_pct(pl: float) -> float:
+            """Returns PL/NAV as decimal (frontend multiplies by 10000)."""
+            if not fund_nav:
+                return 0.0
+            return float(pl) / float(fund_nav)
+
         books: list[dict] = []
         for book, bdf in fdf.groupby("BOOK", sort=False):
             classes: list[dict] = []
@@ -2705,7 +2881,7 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
                         {
                             "desc":     str(r.DESCRIPTION or ""),
                             "pl":       round(float(r.PL or 0),          2),
-                            "pl_pct":   round(float(r.PL_PCT or 0),      8),
+                            "pl_pct":   round(_bps_pct(r.PL or 0),       8),
                             "pos_pl":   round(float(r.POSITION_PL or 0), 2),
                             "trade_pl": round(float(r.TRADES_PL or 0),   2),
                             "position": round(float(r.POSITION or 0),    2),
@@ -2715,24 +2891,28 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
                     ],
                     key=lambda x: abs(x["pl"]), reverse=True,
                 )
+                cls_pl = float(cdf["PL"].sum())
                 classes.append({
                     "class":     cls,
-                    "pl":        round(float(cdf["PL"].sum()),     2),
-                    "pl_pct":    round(float(cdf["PL_PCT"].sum()), 8),
+                    "pl":        round(cls_pl, 2),
+                    "pl_pct":    round(_bps_pct(cls_pl), 8),
                     "positions": positions,
                 })
             classes.sort(key=lambda x: abs(x["pl"]), reverse=True)
+            book_pl = float(bdf["PL"].sum())
             books.append({
                 "book":    book,
-                "pl":      round(float(bdf["PL"].sum()),     2),
-                "pl_pct":  round(float(bdf["PL_PCT"].sum()), 8),
+                "pl":      round(book_pl, 2),
+                "pl_pct":  round(_bps_pct(book_pl), 8),
                 "classes": classes,
             })
         books.sort(key=lambda x: abs(x["pl"]), reverse=True)
+        fund_pl = float(fdf["PL"].sum())
         funds[short] = {
             "desk":          desk,
-            "total_pl":      round(float(fdf["PL"].sum()),       2),
-            "total_pl_pct":  round(float(fdf["PL_PCT"].sum()),   8),
+            "nav":           round(float(fund_nav), 2) if fund_nav else None,
+            "total_pl":      round(fund_pl, 2),
+            "total_pl_pct":  round(_bps_pct(fund_pl), 8),
             "total_trade_pl":round(float(fdf["TRADES_PL"].sum()), 2),
             "books":         books,
         }

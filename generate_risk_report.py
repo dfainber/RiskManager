@@ -30,7 +30,7 @@ from risk_config import (
     ALERT_COMMENTS,
     _FUND_PEERS_GROUP,
 )
-from svg_renderers import make_sparkline, range_bar_svg
+from svg_renderers import make_sparkline, range_bar_svg, multi_line_chart_svg
 from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav
 from metrics import (
     compute_pm_hs_var,
@@ -112,11 +112,15 @@ from data_fetch import (
     fetch_macro_pm_book_var,
     fetch_pa_leaves,
     fetch_fund_position_changes,
+    fetch_fund_position_changes_by_product,
+    fetch_macro_pm_var_history,
     fetch_pa_daily_per_product,
     fetch_idka_index_returns,
     fetch_idka_albatroz_weight,
     fetch_ibov_returns,
     fetch_cdi_returns,
+    fetch_usdbrl_returns,
+    fetch_di1_3y_rate,
     fetch_book_pnl,
     fetch_peers_data,
     fetch_market_snapshot,
@@ -177,6 +181,9 @@ class ReportData:
     df_pa:            Optional[pd.DataFrame]    = None
     cdi:              Optional[pd.Series]       = None
     ibov:             Optional[pd.Series]       = None
+    usdbrl:           Optional[dict]            = None
+    di1_3y:           Optional[dict]            = None
+    macro_pm_var_hist: Optional[pd.DataFrame]   = None
     df_pa_daily:      Optional[pd.DataFrame]    = None
     idka_idx_ret:     Optional[dict]            = None
     walb:             Optional[dict]            = None
@@ -543,6 +550,19 @@ def build_html(d: ReportData) -> str:
             return None
         return abs(float(s_avail.iloc[-1]["var_pct"])) * 100.0
 
+    def _prev_hs_var_bps(short: str) -> float | None:
+        """D-1 fund-level HS VaR (bps) — for delta vs today."""
+        td = td_by_short.get(short)
+        if td is None:
+            return None
+        s = series_map.get(td)
+        if s is None or s.empty:
+            return None
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if len(s_avail) < 2:
+            return None
+        return abs(float(s_avail.iloc[-2]["var_pct"])) * 100.0
+
 
     for short in FUND_ORDER:
         td = td_by_short.get(short)
@@ -645,6 +665,66 @@ def build_html(d: ReportData) -> str:
           </div>
         </section>"""
         sections.append((short, "risk-monitor", risk_monitor_html))
+
+        # MACRO PM VaR history chart — inline below Risk Monitor (CI/LF/RJ/JD + fund total).
+        if short == "MACRO" and d.macro_pm_var_hist is not None and not d.macro_pm_var_hist.empty:
+            try:
+                pm_hist = d.macro_pm_var_hist
+                # Fund total series — pull last 121 obs from series_map (consistent with sparkline source)
+                fund_s = series_map.get(td_by_short.get("MACRO"))
+                if fund_s is not None and not fund_s.empty:
+                    fund_s = fund_s[fund_s["VAL_DATE"] <= DATA].tail(len(pm_hist))
+                # Units: tudo em bps de NAV.
+                #   fund_s["var_pct"] está em pct (0.57 = 0.57%) → ×100 = bps.
+                #   pm_hist[pm] já está em bps (× 10000 / NAV).
+                fund_vals = (fund_s["var_pct"].abs() * 100).tolist() if fund_s is not None and not fund_s.empty else []
+                dates = pm_hist["VAL_DATE"].tolist()
+                if len(fund_vals) != len(dates):
+                    if fund_s is not None and not fund_s.empty:
+                        merged = pm_hist[["VAL_DATE"]].merge(
+                            fund_s[["VAL_DATE", "var_pct"]], on="VAL_DATE", how="left"
+                        )
+                        merged["var_pct"] = merged["var_pct"].ffill().bfill()
+                        fund_vals = (merged["var_pct"].abs() * 100).tolist()
+                    else:
+                        fund_vals = []
+                series_payload = []
+                if fund_vals:
+                    series_payload.append({
+                        "label": "Fund (total)", "values": fund_vals,
+                        "color": "#facc15", "stroke": 2.4,
+                    })
+                # Brand-aligned palette: blue family for PMs, gold for fund total.
+                pm_colors = {
+                    "CI": "#5aa3e8",   # brand blue
+                    "LF": "#1a8fd1",   # deep blue (sparkline VaR)
+                    "RJ": "#22d3ee",   # cyan
+                    "JD": "#a78bfa",   # purple
+                }
+                for pm in ("CI", "LF", "RJ", "JD"):
+                    if pm in pm_hist.columns:
+                        series_payload.append({
+                            "label": pm,
+                            "values": [float(v) for v in pm_hist[pm].tolist()],
+                            "color": pm_colors[pm], "stroke": 1.4,
+                        })
+                chart_svg = multi_line_chart_svg(
+                    dates, series_payload, width=820, height=320,
+                    y_suffix=" bps",
+                )
+                sections.append(("MACRO", "risk-monitor", f"""
+                <section class="card">
+                  <div class="card-head">
+                    <span class="card-title">VaR Histórico</span>
+                    <span class="card-sub">— MACRO · Fund + PMs (CI/LF/RJ/JD) · últimos {len(dates)}d úteis</span>
+                  </div>
+                  {chart_svg}
+                  <div class="bar-legend" style="margin-top:8px">
+                    Fund total via <code>LOTE_FUND_STRESS_RPM</code> (LEVEL=2). PMs via mesma tabela TREE='Main_Macro_Ativos' (LEVEL=10), agregando |Σ signed PARAMETRIC_VAR| por book do PM. Diversificado dentro do PM, não entre PMs.
+                  </div>
+                </section>"""))
+            except Exception as _e:
+                print(f"  MACRO PM VaR history chart failed ({_e})")
 
         # Diversificação — só para EVOLUTION, imediatamente após Risk Monitor
         if short == "EVOLUTION":
@@ -821,7 +901,8 @@ def build_html(d: ReportData) -> str:
         sections.append(("MACRO", "stop-monitor", _stop_html + _bvv_html))
     if df_expo is not None:
         _expo_html = build_exposure_section(df_expo, df_var, macro_aum, df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
-                                            diversified_var_bps=_latest_hs_var_bps("MACRO"))
+                                            diversified_var_bps=_latest_hs_var_bps("MACRO"),
+                                            diversified_var_bps_d1=_prev_hs_var_bps("MACRO"))
         if expo_date_label:
             _stale_banner = (f'<div style="background:#7c2d12;color:#fca5a5;font-size:11px;padding:4px 12px;'
                              f'border-radius:4px;margin-bottom:6px">⚠ Dados de exposição indisponíveis para '
@@ -917,6 +998,7 @@ def build_html(d: ReportData) -> str:
             df_var=df_quant_var,
             df_var_d1=df_quant_var_d1,
             diversified_var_bps=_latest_hs_var_bps("QUANT"),
+            diversified_var_bps_d1=_prev_hs_var_bps("QUANT"),
         )
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
@@ -930,6 +1012,7 @@ def build_html(d: ReportData) -> str:
             df_var_d1=df_evo_var_d1,
             df_pnl_prod=df_evo_pnl_prod,
             diversified_var_bps=_latest_hs_var_bps("EVOLUTION"),
+            diversified_var_bps_d1=_prev_hs_var_bps("EVOLUTION"),
         )
         if e_expo_html:
             sections.append(("EVOLUTION", "exposure", e_expo_html))
@@ -1224,8 +1307,10 @@ def build_html(d: ReportData) -> str:
     #   Equity BR (IBOV)                        → Frontier NAV (100% long); others pending
     factor_matrix = {  # factor_key -> {short: brl, ...}
         "Juros Reais (IPCA)": {},
+        "Juros Reais (IGPM)": {},
         "Juros Nominais":     {},
         "IPCA Idx":           {},
+        "IGPM Idx":           {},
         "Equity BR":          {},
         "Equity DM":          {},
         "Equity EM":          {},
@@ -1237,7 +1322,8 @@ def build_html(d: ReportData) -> str:
         # factor_matrix usa convenção DV01 (tomado=positivo, dado=negativo).
         # → negar apenas "real" e "nominal" (fatores de taxa); "ipca_idx" é carry,
         # sem flip no rf_expo_maps, não precisa negar.
-        _DV01_SIGN_FLIP = {"real": True, "nominal": True, "ipca_idx": False}
+        _DV01_SIGN_FLIP = {"real": True, "real_igpm": True, "nominal": True,
+                           "ipca_idx": False, "igpm_idx": False}
         for short_k, df_k in rf_expo_maps.items():
             if df_k is None or df_k.empty:
                 continue
@@ -1254,7 +1340,13 @@ def build_html(d: ReportData) -> str:
             df_direct = df_k[df_k["via"] == "direct"]
             if df_direct.empty:
                 continue
-            for factor_key, factor_col in [("Juros Reais (IPCA)", "real"), ("Juros Nominais", "nominal"), ("IPCA Idx", "ipca_idx")]:
+            for factor_key, factor_col in [
+                ("Juros Reais (IPCA)", "real"),
+                ("Juros Reais (IGPM)", "real_igpm"),
+                ("Juros Nominais",     "nominal"),
+                ("IPCA Idx",           "ipca_idx"),
+                ("IGPM Idx",           "igpm_idx"),
+            ]:
                 v = float(df_direct[df_direct["factor"] == factor_col]["ano_eq_brl"].sum())
                 if _DV01_SIGN_FLIP.get(factor_col, False):
                     v = -v
@@ -1589,7 +1681,7 @@ def build_html(d: ReportData) -> str:
         position_changes=position_changes, vol_regime_map=vol_regime_map,
         pm_margem=pm_margem, df_pa=df_pa, frontier_bvar=frontier_bvar,
         series_map=series_map, td_by_short=td_by_short,
-        ibov=ibov, cdi=cdi,
+        ibov=ibov, cdi=cdi, usdbrl=d.usdbrl, di1_3y=d.di1_3y,
     )
 
     # Camada 4 — headline no topo do Summary quando o alerta do Evolution está aceso
@@ -3862,9 +3954,10 @@ window._RPT_PEERS         = _RPT_PEERS;
     BOOK_GROUPS.forEach(function(def) {{
       var bucket = grpMap[def.id];
       if (!bucket||!bucket.books.length) return;
-      var gOpen = st.bgroups[def.id]!==undefined ? st.bgroups[def.id] : true;
+      var gOpen = st.bgroups[def.id]!==undefined ? st.bgroups[def.id] : false;
       var grpPl = bucket.books.reduce(function(s,b){{return s+(b.pl||0);}},0);
-      var grpPct = bucket.books.length ? bucket.books.reduce(function(s,b){{return s+(b.pl_pct||0);}},0)/bucket.books.length : null;
+      // Sum (not average) — pl_pct is PL/fund_NAV per book, additive across books.
+      var grpPct = bucket.books.reduce(function(s,b){{return s+(b.pl_pct||0);}},0);
       var gRow = document.createElement('tr');
       gRow.style.cssText = 'cursor:pointer;background:var(--bg-2)';
       gRow.innerHTML = '<td style="padding:5px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">' +
@@ -3965,7 +4058,7 @@ window.refreshRptPnl = function() {{
     var w    = Math.min((Math.abs(v)/(colMax||0.001))*50,50);
     var bar  = v>=0 ? 'left:50%;width:'+w+'%' : 'right:50%;width:'+w+'%';
     var col2 = v>=0 ? '#26a65b' : '#e74c3c';
-    var lbl  = (v>=0?'+':'')+pct.toFixed(2)+(_mode==='alpha'?'pp':'%');
+    var lbl  = (v>=0?'+':'')+pct.toFixed(2)+'%';
     return '<td class="ret-cell" style="padding:6px 12px;min-width:110px'+sc+'">' +
       '<div style="position:relative;display:flex;align-items:center;justify-content:flex-end;min-width:80px;height:20px">' +
       '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)"></div>' +
@@ -4032,7 +4125,7 @@ window.refreshRptPnl = function() {{
     var groupFundName= (g.fund_name||'').toUpperCase();
     var isAlpha      = _mode === 'alpha';
     var win          = _rptWin;
-    var suffix       = isAlpha ? 'pp' : '%';
+    var suffix       = '%';
     var benches      = (g.benchmarks||['CDI']).map(function(k){{return _RPT_PEERS.benchmarks&&_RPT_PEERS.benchmarks[k];}}).filter(Boolean).map(function(b){{return Object.assign({{}},b,{{is_bench:true}});}});
     var allRows      = (g.peers||[]).concat(benches);
 
@@ -4145,7 +4238,7 @@ window.refreshRptPnl = function() {{
     var bmForAlpha   = (_RPT_PEERS.benchmarks||{{}})[alphaBmKey];
     var groupFundName= (g.fund_name||'').toUpperCase();
     var isAlpha      = _mode === 'alpha';
-    var suffix       = isAlpha ? 'pp' : '%';
+    var suffix       = '%';
     var benches      = (g.benchmarks||['CDI']).map(function(k){{return _RPT_PEERS.benchmarks&&_RPT_PEERS.benchmarks[k];}}).filter(Boolean).map(function(b){{return Object.assign({{}},b,{{is_bench:true}});}});
     var allRows      = (g.peers||[]).concat(benches);
 
@@ -4629,6 +4722,8 @@ def main():  # noqa: C901
         fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
         fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
         fut_ibov       = ex.submit(fetch_ibov_returns, DATA_STR)
+        fut_usdbrl     = ex.submit(fetch_usdbrl_returns, DATA_STR)
+        fut_di1_3y     = ex.submit(fetch_di1_3y_rate, DATA_STR)
         fut_idka_idx = {
             "IDKA_3Y":  ex.submit(fetch_idka_index_returns, "IDKA_IPCA_3A",  DATA_STR),
             "IDKA_10Y": ex.submit(fetch_idka_index_returns, "IDKA_IPCA_10A", DATA_STR),
@@ -4668,6 +4763,11 @@ def main():  # noqa: C901
             short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
+        fut_chg_prod   = {
+            short: ex.submit(fetch_fund_position_changes_by_product, short, DATA_STR, d1_str)
+            for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
+        }
+        fut_macro_pm_hist = ex.submit(fetch_macro_pm_var_history, DATA_STR, 121)
         _pnl_date      = str(_prev_bday(DATA))
         fut_book_pnl    = ex.submit(fetch_book_pnl,        _pnl_date)
         fut_peers_data       = ex.submit(fetch_peers_data, DATA_STR, "current")
@@ -4802,6 +4902,18 @@ def main():  # noqa: C901
         print(f"  IBOV fetch failed ({e})")
         ibov = None
 
+    try:
+        usdbrl = fut_usdbrl.result()
+    except Exception as e:
+        print(f"  USDBRL fetch failed ({e})")
+        usdbrl = None
+
+    try:
+        di1_3y = fut_di1_3y.result()
+    except Exception as e:
+        print(f"  DI1 3y fetch failed ({e})")
+        di1_3y = None
+
     idka_idx_ret = {}
     for k, fut in fut_idka_idx.items():
         try:
@@ -4930,6 +5042,20 @@ def main():  # noqa: C901
             print(f"  {short} position changes failed ({e})")
             position_changes[short] = None
 
+    position_changes_prod = {}
+    for short, fut in fut_chg_prod.items():
+        try:
+            position_changes_prod[short] = fut.result()
+        except Exception as e:
+            print(f"  {short} position changes (by product) failed ({e})")
+            position_changes_prod[short] = None
+
+    try:
+        macro_pm_var_hist = fut_macro_pm_hist.result()
+    except Exception as e:
+        print(f"  MACRO PM VaR history failed ({e})")
+        macro_pm_var_hist = None
+
     # Resolve NAV pre-warms (side effect is populating _NAV_CACHE)
     try:
         fut_navs.result()
@@ -5020,7 +5146,9 @@ def main():  # noqa: C901
         df_frontier=df_frontier, frontier_bvar=frontier_bvar, frontier_bvar_d1=frontier_bvar_d1,
         df_frontier_ibov=df_frontier_ibov, df_frontier_smll=df_frontier_smll,
         df_frontier_sectors=df_frontier_sectors,
-        df_pa=df_pa, cdi=cdi, ibov=ibov, df_pa_daily=df_pa_daily,
+        df_pa=df_pa, cdi=cdi, ibov=ibov, usdbrl=usdbrl, di1_3y=di1_3y,
+        macro_pm_var_hist=macro_pm_var_hist,
+        df_pa_daily=df_pa_daily,
         idka_idx_ret=idka_idx_ret, walb=walb, rf_expo_maps=rf_expo_maps,
         position_changes=position_changes,
         dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
