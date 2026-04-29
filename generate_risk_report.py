@@ -3036,6 +3036,13 @@ def build_html(d: ReportData) -> str:
     card.querySelectorAll('[data-bench-section]').forEach(function(s) {{
       s.style.display = (s.dataset.benchSection === bench) ? '' : 'none';
     }});
+    // Reset mode to Forward when switching bench tab — Backward shows realized
+    // 252d which doesn't always exist for the comparison/replication views, so
+    // Forward is a safer default (avoids landing on an empty / gray-out view).
+    card.dataset.activeMode = 'forward';
+    card.querySelectorAll('.dist-btn[data-mode]').forEach(function(b) {{
+      b.classList.toggle('active', b.dataset.mode === 'forward');
+    }});
     // Re-apply mode/window visibility so views inside the new bench section
     // show the right Backward/Forward × 1d/21d combo (otherwise all 4 stay hidden).
     _applyDistVisibility(card);
