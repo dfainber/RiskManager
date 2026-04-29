@@ -41,14 +41,16 @@ Skills são **complementares, não redundantes**. Não consolidar sem discutir.
 
 ## 3. Módulos do gerador
 
-`generate_risk_report.py` é o orquestrador (4282 linhas). Módulos auxiliares:
+`generate_risk_report.py` é o orquestrador (~5050 linhas). Módulos auxiliares:
 
 | Arquivo              | Responsabilidade                                              |
 |----------------------|---------------------------------------------------------------|
 | `risk_runtime.py`    | `DATA_STR`, `_parse_date_arg`, `fmt_br_num`                  |
 | `risk_config.py`     | `FUNDS`, mandatos, PA keys, `_PM_LIVRO`, `_EVO_*`, `_DIST_PORTFOLIOS` |
 | `db_helpers.py`      | `_latest_nav`, `_prev_bday`, `fetch_all_latest_navs`         |
-| `data_fetch.py`      | Todos os `fetch_*` (36 funções públicas)                     |
+| `data_fetch.py`      | Todos os `fetch_*` (~41 funções públicas)                    |
+| `vardod_renderers.py`| VaR DoD attribution modal (trigger + scaffold + JS + CSS)    |
+| `pmovers_renderers.py`| Top Movers Produto modal (per-fund popup PA card)           |
 | `metrics.py`         | `compute_pm_hs_var`, `compute_frontier_bvar_hs`, `compute_pa_outliers`, vol regime |
 | `svg_renderers.py`   | `range_bar_svg`, `stop_bar_svg`, `range_line_svg`, sparklines |
 | `pa_renderers.py`    | PA tree, lazy-render JSON, section assembler                 |
@@ -68,8 +70,8 @@ de Excel, CSV ou JSON em runtime. Mandatos estão hardcoded nos dicts `FUNDS` /
 | Schema      | Tabela                                      | Uso                                          |
 |-------------|---------------------------------------------|----------------------------------------------|
 | `LOTE45`    | `LOTE_TRADING_DESKS_NAV_SHARE`              | NAV share por mesa/fundo                     |
-| `LOTE45`    | `LOTE_FUND_STRESS_RPM`                      | VaR/Stress fundo (LEVEL=10) — MACRO/QUANT/EVO |
-| `LOTE45`    | `LOTE_FUND_STRESS`                          | VaR/Stress produto — ALBATROZ + MACRO_Q (SUM por TRADING_DESK) |
+| `LOTE45`    | `LOTE_FUND_STRESS_RPM`                      | VaR/Stress fundo — MACRO/QUANT/EVO (LEVEL=2/3) + BALTRA (LEVEL=10, look-through nativo) |
+| `LOTE45`    | `LOTE_FUND_STRESS`                          | VaR/Stress produto — ALBATROZ + MACRO_Q (SUM por TRADING_DESK + filtro `TREE='Main'`) |
 | `LOTE45`    | `LOTE_PARAMETRIC_VAR_TABLE`                 | BVaR + VaR IDKAs; fração decimal; filtrar `BOOKS::text='{*}'` |
 | `LOTE45`    | `LOTE_BOOK_STRESS_RPM`                      | VaR por book/RF (LEVEL=3)                    |
 | `LOTE45`    | `LOTE_PRODUCT_EXPO`                         | Exposição/delta — usar `TRADING_DESK_SHARE_SOURCE` |
@@ -187,13 +189,10 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **BALTRA look-through synthetic parents** (`data_fetch._regroup_lookthrough` + `_fetch_lookthrough_source_funds`) — modal BALTRA agrupa posições look-through sob 3 parent rows: ↻ IDKA 10Y holdings (10 children) · ↻ IDKA 3Y holdings (9) · ↻ Albatroz holdings (22). Direct rows (Prev book, CRIs) ficam standalone. Workaround usando cross-join LOTE_FUND_STRESS × LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE — quando upstream popular BALTRA em LOTE_FUND_STRESS_RPM (que faz isso nativo igual MACRO/QUANT/EVO), simplificar dispatch. Parking lot em `memory/project_todo_baltra_lote_fund_stress_rpm.md`.
 - **Fund switcher scroll-to-top** (`generate_risk_report.selectFund` JS) — clicar em outro fundo no nav agora scrollTo(0) instant. Antes ficava na posição vertical anterior.
 
-**Features entregues 2026-04-28 (sexta sessão):**
-- **VaR DoD attribution wired into Comments** (`generate_risk_report._dod_top_driver` + `summary_renderers.build_comments_card`) — replace hand-rolled `_top1_var_delta` (cobertura só MACRO/QUANT/EVO) por unified pull de `fetch_var_dod_decomposition`. Cobertura agora full-suite 9 fundos. Bullet 1-line inclui: `metric_lbl ΔX bps · driver: <leaf> (Δy bps) · [pos +A / marg +B] · ⚠ override`. Threshold default 5 bps; IDKAs 2 bps. Decomp pos/marg só renderiza quando fundo publica per-row pos data. Override flag só dispara quando `|ratio + 1| > 0.05` (correção material). Performance: prefetch único de 9 DoD dataframes compartilhado com modal payload (build_vardod_data_payload aceita `prefetched_dfs` kwarg).
-- **VaR DoD driver — exclude bench primitive** (`_dod_top_driver`) — IDKA passivo (`PRIMITIVE='IDKA IPCA 3Y'`/`'IDKA IPCA 10Y'`) é mecanicamente o top |Δ| mas comunicativamente errado (não é decisão do gestor — é tracking 100% NAV com override). Filter: `df[df["label"] != bench_primitive]` antes de selecionar driver. Fallback pro bench se for o único mover. Resolved via `_VAR_DOD_DISPATCH[fund_key][3]` (cfg 4º campo).
-- **Top Movers Produto modal** (`pmovers_renderers.py` novo + trigger no PA card head + injection em `build_html`) — popup acionado por botão "Top Movers Produto →" no header de cada PA card. Modal 4 colunas (DIA / MTD / YTD / 12M), cada coluna com 5 PIORES (vermelho) + 5 MELHORES (verde). Source: `df_pa` (REPORT_ALPHA_ATRIBUTION dia/mtd/ytd/m12 _bps). Tag compacto por CLASSE (`[RV BZ]`, `[BRLUSD]`, `[FX Carry]`, `[RF IPCA]`, `[ETF Opt]`). ESC/backdrop fecha. Cobertura: 9 fundos (FRONTIER inclusive via GFA key).
-- **Pmovers — consolidação de futuros + filtros** (`pmovers_renderers._consolidate_product` + `_FX_HEDGE_LIVROS`) — futuros consolidados por ativo subjacente (regex Brazilian fut pattern: `<prefix>[FGHJKMNQUVXZ]<2dig>`). Exemplos: `WDOK26 + WDOG26 + WDOM26 → WDO*`; `DI1F33 + DI1F28 → DI1*`; `DAPK35 → DAP*`. Non-futures unchanged (ETFs, options, equities). Filter adicional: drop `PRODUCT='Cash USD'` + LIVROs `{Caixa USD, Cash USD, Caixa USD Futures}` (FX hedge collateral, não alpha). Custos/Caixa/Provisions já filtrados.
-- **Mirror save F:\Bloomberg\Risk_Manager\Data\Morningcall** (`generate_risk_report.main`) — após salvar HTML em `data/morning-calls/`, escreve segunda cópia em `F:\Bloomberg\Risk_Manager\Data\Morningcall\` (shared distribution location). `mkdir(parents=True, exist_ok=True)`. Falha no mirror loga warning mas não derruba o save principal.
-- **Top 3 banner Frontier PA** (`fund_renderers.build_frontier_lo_section`) — banner 2-half (verde esquerda / vermelha direita) entre metric chips e tabela de posições, mostrando os 3 maiores contribuidores e detratores daily via `TOTAL_ATRIBUTION_DAY`. CSS inline; chips compactos com ticker+value.
+**Features entregues 2026-04-28 (quarta sessão):**
+- **VaR DoD modal — relabel "Vol eff" → "Marg eff" + footnote rewrite** (`vardod_renderers.py`) — coluna passou a se chamar "Marg eff", headline mostra "marginal (Δg)" em vez de "vol/marginal", e footnote esclarece que `g = contrib/pos` é a contribuição marginal de VaR por BRL de exposição (absorve mudanças de vol E correlação — engine não isola σ). Dispara dúvida recorrente: "vol_effect" é equívoco; o que medimos é mudança de risco-por-BRL holding pos constante.
+- **VaR DoD — FRONTIER coverage** (`data_fetch._var_dod_frontier` + `_VAR_DOD_DISPATCH["FRONTIER"]` source `frontier_hs` + trigger em `expo_renderers.build_frontier_exposure_section`) — fecha cobertura full-suite (9 fundos). Decomposição via component-VaR no q05 worst-day scenario: `component_i = (w_i − w_ibov_i) × r_i_at_q05`, soma exata = -BVaR_pct. Fallback: quando `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD` upstream não tem D-1 (hoje só tem 1 data populada), reusa pesos de hoje em D-1 — captura só shift de cenário, sem efeito de posição. Caveat surfaced via novo campo `df.attrs["modal_note"]` → payload `modal_note` → warning bar com prefix "ℹ".
+- **Modal warning bar — dual-channel** (`vardod_renderers.VARDOD_JS`) — agora suporta `modal_note` (caveat por fundo, prefixo ℹ) E row-level overrides (engine artifact IDKA, prefixo ⚠). Multi-line via `<br>`. Refactor pra desacoplar "info do modal" de "row destacada amarela" — antes setar override em row pra surfaceá uma mensagem genérica pintava o row de amarelo erroneamente.
 
 **Features entregues 2026-04-28 (quinta sessão):**
 - **BALTRA migration → LOTE_FUND_STRESS_RPM** (`data_fetch._VAR_DOD_DISPATCH["BALTRA"]: lote_fund → rpm_book`) — RPM populado upstream desde 2026-04-07 (LEVEL=10 com look-through nativo). Modal DoD agora compacto (13 BOOK rows, antes 87+ produtos com synthetic ↻ parents). Sem necessidade de cross-join LOTE_PRODUCT_EXPO. Workaround antigo (`_regroup_lookthrough`) ainda existe pra ALBATROZ/MACRO_Q (que continuam em LOTE_FUND_STRESS).
@@ -204,10 +203,18 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Cobertura IGPM no kit**: BALTRA (NTNC 01/01/2031 book Prev, 51.6M ano_eq, ~1.02yr) + EVOLUTION (via Evo Strategy CI_Macro look-through, 30.7M ano_eq, ~0.11yr). PA `REPORT_ALPHA_ATRIBUTION` já tinha CLASSE='RF BZ IGP-M' separada — PA cards renderizam automaticamente. Para 252d HS / vol regime / replication: tratar IGPM como IPCA proxy (sem vertices upstream — ver `memory/project_rule_igpm_treatment.md`).
 - **Lista de distribuição daily** (`scripts/send_risk_monitor_email.ps1`) — BCC expandido de 9 → 31 destinatários (lista completa do time).
 
-**Features entregues 2026-04-28 (quarta sessão):**
-- **VaR DoD modal — relabel "Vol eff" → "Marg eff" + footnote rewrite** (`vardod_renderers.py`) — coluna passou a se chamar "Marg eff", headline mostra "marginal (Δg)" em vez de "vol/marginal", e footnote esclarece que `g = contrib/pos` é a contribuição marginal de VaR por BRL de exposição (absorve mudanças de vol E correlação — engine não isola σ). Dispara dúvida recorrente: "vol_effect" é equívoco; o que medimos é mudança de risco-por-BRL holding pos constante.
-- **VaR DoD — FRONTIER coverage** (`data_fetch._var_dod_frontier` + `_VAR_DOD_DISPATCH["FRONTIER"]` source `frontier_hs` + trigger em `expo_renderers.build_frontier_exposure_section`) — fecha cobertura full-suite (9 fundos). Decomposição via component-VaR no q05 worst-day scenario: `component_i = (w_i − w_ibov_i) × r_i_at_q05`, soma exata = -BVaR_pct. Fallback: quando `frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD` upstream não tem D-1 (hoje só tem 1 data populada), reusa pesos de hoje em D-1 — captura só shift de cenário, sem efeito de posição. Caveat surfaced via novo campo `df.attrs["modal_note"]` → payload `modal_note` → warning bar com prefix "ℹ".
-- **Modal warning bar — dual-channel** (`vardod_renderers.VARDOD_JS`) — agora suporta `modal_note` (caveat por fundo, prefixo ℹ) E row-level overrides (engine artifact IDKA, prefixo ⚠). Multi-line via `<br>`. Refactor pra desacoplar "info do modal" de "row destacada amarela" — antes setar override em row pra surfaceá uma mensagem genérica pintava o row de amarelo erroneamente.
+**Features entregues 2026-04-28 (sexta sessão):**
+- **VaR DoD attribution wired into Comments** (`generate_risk_report._dod_top_driver` + `summary_renderers.build_comments_card`) — replace hand-rolled `_top1_var_delta` (cobertura só MACRO/QUANT/EVO) por unified pull de `fetch_var_dod_decomposition`. Cobertura agora full-suite 9 fundos. Bullet 1-line inclui: `metric_lbl ΔX bps · driver: <leaf> (Δy bps) · [pos +A / marg +B] · ⚠ override`. Threshold default 5 bps; IDKAs 2 bps. Decomp pos/marg só renderiza quando fundo publica per-row pos data. Override flag só dispara quando `|ratio + 1| > 0.05` (correção material). Performance: prefetch único de 9 DoD dataframes compartilhado com modal payload (build_vardod_data_payload aceita `prefetched_dfs` kwarg).
+- **VaR DoD driver — exclude bench primitive** (`_dod_top_driver`) — IDKA passivo (`PRIMITIVE='IDKA IPCA 3Y'`/`'IDKA IPCA 10Y'`) é mecanicamente o top |Δ| mas comunicativamente errado (não é decisão do gestor — é tracking 100% NAV com override). Filter: `df[df["label"] != bench_primitive]` antes de selecionar driver. Fallback pro bench se for o único mover. Resolved via `_VAR_DOD_DISPATCH[fund_key][3]` (cfg 4º campo).
+- **Top Movers Produto modal** (`pmovers_renderers.py` novo + trigger no PA card head + injection em `build_html`) — popup acionado por botão "Top Movers Produto →" no header de cada PA card. Modal 4 colunas (DIA / MTD / YTD / 12M), cada coluna com 5 PIORES (vermelho) + 5 MELHORES (verde). Source: `df_pa` (REPORT_ALPHA_ATRIBUTION dia/mtd/ytd/m12 _bps). Tag compacto por CLASSE (`[RV BZ]`, `[BRLUSD]`, `[FX Carry]`, `[RF IPCA]`, `[ETF Opt]`). ESC/backdrop fecha. Cobertura: 9 fundos (FRONTIER inclusive via GFA key).
+- **Pmovers — consolidação de futuros + filtros** (`pmovers_renderers._consolidate_product` + `_FX_HEDGE_LIVROS`) — futuros consolidados por ativo subjacente (regex Brazilian fut pattern: `<prefix>[FGHJKMNQUVXZ]<2dig>`). Exemplos: `WDOK26 + WDOG26 + WDOM26 → WDO*`; `DI1F33 + DI1F28 → DI1*`; `DAPK35 → DAP*`. Non-futures unchanged (ETFs, options, equities). Filter adicional: drop `PRODUCT='Cash USD'` + LIVROs `{Caixa USD, Cash USD, Caixa USD Futures}` (FX hedge collateral, não alpha). Custos/Caixa/Provisions já filtrados.
+- **Mirror save F:\Bloomberg\Risk_Manager\Data\Morningcall** (`generate_risk_report.main`) — após salvar HTML em `data/morning-calls/`, escreve segunda cópia em `F:\Bloomberg\Risk_Manager\Data\Morningcall\` (shared distribution location). `mkdir(parents=True, exist_ok=True)`. Falha no mirror loga warning mas não derruba o save principal.
+
+**Features entregues 2026-04-28 (sétima sessão):**
+- **Frontier highlights banner — IBOV fallback + duplicate fix** (`fund_renderers._highlights_div`) — Top 3 banner duplicado removido (criado em `390798c`, era redundante com o "Highlights · α vs <bench> hoje" pré-existente, commit `0a4ae44`). Threshold relaxado de `|val| × 10000 > 0.5 bps` pra `|val| > 0`. Quando coluna bench-relativa é toda zero (caso IBOV upstream sem dado), fallback pra `TOTAL_ATRIBUTION_DAY` (absoluto) com label "(α vs IBOV sem dado upstream)".
+- **BALTRA Exposure RF — drop mod_dur≈0 noise** (`expo_renderers.build_albatroz_exposure`) — após filtro CDI, adicionado `df = df[df["mod_dur"] > 0.01]` pra remover Equity / IBOVSPFuture / USDBRLFuture / FIDCs (`Funds BR`) / Corn Futures que não têm rate sensitivity. Outros mantém só CRIs (mod_dur 2-4y, parking lot). ALBATROZ unchanged (sem ruído mod_dur=0 no escopo). Closes session_2026_04_28 TODO #2.
+- **Distribuição IDKA — reset Forward ao trocar bench** (`generate_risk_report.setDistBench` JS) — ao trocar entre Benchmark/Replication/Comparação tabs, force `card.dataset.activeMode='forward'` + atualiza visual dos `.dist-btn[data-mode]`. Evita landing em backward+empty quando bench-tab nova não tem realized 252d. Closes session_2026_04_28 TODO #3.
+- **BALTRA/ALBATROZ Exposure RF — Net (yrs)** (`expo_renderers.yr_cell`) — novo helper exibe `delta_brl/nav` como `±X.XXyr`. Aplicado em ambas tabelas (Indexador + Top 15) pra consistência parent/child. Headers `Net (%NAV)` → `Net (yrs)`. Possível porque `delta_brl` agora é POSITION × MOD_DURATION (rate primitive) — `delta_brl/nav` dá duração em yrs direto. Closes session_2026_04_28 TODO #1.
 
 ---
 
@@ -224,7 +231,9 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **ANBIMA UNIT_PRICE é clean (ex-coupon)** — `pct_change()` direto em série ANBIMA gera -200 a -300 bps fantasma na data-cupom NTN-B. Sempre usar `_ntnb_total_return_pct_change(prices, maturity=...)` que reinjeta o semi-coupon. Cupons derivam da maturity (`m+6 mod 12`), NÃO são fixos em Mai/Nov.
 - **JS strings em Python f-string** — `\n` em string Python vira newline literal no JS de saída → SyntaxError silencioso quebra IIFE inteira. Usar `\\n` ou tooltip via `<div>` custom em vez de `<title>` SVG.
 - **`setDistBench` precisa chamar `_applyDistVisibility`** — trocar bench tab (Benchmark/Replication/Comparação) sem reaplicar mode/window faz a tabela aparecer vazia. As 4 views internas (bw1/fw1/bw21/fw21) ficam com display:none até que `_applyDistVisibility(card)` seja chamado.
-- **Exposure RF — LFTs (CDI) inflam métricas cosméticas** — `cls_to_idx["LFT"] = "CDI"` em `fetch_albatroz_exposure`. LFTs são floating-rate (mod_dur ≈ 0), e somam em Gross/Net %NAV sem representar risco real. `build_albatroz_exposure` filtra `indexador != "CDI"` no início.
+- **Exposure RF — LFTs (CDI) inflam métricas cosméticas** — `cls_to_idx["LFT"] = "CDI"` em `fetch_albatroz_exposure`. LFTs são floating-rate (mod_dur ≈ 0), e somam em Gross/Net %NAV sem representar risco real. `build_albatroz_exposure` filtra `indexador != "CDI"` no início. Adicionalmente filtra `mod_dur > 0.01` pra remover Equity / IBOVSPFuture / USDBRLFuture / FIDCs / Corn Futures que também não têm rate sensitivity (deixa só CRIs e bonds).
+- **Exposure RF — Net (yrs)** — após o fix de `fetch_albatroz_exposure` (filtro de rate primitive), `delta_brl` é POSITION × MOD_DURATION. Logo `delta_brl/nav` dá duração em yrs direto. Coluna "Net" mostra yrs, não %NAV. `yr_cell(v_brl)` em `expo_renderers.py` faz a conversão.
+- **`fetch_albatroz_exposure` — primitive filter** — engine decompõe NTN-B/DAP em 3 primitives (sovereign spread + IPCA face + IPCA Coupon rate), com sinais inconsistentes entre primitives. SUM(DELTA) sem filtro = garbage. Função filtra UM rate primitive por PRODUCT_CLASS via WHERE clause: NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`. CRIs ainda somam todos primitives (parking lot `memory/project_todo_cri_primitive_decomp.md`).
 
 ---
 
@@ -232,7 +241,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 
 Fora de escopo até decisão explícita:
 
-- ~~Fundos **BALTRA**~~ — **implementado 2026-04-26**: VaR/Stress + PA em `RAW_FUNDS`. Benchmark = IPCA+ (~3-4 anos duration real), a confirmar. Limites provisórios (soft 1.5%/hard 2.5% VaR; soft 10%/hard 18% stress).
+- ~~Fundos **BALTRA**~~ — **implementado 2026-04-26, migrado pra LOTE_FUND_STRESS_RPM em 2026-04-28** (commit `51be7a9`): VaR/Stress via RPM (LEVEL=10 nativo) + PA + Exposure RF + Exposure Map + Top Movers Produto. Benchmark = IPCA+ (~3-4 anos duration real), a confirmar. Limites provisórios (soft 1.75%/hard 2.50% VaR; soft 12.6%/hard 18% stress).
 - Fundos **FMN** (relatório separado via xlwings existe)
 - Família **Crédito** (entra só após MM + RF estáveis)
 
