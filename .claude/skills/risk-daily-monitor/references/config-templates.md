@@ -23,7 +23,7 @@ Lista central de fundos monitorados. A primeira versão (MM apenas):
         "RV-BZ", "RV-EM", "RV-DM",
         "COMMODITIES", "P-Metals"
       ],
-      "books_gestores": ["CI", "LF", "JD", "RJ", "QM"],
+      "books_gestores": ["CI", "LF", "JD", "RJ"],
       "mandato_path": "mandato-MACRO.json",
       "html_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\dashboard_macro_YYYY-MM-DD.html",
       "status": "ativo"

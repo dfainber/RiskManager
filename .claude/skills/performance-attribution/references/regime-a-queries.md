@@ -73,7 +73,7 @@ pa_ytd_pm = ytd.groupby('LIVRO')['DIA_BPS'].sum()
 WHERE "FUNDO" = 'MACRO'
 ```
 
-Livros esperados: CI, Macro_JD, Macro_LF, Macro_RJ, Macro_FG, Macro_QM, Macro_AC, Macro_MD, Giro_Master, LF_RV-BZ_SS
+Livros esperados: CI, Macro_JD, Macro_LF, Macro_RJ, Macro_FG, Macro_AC, Macro_MD, Giro_Master, LF_RV-BZ_SS
 
 ### EVOLUTION
 ```sql

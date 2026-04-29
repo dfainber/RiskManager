@@ -49,7 +49,7 @@ O racional: **melhor reportar um caveat inócuo do que deixar uma distorção pa
 
 | Estratégia | Peso típico | Livros no banco (`LIVRO`) |
 |-----------|-------------|---------------------------|
-| MACRO | ~48% | CI, Macro_JD, Macro_LF, Macro_RJ, Macro_FG, Macro_QM, Macro_AC, Macro_MD, Giro_Master, LF_RV-BZ_SS |
+| MACRO | ~48% | CI, Macro_JD, Macro_LF, Macro_RJ, Macro_FG, Macro_AC, Macro_MD, Giro_Master, LF_RV-BZ_SS |
 | SIST | ~17% | Bracco, Quant_PA, SIST_FX, SIST_GLOBAL, SIST_COMMO, SIST_RF |
 | FRONTIER | ~5% | FLO (direcional), FMN (risk neutral), FCO (direcional concentrado) |
 | CREDITO | 15–30% | Crédito, GIS FI FUNDO IMOBILIÁRIO, GIS CUSTOS E PROVISÕES |

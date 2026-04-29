@@ -1,6 +1,6 @@
 ---
 name: macro-risk-breakdown
-description: Relatório analítico de risco do Galapagos Macro FIM. Decompõe VaR/Stress por classe de ativo e por PM (CI, LF, JD, RJ, QM), mudanças D-vs-D-1, traça cada PM contra orçamento, calcula "shock absorption" (quanto top-10 ativos precisam mexer pra consumir frações do orçamento). Use para pedidos sobre breakdown do MACRO, decomposição de risco, fontes de risco, shock absorption, ou análise analítica detalhada do MACRO além do semáforo da risk-daily-monitor.
+description: Relatório analítico de risco do Galapagos Macro FIM. Decompõe VaR/Stress por classe de ativo e por PM (CI, LF, JD, RJ), mudanças D-vs-D-1, traça cada PM contra orçamento, calcula "shock absorption" (quanto top-10 ativos precisam mexer pra consumir frações do orçamento). Use para pedidos sobre breakdown do MACRO, decomposição de risco, fontes de risco, shock absorption, ou análise analítica detalhada do MACRO além do semáforo da risk-daily-monitor.
 ---
 
 # Macro Risk Breakdown
@@ -30,7 +30,7 @@ Mesma carteira, agregada de duas formas:
 `RF-BZ, RF-EM, RF-DM, FX-BRL, FX-EM, FX-DM, RV-BZ, RV-EM, RV-DM, COMMODITIES, P-Metals`
 
 **Por gestor** (books-gestores):
-`CI, LF, JD, RJ, QM`
+`CI, LF, JD, RJ`
 
 Para cada visão, calcular por book:
 - **VaR contribuído (bps)** — de `LOTE_BOOK_STRESS_RPM` com `LEVEL=3`
@@ -123,7 +123,7 @@ Apresentação (só materiais):
 | FX-BRL (LF)  |   −3.1     | −14% | Mercado (vol caiu)        |
 | Petróleo (JD)|   +2.5     | +37% | Posição nova              |
 
-Nada material em: RF-EM, FX-EM, FX-DM, RV-EM, RV-DM, P-Metals, PM RJ, PM QM
+Nada material em: RF-EM, FX-EM, FX-DM, RV-EM, RV-DM, P-Metals, PM RJ
 ```
 
 A linha final ajuda o leitor a confirmar que o silêncio é informativo, não omissão.
@@ -138,7 +138,6 @@ Tracking interno, não gestão ativa. Formato enxuto:
 | LF | 12.2      | −22.1        | 48                  | 25%        |
 | JD |  8.5      | −14.3        | 60                  | 14%        |
 | RJ |  5.1      | −10.8        | 63                  |  8%        |
-| QM |  3.3      | −6.0         | 63                  |  5%        |
 
 Stop restante = 63 − |PnL_mês_corrente| (se PnL negativo; se positivo, volta a 63). PnL_mês vem de `q_models.REPORT_ALPHA_ATRIBUTION`, filtrando `LIVRO contains <inicial>`, como na `macro-stop-monitor`.
 

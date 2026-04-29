@@ -14,7 +14,6 @@ Three rows per position = own / SubA / Evolution feeder. Own = correct view.
 | LF | Luiz Felipe |
 | JD | Joca Dib |
 | RJ | Rodrigo Jafet |
-| QM | (pending confirmation) |
 | MD | Macro_MD (trader book, no limit) |
 
 ### Risk factors in BOOK name

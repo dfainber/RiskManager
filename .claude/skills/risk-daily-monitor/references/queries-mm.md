@@ -195,7 +195,7 @@ SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
 FROM "LOTE45"."LOTE_PRODUCT_EXPO"
 WHERE "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Evolution FIC FIM CP'
   AND "VAL_DATE"                  = DATE '{dia_atual}'
-  AND "BOOK" ~* 'CI|JD|LF|QM|RJ'
+  AND "BOOK" ~* 'CI|JD|LF|RJ'
   AND "BOOK" ~* 'Direcional|Relativo|Hedge|Volatilidade|SS'
 GROUP BY "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS"
 ```
@@ -210,7 +210,7 @@ expo = expo[~((expo["PRIMITIVE_CLASS"] == "FX") & (~expo["rf"].str.startswith("F
 
 **rf parsing:**
 ```python
-PMS = ("CI","LF","JD","RJ","QM","MD")
+PMS = ("CI","LF","JD","RJ","MD")
 def _parse_rf(book):
     parts = book.split("_")
     if len(parts) >= 2 and parts[0] in PMS:
@@ -247,7 +247,7 @@ FROM q_models."REPORT_ALPHA_ATRIBUTION"
 WHERE "FUNDO" = 'MACRO'
   AND "DATE"  = DATE '{dia_atual}'
   AND "MES"  <> 0
-  AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ','Macro_QM')
+  AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
 GROUP BY "LIVRO", "PRODUCT"
 ```
 
@@ -259,7 +259,6 @@ GROUP BY "LIVRO", "PRODUCT"
 | LF | Macro_LF |
 | JD | Macro_JD |
 | RJ | Macro_RJ |
-| QM | Macro_QM |
 
 Join com `LOTE_PRODUCT_EXPO` em `(LIVRO ↔ PM via mapa) + PRODUCT`.
 

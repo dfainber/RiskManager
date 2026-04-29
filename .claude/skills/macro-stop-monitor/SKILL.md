@@ -1,6 +1,6 @@
 ---
 name: macro-stop-monitor
-description: Monitora orçamento de perda (stop) mensal/anual por PM (CI, LF, JD, RJ, QM) no Galapagos Macro FIM. Lê PnL de REPORT_ALPHA_ATRIBUTION, compara com stop (base 63 bps/mês, 252 bps/ano + carrego), emite estado verde/amarelo/vermelho. Faz também fechamento mensal (snapshot JSON p/ carrego). Use para pedidos sobre stop/orçamento dos PMs, carrego, PnL por PM, fechar mês, ou menções aos PMs do MACRO no contexto de stop.
+description: Monitora orçamento de perda (stop) mensal/anual por PM (CI, LF, JD, RJ) no Galapagos Macro FIM. Lê PnL de REPORT_ALPHA_ATRIBUTION, compara com stop (base 63 bps/mês, 252 bps/ano + carrego), emite estado verde/amarelo/vermelho. Faz também fechamento mensal (snapshot JSON p/ carrego). Use para pedidos sobre stop/orçamento dos PMs, carrego, PnL por PM, fechar mês, ou menções aos PMs do MACRO no contexto de stop.
 ---
 
 # Macro Stop Monitor — Orçamento por PM
@@ -19,7 +19,6 @@ Monitoramento diário do **orçamento de perda por gestor (PM)** dentro do `Gala
 | LF | `LIVRO` contém "LF" | Gestor |
 | JD | `LIVRO` contém "JD" | Gestor |
 | RJ | `LIVRO` contém "RJ" | Gestor |
-| QM | `LIVRO` contém "QM" | Gestor |
 
 Lista mantida em `pms-registry.json`. Atualizar quando PM entra/sai.
 
@@ -99,7 +98,7 @@ WHERE "FUNDO" = 'MACRO'
 
 ```python
 pnl_por_pm = {}
-for pm in ['CI', 'LF', 'JD', 'RJ', 'QM']:
+for pm in ['CI', 'LF', 'JD', 'RJ']:
     df_pm = df_pnl[df_pnl['LIVRO'].str.contains(pm, case=False)]
     pnl_por_pm[pm] = {
         'dia_bps': df_pm['DIA'].sum() * 10000,
@@ -170,7 +169,7 @@ Para stop anual, mesma lógica usando 252 bps como base.
 # Stop Monitor MACRO — [data-base]
 
 ## Resumo
-- PMs ativos: CI, LF, JD, RJ, QM
+- PMs ativos: CI, LF, JD, RJ
 - ⚠️ Regra de carrego em revisão — cálculos usam stop base (63/252)
 
 ## PnL do Dia

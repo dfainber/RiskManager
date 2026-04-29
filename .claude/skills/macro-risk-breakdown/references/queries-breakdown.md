@@ -16,7 +16,7 @@ WHERE "VAL_DATE" = DATE '{dia_atual}'
   AND "LEVEL" = 3
   AND "BOOK" IN ('RF-BZ','RF-EM','RF-DM','FX-BRL','FX-EM','FX-DM',
                  'RV-BZ','RV-EM','RV-DM','COMMODITIES','P-Metals',
-                 'CI','LF','JD','RJ','QM')
+                 'CI','LF','JD','RJ')
 ```
 
 Pós-processamento (em Python):
@@ -27,7 +27,7 @@ df['VAR_BPS'] = df['PARAMETRIC_VAR'] * -10000 / aum_macro
 # Separar as duas visões
 classes = ['RF-BZ','RF-EM','RF-DM','FX-BRL','FX-EM','FX-DM',
            'RV-BZ','RV-EM','RV-DM','COMMODITIES','P-Metals']
-gestores = ['CI','LF','JD','RJ','QM']
+gestores = ['CI','LF','JD','RJ']
 
 var_por_classe = df[df['BOOK'].isin(classes)].groupby('BOOK')['VAR_BPS'].sum()
 var_por_gestor = df[df['BOOK'].isin(gestores)].groupby('BOOK')['VAR_BPS'].sum()

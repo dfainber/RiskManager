@@ -13,8 +13,7 @@ Um arquivo JSON por mês × PM. Pasta dedicada:
 │   │   ├── CI.json
 │   │   ├── LF.json
 │   │   ├── JD.json
-│   │   ├── RJ.json
-│   │   └── QM.json
+│   │   └── RJ.json
 │   ├── 2026-02/
 │   │   └── ...
 │   └── ...
@@ -27,9 +26,9 @@ O `_index.json` lista todos os snapshots fechados, para a skill saber rapidament
 {
   "ultimo_mes_fechado": "2026-03",
   "snapshots": [
-    {"mes": "2026-01", "pms": ["CI","LF","JD","RJ","QM"], "fechado_em": "2026-02-03T09:15:22", "fechado_por": "bruno"},
-    {"mes": "2026-02", "pms": ["CI","LF","JD","RJ","QM"], "fechado_em": "2026-03-04T08:40:11", "fechado_por": "bruno"},
-    {"mes": "2026-03", "pms": ["CI","LF","JD","RJ","QM"], "fechado_em": "2026-04-02T09:02:55", "fechado_por": "bruno"}
+    {"mes": "2026-01", "pms": ["CI","LF","JD","RJ"], "fechado_em": "2026-02-03T09:15:22", "fechado_por": "bruno"},
+    {"mes": "2026-02", "pms": ["CI","LF","JD","RJ"], "fechado_em": "2026-03-04T08:40:11", "fechado_por": "bruno"},
+    {"mes": "2026-03", "pms": ["CI","LF","JD","RJ"], "fechado_em": "2026-04-02T09:02:55", "fechado_por": "bruno"}
   ]
 }
 ```
@@ -131,7 +130,6 @@ CI |  +12.3        |  +45.1
 LF |  -45.3        |  -12.7
 JD |  -8.1         |  +23.4
 RJ |  +5.5         |  +31.2
-QM |  -22.0        |  -5.8
 
 Confirmar fechamento? [s/n]
 ```
@@ -146,7 +144,7 @@ Atualizar `_index.json`:
 - Adicionar entry para o mês fechado
 - Atualizar `ultimo_mes_fechado`
 
-**Atomicidade:** gravar todos os 5 PMs antes de atualizar o índice. Se falhar no meio, deixar o índice inalterado (estado "meio-fechado" não deve aparecer no índice).
+**Atomicidade:** gravar todos os PMs antes de atualizar o índice. Se falhar no meio, deixar o índice inalterado (estado "meio-fechado" não deve aparecer no índice).
 
 ### Passo 6 — Retornar resumo
 
@@ -157,7 +155,6 @@ Arquivos gravados em <pasta>/snapshots/2026-03/:
   - LF.json
   - JD.json
   - RJ.json
-  - QM.json
 
 PnL consolidado do mês:
   Agregado MACRO: −57.6 bps

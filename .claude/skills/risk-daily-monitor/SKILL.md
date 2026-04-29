@@ -52,7 +52,7 @@ Para cada fundo do registro, executar o bloco de queries específico. Ver querie
 
 **Campos `BOOK` conhecidos:**
 
-- **MACRO:** `RF-BZ, RF-EM, RF-DM, FX-BRL, FX-EM, FX-DM, RV-BZ, RV-EM, RV-DM, COMMODITIES, P-Metals, ALL` (ativos); `CI, LF, JD, RJ, QM, ALL` (gestores)
+- **MACRO:** `RF-BZ, RF-EM, RF-DM, FX-BRL, FX-EM, FX-DM, RV-BZ, RV-EM, RV-DM, COMMODITIES, P-Metals, ALL` (ativos); `CI, LF, JD, RJ, ALL` (gestores)
 - **SISTEMATICO:** (a confirmar na primeira execução — provavelmente similar a MACRO)
 - **EVOLUTION:** `FRONTIER, EVO_STRAT, MACRO, CREDITO, CAIXA` (categorias de book via função `classificar_book`)
 
