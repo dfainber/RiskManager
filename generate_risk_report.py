@@ -1009,14 +1009,14 @@ def build_html(d: ReportData) -> str:
     if d.df_baltra_credit is not None and not d.df_baltra_credit.empty and baltra_nav:
         b_credit_html = build_credit_section(
             d.df_baltra_credit, baltra_nav, "BALTRA", _ref_dt_for_alc,
-            d.cdi_annual, d.ipca_annual, default_mode="grupo",
+            d.cdi_annual, d.ipca_annual, default_mode="subordinacao",
         )
         if b_credit_html:
             sections.append(("BALTRA", "credit", b_credit_html))
     if d.df_evo_credit is not None and not d.df_evo_credit.empty and evo_nav:
         e_credit_html = build_credit_section(
             d.df_evo_credit, evo_nav, "EVOLUTION", _ref_dt_for_alc,
-            d.cdi_annual, d.ipca_annual, default_mode="grupo",
+            d.cdi_annual, d.ipca_annual, default_mode="subordinacao",
         )
         if e_credit_html:
             sections.append(("EVOLUTION", "credit", e_credit_html))
@@ -2829,11 +2829,13 @@ def build_html(d: ReportData) -> str:
     host.appendChild(tpl.content.cloneNode(true));
     _sectionsHydrated[key] = true;
     // Re-run handlers that walk the DOM at startup so they pick up newly
-    // injected nodes (credit-section sort, vol-regime caret toggle, etc.).
+    // injected nodes (credit-section sort, vol-regime caret toggle, peers
+    // tables, CSV buttons, fund-name highlighting).
     if (typeof window.initAlcSort === 'function') window.initAlcSort();
     if (typeof attachVrCaretToggle === 'function') attachVrCaretToggle();
     if (typeof injectCsvButtons === 'function') injectCsvButtons();
     if (typeof highlightFundNames === 'function') highlightFundNames();
+    if (typeof initRptPeers === 'function') initRptPeers();
   }}
   function _hydrateFund(fund) {{
     if (!fund) return;

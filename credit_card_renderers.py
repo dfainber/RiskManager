@@ -70,31 +70,31 @@ def build_credit_section(positions: pd.DataFrame, nav: float, fund_label: str,
                 "product_class"):
         if col in p.columns:
             p[col] = p[col].astype(object).where(p[col].notna(), "")
-    # Drop sovereign cash-equivalents and minor sovereign tipos from the
-    # Crédito look-through view — LFTs are essentially CDI exposure (no real
-    # rate risk), and NTN-C/NTN-F are immaterial. NTN-Bs stay because they
-    # carry meaningful real-rate / inflation exposure.
-    drop_tipos = {"LFT", "NTN-C", "NTN-F"}
-    drop_pclass = {"LFT", "NTN-C", "NTN-F"}
-    drop_mask = p["tipo_ativo"].isin(drop_tipos) | p["product_class"].isin(drop_pclass)
+    # Drop ALL sovereign holdings from the Crédito look-through view — this
+    # section is meant for corporate credit only. NTN-B/NTN-C/NTN-F/LFT/LTN
+    # all roll up to Soberano via _effective_rating; we filter them here so
+    # the table, tiles and donuts only show real credit-risk positions.
+    drop_tipos = {"NTN-B", "NTN-C", "NTN-F", "LFT", "LTN", "Títulos Públicos"}
+    drop_pclass = {"NTN-B", "NTN-C", "NTN-F", "LFT", "LTN"}
+    drop_mask = (
+        p["tipo_ativo"].isin(drop_tipos)
+        | p["product_class"].isin(drop_pclass)
+        | p["grupo_economico"].astype(str).str.lower().eq("tesouro nacional")
+    )
     p = p[~drop_mask].reset_index(drop=True)
     if p.empty:
         return ""
     p["carry_anual"] = compute_position_carry(p, cdi_annual or 0.0, ipca_annual or 0.0)
 
-    # Header tiles — Total Crédito Look-through · Soberano · Corp Credit · Carry
-    sov_mask = p["grupo_economico"].astype(str).str.lower().eq("tesouro nacional") | \
-               p["tipo_ativo"].isin(["NTN-B", "NTN-C", "NTN-F", "LFT", "LTN", "Títulos Públicos"])
-    sov_pos = float(p.loc[sov_mask, "pos_brl"].sum())
-    corp_pos = float(p.loc[~sov_mask, "pos_brl"].sum())
-    total_pos = sov_pos + corp_pos
+    # Header tiles — sovereign already filtered out above so everything is corp.
+    corp_pos = float(p["pos_brl"].sum())
+    total_pos = corp_pos
 
-    # Carry weighted on corp only (sovereign carry isn't a discretionary call)
-    corp_df = p.loc[~sov_mask].copy()
-    corp_df = corp_df[corp_df["carry_anual"].notna()]
-    if len(corp_df) and corp_df["pos_brl"].sum() > 0:
-        carry_med = float((corp_df["carry_anual"] * corp_df["pos_brl"]).sum()
-                          / corp_df["pos_brl"].sum())
+    # Weighted carry across all corp positions with a defined carry_anual
+    carry_df = p[p["carry_anual"].notna()]
+    if len(carry_df) and carry_df["pos_brl"].sum() > 0:
+        carry_med = float((carry_df["carry_anual"] * carry_df["pos_brl"]).sum()
+                          / carry_df["pos_brl"].sum())
     else:
         carry_med = None
 
@@ -107,12 +107,9 @@ def build_credit_section(positions: pd.DataFrame, nav: float, fund_label: str,
             f'{sub_html}</div>'
         )
 
+    # Sovereign holdings filtered out upstream — only corp credit shown
     tiles_html = (
         '<div class="cs-tiles">'
-        + _tile("Crédito Look-through (Total)", _fmt_brl(total_pos),
-                _fmt_pct_pl(total_pos, nav) + " do PL")
-        + _tile("Soberano", _fmt_brl(sov_pos),
-                _fmt_pct_pl(sov_pos, nav) + " do PL")
         + _tile("Corp Credit", _fmt_brl(corp_pos),
                 _fmt_pct_pl(corp_pos, nav) + " do PL")
         + _tile("Carry médio (corp)", _fmt_pct(carry_med),
@@ -154,7 +151,7 @@ def build_credit_section(positions: pd.DataFrame, nav: float, fund_label: str,
 CREDIT_SECTION_CSS = r"""
 /* Inline Crédito section — header tiles */
 .credit-section-wrap .cs-tiles {
-  display:grid; grid-template-columns:repeat(4, 1fr); gap:10px;
+  display:grid; grid-template-columns:repeat(2, 1fr); gap:10px;
   margin-bottom:14px;
 }
 .credit-section-wrap .cs-tile {
@@ -187,8 +184,9 @@ CREDIT_SECTION_CSS = r"""
 .tag-ccc { background:rgba(190,40,55,.20); color:#ff5a6a; font-style:italic; }
 .tag-na  { background:rgba(168,179,194,.10); color:var(--muted); }
 
-/* Tranche tags */
-.tag-tr-senior   { background:rgba(38,208,124,.16); color:var(--up); }
+/* Tranche tags — Senior in deep blue (calmer than green), Mez amber, Junior red */
+.tag-tr-senior   { background:rgba(13,44,90,.50); color:#a8d4f3;
+                   border:1px solid rgba(124,200,232,.30); font-weight:700; }
 .tag-tr-mezanino { background:rgba(245,196,81,.16); color:var(--warn); }
 .tag-tr-junior   { background:rgba(255,90,106,.16); color:var(--down); }
 
