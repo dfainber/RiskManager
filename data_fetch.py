@@ -3397,3 +3397,83 @@ def fetch_peers_data(date_str: str = DATA_STR, mode: str = "current") -> dict:
         return snap
 
     return {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Credit positions via SHARE_SOURCE look-through (BALTRA / EVOLUTION)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CREDIT_PRODUCT_CLASSES = (
+    'Debenture', 'Debenture Infra',
+    'CRI', 'CRA',
+    'FIDC', 'FIDC NP',
+    'NTN-B', 'NTN-C', 'NTN-F', 'LFT', 'LTN',
+    'Funds BR',  # FIDC cotas live here; vanilla bond funds get filtered out below
+    'Nota Comercial', 'Nota Comercial DI Spread',
+)
+
+
+def fetch_fund_credit_positions(trading_desk: str, date_str: str = DATA_STR) -> pd.DataFrame:
+    """Look-through credit-relevant positions for any fund (used for the
+    main report's BALTRA/EVOLUTION Crédito section).
+
+    Source: ``LOTE45.LOTE_PRODUCT_EXPO`` filtered by ``TRADING_DESK_SHARE_SOURCE``
+    (per the share-source rule — captures direct holdings + nested look-through).
+    Joined to ``credit.asset_master`` for tipo_ativo / spread / rating / setor /
+    grupo_economico / subordinacao. Deduplicated to one row per (product, book)
+    since LOTE_PRODUCT_EXPO repeats the position across primitives.
+
+    Returns a DataFrame with columns matching the credit-report renderers'
+    expectations: book, product_class, produto, pos_brl, pl_position, pl,
+    tipo_ativo, classe, indexador, spread, am_duration, rating, setor,
+    grupo_economico, apelido_emissor, data_vencimento, data_emissao,
+    taxa_emissao, subordinacao.
+    """
+    classes_in = ", ".join(f"'{c}'" for c in _CREDIT_PRODUCT_CLASSES)
+    sql = f"""
+SELECT DISTINCT ON (e."PRODUCT", e."BOOK")
+  e."BOOK"           AS book,
+  e."PRODUCT_CLASS"  AS product_class,
+  e."PRODUCT"        AS produto,
+  e."POSITION"       AS pos_brl,
+  NULL::numeric      AS pl_position,
+  NULL::numeric      AS pl,
+  COALESCE(am.tipo_ativo, e."PRODUCT_CLASS") AS tipo_ativo,
+  am.classe,
+  am.indexador,
+  am.spread,
+  am.duration        AS am_duration,
+  am.rating,
+  am.setor,
+  am.grupo_economico,
+  am.apelido_emissor,
+  am.data_vencimento,
+  am.data_emissao,
+  am.taxa_emissao,
+  am.subordinacao
+FROM "LOTE45"."LOTE_PRODUCT_EXPO" e
+LEFT JOIN credit.asset_master am
+  ON LOWER(am.nome_lote45) = LOWER(e."PRODUCT")
+WHERE e."TRADING_DESK_SHARE_SOURCE" = '{trading_desk}'
+  AND e."VAL_DATE" = '{date_str}'
+  AND e."PRODUCT_CLASS" IN ({classes_in})
+  AND e."POSITION" > 0
+ORDER BY e."PRODUCT", e."BOOK", e."PRIMITIVE_NAME"
+"""
+    df = read_sql(sql)
+
+    if df.empty:
+        return df
+
+    # Funds BR filter: keep only FIDCs (i.e., rows where am.tipo_ativo says
+    # FIDC/FIDC NP). Vanilla bond funds (Pinzon FIRF Ref DI etc.) aren't
+    # credit-risk holdings. Sovereigns + tranched corp credit pass through.
+    is_funds_br = df["product_class"] == "Funds BR"
+    is_fidc_cota = df["tipo_ativo"].isin(["FIDC", "FIDC NP"])
+    df = df[(~is_funds_br) | is_fidc_cota].reset_index(drop=True)
+
+    # Apply known issuer-name overrides (e.g., all "Cruz" → Santa Cruz)
+    from credit.credit_data import normalize_issuer_overrides
+    df = normalize_issuer_overrides(df)
+
+    return df

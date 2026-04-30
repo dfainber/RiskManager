@@ -67,6 +67,7 @@ REPORTS = [
     ("vol-regime",      "Vol Regime"),
     ("stop-monitor",    "Risk Budget"),
     ("briefing",        "Briefing"),
+    ("credit",          "Crédito"),
     ("peers",           "Peers"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "BALTRA", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]

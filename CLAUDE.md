@@ -59,6 +59,30 @@ Skills são **complementares, não redundantes**. Não consolidar sem discutir.
 | `fund_renderers.py`  | `build_stop_section`, briefings, distribuição, vol regime    |
 | `html_assets.py`     | `UEXPO_JS` blob                                              |
 
+### 3a. Variantes de saída — DUAS VERSÕES OBRIGATÓRIAS
+
+O Morning Call é entregue em **duas versões**, cada uma para um público:
+
+| Script                              | Tema | Consumo                         | Output                                                       |
+|-------------------------------------|------|---------------------------------|---------------------------------------------------------------|
+| `generate_risk_report.py`           | Dark | Desktop individual (analista)   | `data/morning-calls/{DATE}_risk_monitor.html` + mirror        |
+| `generate_risk_report_meeting.py`   | Light | Telona da sala de reunião       | `data/morning-calls-meeting/ultimo_morning_call_meeting.html` |
+
+**`_meeting.py` é um POST-PROCESSOR**: lê o HTML produzido pela versão dark e
+pós-processa (paleta light, fontes ampliadas, logo escurecido, headers navy
+do brand). Não toca em queries, dados, lógica — só apresentação.
+
+**REGRA — ao implementar nova feature**:
+1. Implementar normalmente em `generate_risk_report.py` / módulos renderer
+2. **Verificar se a feature renderiza bem nas DUAS versões**:
+   - Se introduz hex codes hardcoded escuros (`background:#0xxxxx`,
+     `fill="#0xxxxx"`) ou claros demais (`color:#94a3b8`, etc), adicionar ao
+     `_BG_HEX_MAP` ou `_TEXT_COLOR_MAP` em `generate_risk_report_meeting.py`
+   - Se usa CSS variables (`var(--text)`, etc), funciona automático
+3. Rodar `generate_risk_report_meeting.py` após o dark e confirmar render
+4. Auto-routine (`run_report_auto.bat`) deveria rodar AMBOS sequencialmente
+   (dark gera o HTML base, meeting transforma)
+
 ---
 
 ## 4. Fontes de dados (GLPG-DB01)
@@ -231,6 +255,23 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
   2. **Frontend** (2 cópias com mesmo bug): group header (RJ/JD/CI/LF) calculava `Σ pl_pct / books.length` — média em vez de soma. Fixado em `daily_monitor.html:402` e `generate_risk_report.py:3938`.
 - **Daily P&L sempre colapsado ao abrir**: `bpnlLoadState` agora descarta `expanded` no load + `bpnlSaveState` só persiste `order` (drag-drop de books). `bgroups` default mudou de `true` → `false` em ambas cópias. **Restart manual do `pnl_server.py` necessário** após editar `data_fetch.py` — Python não recarrega módulos importados.
 - **BALTRA Exposure RF look-through (gap 5.2 → 6.98 yrs vs Prev.xlsx 6.92)** — descoberta crítica: `fetch_albatroz_exposure` filtrava `TRADING_DESK = '{desk}' AND TRADING_DESK_SHARE_SOURCE = '{desk}'`. Removido o `TRADING_DESK = ...` filter. SHARE_SOURCE sozinho captura look-through nativo (BALTRA agora pega IDKA 10Y -1.28y + IDKA 3Y -0.44y + Albatroz cota -0.03y). ALBATROZ não regrediu (não é cotista). Memory: `project_rule_share_source_lookthrough.md`.
+
+**Features entregues 2026-04-30 — Crédito sub-projeto + brand homogenização:**
+- **NEW: Crédito standalone kit** (`generate_credit_report.py` + `credit/` package) — 6 fundos: Sea Lion, Iguana, Nazca, Pelican, Dragon, Barbacena. Default mode = **consolidado multi-tab** (`{date}_credito_consolidado.html`); single-fund via `--fund SEA_LION`. 8 cards por fundo: Header (9 KPI tiles) · Sanity Check de Preços · Distribuição (Tipo donut + Setores bar + Rating donut) · Concentração (Top emissores/grupos h-bars + limites breach table) · Alocação (full instrument table c/ Carry Anual + sortable c/ rating-quality rank) · Mercado de Crédito (índices BR + curvas ANBIMA AAA/AA/A) · AUM Histórica · Retorno (heatmap mensal merge c/ Total). Posições = `LOTE45.LOTE_BOOK_OVERVIEW` (NÃO `LOTE_PRODUCT_EXPO` — Sea Lion ausente lá). NAV match dentro de R$ 3 vs `LOTE_TRADING_DESKS_NAV_SHARE`. Validation gold std: `data/_credit_validation_xlsm_sealion_d2.csv` (35/35 instrumentos do xlsm green tab presentes no DB).
+- **Schema Credit — DDL e ingest**: 2 tabelas novas no schema `credit` (que já existia c/ `MAPS_DEBENTURES`/`PRICES_DEBENTURES`). `credit.asset_master` (533 rows, PK=`nome_lote45`, vem de `Cadastro Ativos` no xlsm) + `credit.issuer_limits` (937 rows long-format, PK=`(emissor,fund_name)`, vem de `Limites_GrupoEconomico`). Ingest XML-direto do .xlsm (260 MB) via `python -m credit.credit_db_helpers all`. CSV/PNG branding extraído do main risk monitor pra reuso em `credit/_galapagos_logo_b64.txt`.
+- **Sanity Check de Preços** (`credit_data.fetch_price_quality_flags` + banner card) — pra todo fundo do credit kit, valida que cada security/derivative tenha PRICE não-nulo em D e D-1. Banner verde se OK, vermelho c/ tabela de detalhes se ⚠. Exempções: PRODUCT_CLASS ∈ `{Funds BR, Cash, Margin, Provisions and Costs}`. **Regra de processo**: ao adicionar novo fundo ao kit, REGISTRAR no check (memory `project_rule_price_quality_check_coverage.md`). Cobertura atual: só 6 fundos de crédito; gap = Frontier + MM/RF/Prev/ETF families.
+- **Brand homogenização — Risk Monitor + Crédito** (`generate_risk_report.py` + `generate_risk_report_meeting.py` + `generate_credit_report.py`) — substituído o logo PNG legacy do main risk monitor por **chart-icon SVG inline** (gradient azul + linha clara crescente, blue-to-navy `<linearGradient id="rmGrad">`) + wordmark "Risk Monitor" (Gadugi 22px no dark, navy 24px no light). Adicionado **footer "Powered by Galápagos"** em todos os reports (right-aligned), reaproveitando o PNG Galápagos legacy pra wave logo. Meeting (light) version recolore o footer PNG via `filter: hue-rotate(...)`. Credit consolidated adopt the mesmo brand strip + footer pra parity visual.
+
+**Features entregues 2026-04-30 (segunda sessão) — Drill-down credit + Crédito tab no main report + perf:**
+- **Drill-down Alocação refactor** (`generate_credit_report.render_alocacao_card`) — quatro modos de agrupamento via toggle pills: `Por Tipo` · `Por Grupo` (econômico, alfabético) · `Por Subordinação` · `Por Rating`. Parent rows com caret (▼/▶) + count `(n)`. Default-collapsed via param `default_collapsed=True` (children injetados com classe `alc-hidden` em vez de inline display:none — robusto contra interferência do sort). Botões `Expand all` / `Collapse all` operam só na pane ativa. Dragon default = `subordinacao` (FIDC-heavy); BALTRA/EVO Crédito section default = `grupo`.
+- **Subordinação tranche detection** (`_tranche_bucket` + `_TRANCHE_PATTERNS`) — regex no PRODUCT name detecta Senior / Mezanino / Junior. FIDCs sem label mas com `subordinacao` numérico → Senior implícito. Tudo mais (Monocota / Classe Única, Debentures, CRIs, NTN-*) → bucket único `Sem Subordinação`. Coluna `Subord.` na tabela renderiza tag colorido (Senior=verde, Mez=amber, Jr=red, Sem-Sub="—" cinza). Donut "PL por Subordinação" condicional (renderiza só quando há signal não-N/A) com palette alinhado.
+- **Soberano bucket** acima de AAA — `_effective_rating` mapeia `grupo_economico=='Tesouro Nacional'` ou `tipo_ativo IN (NTN-B, NTN-C, NTN-F, LFT, LTN)` → `Soberano`. `RATING_ORDER["Soberano"]=0` (sorta acima de AAA=1). Tag style navy fundo + white text + light-blue border. Pinned na 1ª slot do donut Rating pra sempre pegar a cor navy do palette.
+- **"Cruz" issuer override** (`credit_data.normalize_issuer_overrides`) — qualquer produto com "Cruz" no nome → emissor/grupo/nome_emissor = "Santa Cruz". Aplicado em `fetch_positions_snapshot` + `data_fetch.fetch_fund_credit_positions` no read time pra não tocar no asset_master. Rolls up Santa Cruz tranches corretamente em concentração.
+- **Crédito tab no main risk monitor** (`risk_config.REPORTS` + `credit_card_renderers.build_credit_section`) — nova aba `("credit", "Crédito")` posicionada acima de Peers. Renderiza pra BALTRA + EVOLUTION via look-through `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE`. Conteúdo: 4 header tiles (Crédito Look-through Total · Soberano · Corp Credit · Carry médio corp) + Distribuição (donuts em **2×2 grid**: Tipo, Setores, Rating, Subordinação — denom_nav=True, exclude_sovereign=True; Subordinação usa % crédito no label e % NAV no tooltip) + Alocação (drill-down com defaults `mode="grupo"`, `default_collapsed=True`, `mm_mode=True` → Posição em R$ MM com 2 decimals).
+- **Filtros credit-relevantes** (`build_credit_section`) — drop LFT / NTN-C / NTN-F do BALTRA/EVO Crédito section (cash-equivalents / sovereign minor); NTN-B mantém (real-rate/inflation exposure). `Funds BR` filtrado pra só FIDCs (drop vanilla bond funds via tipo_ativo check). Normalização NaN→"" via `astype(object).where(notna, "")` em colunas string-bearing.
+- **Performance — sort delegation** (`generate_risk_report.attachUniversalSort` rewrite) — substituído per-table walk + addEventListener × 200 tabelas × 10 ths (~2000 listeners) por **single document-level click+mouseover delegation**. `_initSortableTable` lazy-attacha indicators + dataset.usortColIdx só quando user hover/click pela 1ª vez na tabela. Estado de sort persistido via dataset (sortAttached, usortLast, usortAsc).
+- **Performance — lazy hydration** (`build_html` template wrap + `_hydrateFund` JS) — todas as 84 seções `(fund, report)` renderizadas dentro de `<template class="tpl-section">` em vez de `<div class="section-wrap">`. Templates não vão pro DOM vivo até `_hydrateSection` clonar via `tpl.content.cloneNode(true)`. `applyState` chama `_hydrateFund(sel)` em fund mode e `_hydrateReport(sel)` em report mode antes de toggle visibility. **Idle pre-warm** via `requestIdleCallback` hidrata todas as seções no background depois do first paint, então tab switches subsequentes são instantâneos. Re-runs `initAlcSort`/`attachVrCaretToggle`/`injectCsvButtons`/`highlightFundNames` pós-hydrate.
+- **`fetch_fund_credit_positions`** (`data_fetch.py`) — nova fetcher pulling credit-relevant rows via `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE = '<desk>'` joined to `credit.asset_master`. DISTINCT ON (PRODUCT, BOOK) deduplica primitives. WHERE filtra credit `PRODUCT_CLASS` set (Debenture, CRI, CRA, FIDC, FIDC NP, NTN-*, LFT, LTN, Funds BR, Nota Comercial). `COALESCE(am.tipo_ativo, e.PRODUCT_CLASS)` no SELECT pra fallback. Aplicado `normalize_issuer_overrides` no return.
 
 ---
 

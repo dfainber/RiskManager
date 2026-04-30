@@ -409,12 +409,12 @@ PMOVERS_JS = r"""
       '<div class="pmovers-col">' +
         '<div class="pmovers-col-title">' + periodCfg.title + '</div>' +
         '<div class="pmovers-section">' +
-          '<div class="pmovers-section-title worst">5 PIORES</div>' +
-          worstHtml +
-        '</div>' +
-        '<div class="pmovers-section" style="margin-top:10px">' +
           '<div class="pmovers-section-title best">5 MELHORES</div>' +
           bestHtml +
+        '</div>' +
+        '<div class="pmovers-section" style="margin-top:10px">' +
+          '<div class="pmovers-section-title worst">5 PIORES</div>' +
+          worstHtml +
         '</div>' +
       '</div>'
     );

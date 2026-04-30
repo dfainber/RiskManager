@@ -573,4 +573,57 @@ Não há "shift contábil D-1" — era um bug antigo (engine faz look-through pa
 
 ---
 
+## 9. Variantes visuais — DUAS versões obrigatórias
+
+O Morning Call é distribuído em **duas versões**. Toda nova feature precisa
+ser validada nas duas.
+
+| Script                              | Tema  | Público                       | Output                                                          |
+|-------------------------------------|-------|-------------------------------|-----------------------------------------------------------------|
+| `generate_risk_report.py`           | Dark  | Desktop individual            | `data/morning-calls/{DATE}_risk_monitor.html` + mirror dated/ultimo |
+| `generate_risk_report_meeting.py`   | Light | Telona da sala de Morning Call | `data/morning-calls-meeting/ultimo_morning_call_meeting.html`   |
+
+### 9.1 Como funciona o `_meeting`
+
+É **post-processor**: lê o HTML do dark, aplica:
+- Substituição do bloco `:root` (paleta brand light)
+- `_BG_HEX_MAP` — troca hex codes escuros (`background:#XXX`, `fill="#XXX"`,
+  `stroke="#XXX"`) por equivalentes claros (Análise tiles, expand rows,
+  budget bars, etc.)
+- `_TEXT_COLOR_MAP` — escurece textos de baixo contraste em fundo branco
+  (`#94a3b8` → `#475569`, amarelos `#facc15`/`#fbbf24` → `#a16207`, etc.)
+- `_FONT_SIZE_MAP` — bump `~+1.5px` em todas as inline `font-size:NNpx`
+- `_MEETING_OVERRIDES` — bloco CSS final (tabelas com header navy, fontes
+  ampliadas always-on 17px+, esconde controles secundários, logo em navy
+  via filter, bordas grossas)
+
+Não toca em queries, dados, lógica — só apresentação.
+
+### 9.2 Regras ao implementar nova feature
+
+1. Implementar normal em `generate_risk_report.py` / módulos renderer.
+2. **Verificar render nas duas versões**:
+   - Dark: `python generate_risk_report.py {DATE}`
+   - Meeting: `python generate_risk_report_meeting.py {DATE}` (post-processa
+     o HTML dark — gera dark se faltar)
+3. **Hex codes hardcoded** introduzidos pela feature:
+   - Dark backgrounds (`#0xxxxx`–`#3xxxxx` em `background:` ou SVG `fill=`)
+     → adicionar ao `_BG_HEX_MAP` em `generate_risk_report_meeting.py`
+   - Light text (`color:#94a3b8`, amarelos claros, etc.) → adicionar ao
+     `_TEXT_COLOR_MAP`
+4. **CSS variables** (`var(--text)`, `var(--muted)`, etc.) — funcionam
+   automático nas duas versões.
+5. Para automação: `run_report_auto.bat` deveria rodar AMBOS sequenciais
+   (dark gera o HTML base, meeting transforma).
+
+### 9.3 Onde encontrar o "ultimo" pra exibição
+
+Telona da sala consome:
+`F:\Bloomberg\Risk_Manager\Data\Morningcall\ultimo_morning_call_meeting.html`
+
+Sempre o mais recente (o script sobrescreve). Não há archive datado da
+versão meeting — o archive vive na pasta dark.
+
+---
+
 **FIM.** Dúvidas ou inconsistências: falar com Diego (dfainber@gmail.com).
