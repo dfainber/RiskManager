@@ -179,17 +179,18 @@ Severity rubric reminder:
 
 ### 2d. Docs cleanup
 
-- [ ] Add `Status: ARCHIVED 2026-04-XX (Camada 2 implemented)` header to
-  `docs/CREDITO_TREATMENT.md`.
-- [ ] Add `Status: RESOLVED (commit e053a40)` header to
-  `docs/IDKA_VAR_EXPLORATION.md` (investigation report dated 2026-04-17,
-  bug fix already shipped).
-- [ ] Confirm `docs/REPORTS.html` (51 KB, last touched 2026-04-23) has no
-  consumer; delete it. `docs/REPORTS.md` is the human-readable source of
-  truth.
-- [ ] Update `memory/project_status.md` to drop the stale
-  `evolution_diversification_card` wire-it TODO (already done in CLAUDE.md
-  §7 and `docs/REPORTS.md`).
+- [x] ~~Add `Status: ARCHIVED` header to `docs/CREDITO_TREATMENT.md`~~ →
+  **done.** Header at `docs/CREDITO_TREATMENT.md:3` notes the card lives in
+  `evolution_diversification_card.py` wired via `generate_risk_report.py:808`.
+- [x] ~~Add `Status: RESOLVED (commit e053a40)` header to
+  `docs/IDKA_VAR_EXPLORATION.md`~~ → **done.** Header at line 3.
+- [x] ~~Confirm `docs/REPORTS.html` has no consumer; delete it.~~ →
+  **done.** File is no longer in the repo (deleted in a prior cleanup pass).
+- [x] ~~Update `memory/project_status.md` to drop stale TODO~~ →
+  **N/A.** That memory file does not exist in the project memory directory
+  (`C:\Users\diego.fainberg\.claude\projects\f--Bloomberg-Quant-MODELOS-DFF-Risk-Monitor\memory\`).
+  The audit's referenced TODO must have lived in CLAUDE.md §7 (already
+  cleaned) or in a now-deleted memory file.
 
 ---
 
