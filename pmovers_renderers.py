@@ -188,9 +188,9 @@ def build_pmovers_trigger(fund_short: str, has_data: bool = True) -> str:
 def build_pmovers_modal_scaffold() -> str:
     return """
 <div id="pmovers-backdrop" class="pmovers-backdrop" onclick="closePMovers()"></div>
-<div id="pmovers-modal" class="pmovers-modal" role="dialog" aria-hidden="true">
-  <div class="pmovers-head">
-    <span id="pmovers-title" class="pmovers-title">Top Movers Produto</span>
+<div id="pmovers-modal" class="pmovers-modal modal" role="dialog" aria-hidden="true">
+  <div class="pmovers-head modal-head">
+    <span id="pmovers-title" class="pmovers-title modal-title">Top Movers Produto</span>
     <span class="pmovers-close" onclick="closePMovers()" title="Fechar (Esc)">×</span>
   </div>
   <div id="pmovers-body" class="pmovers-body"></div>

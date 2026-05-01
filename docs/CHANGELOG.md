@@ -7,6 +7,19 @@ the latest session.
 
 ---
 
+## 2026-05-01 (segunda sessão) — Audit-driven hardening
+
+Driven by `REVIEW_2026-05-01.txt` Parts A (security) + D (aesthetics).
+CLAUDE.md surgery (changelog → this file, audit follow-ups → CODE_REVIEW_2026-05-01.md)
+landed in parallel.
+
+- **`glpg_fetch.read_sql` cleanup widened** — outer `except psycopg2.Error` → `except Exception` (pandas/network errors também devem dropar a conn poisoned). Bare `except: pass` no `conn.close()` agora loga em stderr antes de seguir; `_tl.conn = None` + re-raise mantidos. Sec audit #1.
+- **`_require_nav` helper** (`db_helpers.py`) — substitui o pattern `_latest_nav(...) or 1.0` em 4 sites de `data_fetch.py` (`fetch_macro_exposure`, `fetch_quant_var`, `fetch_evolution_var`, `fetch_macro_pm_book_var`). Raise quando NAV é None/0/negativo em vez de default-substitute (silent corruption ~10,000× nos bps). 5º site (`fetch_macro_pm_var_history`, loop por dia) usa pattern `if nav is None or nav <= 0: continue` — skip silencioso de dia ruim sem matar a série de 121d. Sec audit #2/#3.
+- **Credit XSS hardening** (`generate_credit_report._h`) — novo helper `_h(s) = html.escape(str(s), quote=True)` aplicado em ~20 sites onde DB-sourced strings (`produto`, `product_class`, labels de donut/hbar/vbar, rating tags) entram em `<td>`/`<text>`/`<title>`. Bond names com `<>"&` não quebram mais layout nem permitem injeção em e-mail (lista BCC = 31). Sec audit #6.
+- **Daily monitor brand strip + footer** (`daily_monitor.html` + `pnl_server.py`) — substituído `<span class="site-title">GLPG Monitor</span>` pelo SVG inline `rmGrad` + wordmark "Risk Monitor" do main report. Footer "Powered by Galápagos" servido via novo endpoint `/assets/galapagos.png` (decoda `credit/_galapagos_logo_b64.txt` no startup, serve como `image/png` com `Cache-Control: public, max-age=86400`). Aesthetics audit D #7.
+- **VaR DoD + Top Movers modals — CSV button injection** (`vardod_renderers.py`, `pmovers_renderers.py`) — adicionada classe `modal` ao div raiz de cada modal (additivamente, ao lado de `vardod-modal`/`pmovers-modal`), `modal-head` ao head, `modal-title` ao title span. `injectCsvButtons` agora pega ambos modais via `section.card, .modal` selector. Aesthetics audit D #11/#12.
+- **Mirror path → env var + WARN log** (`generate_risk_report.main`, `generate_risk_report_meeting.py`) — hardcoded `F:\Bloomberg\Risk_Manager\Data\Morningcall` agora vem de `RISK_MIRROR_PATH` (com fallback pro path antigo). Empty/unset desabilita o mirror inteiro. Erro silencioso virou stderr `WARNING: mirror save failed for {dir}: {e!r}`. Sec audit #9.
+
 ## 2026-05-01 — VaR Histórico hydration fix + Nazca wired (hidden) + hygiene + UX
 
 - **VaR Histórico chart hydration fix** (`generate_risk_report.py:723`) — chart era append separado como `("MACRO", "risk-monitor", chart_html)`, criando 2º `<template>` com mesma `(fund, report)` key. Lazy-hydration `querySelector` matchava só o 1º, então o chart nunca chegava ao DOM. Fix: concatenar `chart_html` na entry parent risk-monitor via `sections[-1] = (_f, _r, _h + _chart_html)`.

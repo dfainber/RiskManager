@@ -48,9 +48,9 @@ def build_vardod_modal_scaffold() -> str:
     """Single global modal HTML — placed once near end of <body>."""
     return """
 <div id="vardod-backdrop" class="vardod-backdrop" onclick="closeVarDoD()"></div>
-<div id="vardod-modal" class="vardod-modal" role="dialog" aria-hidden="true">
-  <div class="vardod-head">
-    <span id="vardod-title" class="vardod-title">VaR DoD</span>
+<div id="vardod-modal" class="vardod-modal modal" role="dialog" aria-hidden="true">
+  <div class="vardod-head modal-head">
+    <span id="vardod-title" class="vardod-title modal-title">VaR DoD</span>
     <span class="vardod-close" onclick="closeVarDoD()" title="Fechar (Esc)">×</span>
   </div>
   <div id="vardod-headline" class="vardod-headline"></div>

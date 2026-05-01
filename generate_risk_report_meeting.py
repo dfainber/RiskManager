@@ -19,6 +19,7 @@ Uso:
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -27,7 +28,9 @@ from pathlib import Path
 ROOT        = Path(__file__).parent
 DARK_DIR    = ROOT / "data" / "morning-calls"
 MEETING_DIR = ROOT / "data" / "morning-calls-meeting"
-MIRROR      = Path(r"F:\Bloomberg\Risk_Manager\Data\Morningcall")
+# Mirror path overridable via RISK_MIRROR_PATH; empty/unset disables mirroring.
+_MIRROR_RAW = os.environ.get("RISK_MIRROR_PATH", r"F:\Bloomberg\Risk_Manager\Data\Morningcall")
+MIRROR      = Path(_MIRROR_RAW) if _MIRROR_RAW else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -534,13 +537,14 @@ def main() -> Path:
     out.write_text(html_meeting, encoding="utf-8")
     print(f"   -> {out}")
 
-    try:
-        MIRROR.mkdir(parents=True, exist_ok=True)
-        mirror = MIRROR / fname
-        mirror.write_text(html_meeting, encoding="utf-8")
-        print(f"   -> mirror: {mirror}")
-    except Exception as exc:
-        print(f"   ! mirror falhou: {exc}")
+    if MIRROR is not None:
+        try:
+            MIRROR.mkdir(parents=True, exist_ok=True)
+            mirror = MIRROR / fname
+            mirror.write_text(html_meeting, encoding="utf-8")
+            print(f"   -> mirror: {mirror}")
+        except Exception as exc:
+            print(f"   ! WARNING: mirror save failed for {MIRROR}: {exc!r}", file=sys.stderr)
 
     print(f"\n[OK] Meeting report {date_str} pronto\n")
     return out

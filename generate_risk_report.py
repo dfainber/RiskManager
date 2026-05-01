@@ -4,6 +4,7 @@ Gera o HTML diário de risco MM com barras de range 12m e sparklines 60d.
 Usage: python generate_risk_report.py [YYYY-MM-DD]
 """
 from __future__ import annotations
+import os
 import sys
 import json
 from dataclasses import dataclass, field
@@ -715,10 +716,11 @@ def build_html(d: ReportData) -> str:
                     why = []
                     if miss_t: why.append(f"D ({DATA_STR})")
                     if miss_p: why.append(f"D-1 ({_d1_str})")
+                    pos_brl_str = fmt_br_num(f"{r['pos_brl']:,.0f}")
                     rows.append(
                         f'<tr><td>{r["produto"]}</td>'
                         f'<td style="color:var(--muted)">{r["product_class"] or "—"}</td>'
-                        f'<td class="mono" style="text-align:right">{fmt_br_num(f"{r["pos_brl"]:,.0f}")}</td>'
+                        f'<td class="mono" style="text-align:right">{pos_brl_str}</td>'
                         f'<td style="color:var(--down);font-size:11px">{" · ".join(why)}</td></tr>'
                     )
                 pq_html = (
@@ -5474,18 +5476,21 @@ def main():  # noqa: C901
     #   {DATA_STR}_risk_monitor.html  — dated archive (acumula histórico)
     #   ultimo_risk_monitor.html      — "latest" pointer (nome fixo, sempre
     #                                    sobrescreve — pra link/URL constante)
-    mirror_dir = Path(r"F:\Bloomberg\Risk_Manager\Data\Morningcall")
-    mirror = mirror_dir / f"{DATA_STR}_risk_monitor.html"
-    try:
-        mirror_dir.mkdir(parents=True, exist_ok=True)
-        mirror.write_text(html, encoding="utf-8")
-        print(f"Saved (mirror): {mirror}")
+    # Mirror path overridable via RISK_MIRROR_PATH; empty/unset disables mirroring.
+    mirror_path = os.environ.get("RISK_MIRROR_PATH", r"F:\Bloomberg\Risk_Manager\Data\Morningcall")
+    if mirror_path:
+        mirror_dir = Path(mirror_path)
+        mirror = mirror_dir / f"{DATA_STR}_risk_monitor.html"
+        try:
+            mirror_dir.mkdir(parents=True, exist_ok=True)
+            mirror.write_text(html, encoding="utf-8")
+            print(f"Saved (mirror): {mirror}")
 
-        latest = mirror_dir / "ultimo_risk_monitor.html"
-        latest.write_text(html, encoding="utf-8")
-        print(f"Saved (ultimo): {latest}")
-    except Exception as e:
-        print(f"Mirror save failed: {e}")
+            latest = mirror_dir / "ultimo_risk_monitor.html"
+            latest.write_text(html, encoding="utf-8")
+            print(f"Saved (ultimo): {latest}")
+        except Exception as e:
+            print(f"WARNING: mirror save failed for {mirror_dir}: {e!r}", file=sys.stderr)
 
 
 if __name__ == "__main__":

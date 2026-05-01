@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -60,9 +61,12 @@ def read_sql(query: str) -> pd.DataFrame:
     conn = _get_conn()
     try:
         return pd.read_sql(query, conn)
-    except psycopg2.Error:
-        # If the connection got poisoned, drop it so next call gets a fresh one.
-        try: conn.close()
-        except Exception: pass
+    except Exception:
+        # Any error here may have left the connection in an unusable state
+        # (poisoned txn, broken socket, etc.). Drop it so the next call reconnects.
+        try:
+            conn.close()
+        except Exception as close_err:
+            print(f"[glpg_fetch] warning: failed to close poisoned conn: {close_err!r}", file=sys.stderr)
         _tl.conn = None
         raise

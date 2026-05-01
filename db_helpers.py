@@ -108,3 +108,17 @@ def _latest_nav(desk: str, date_str: str):
     v = float(df["NAV"].iloc[0]) if not df.empty else None
     _NAV_CACHE[key] = v
     return v
+
+
+def _require_nav(desk: str, date_str: str) -> float:
+    """
+    Like _latest_nav but raises if NAV is missing or non-positive.
+    Use whenever NAV is a divisor — never default-substitute. A None/0 NAV
+    silently multiplied into a bps calc corrupts the Morning Call by ~10,000×.
+    """
+    v = _latest_nav(desk, date_str)
+    if v is None or v <= 0:
+        raise ValueError(
+            f"Missing or non-positive NAV for {desk!r} as of {date_str}: {v!r}"
+        )
+    return float(v)

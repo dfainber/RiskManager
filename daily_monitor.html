@@ -17,9 +17,23 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 header{
   position:sticky;top:0;z-index:100;
   background:var(--panel);border-bottom:1px solid var(--bdr);
-  display:flex;align-items:center;gap:0;height:44px;padding:0 16px;
+  display:flex;align-items:center;gap:0;height:48px;padding:0 16px;
 }
-.site-title{font-size:14px;font-weight:700;color:var(--accent);margin-right:20px;letter-spacing:.5px}
+.brand{display:flex;align-items:center;gap:10px;margin-right:20px}
+.brand .rm-logo{width:30px;height:30px;flex:0 0 auto}
+.brand .rm-wordmark{
+  font-family:'Gadugi','Inter',system-ui,sans-serif;
+  font-size:15px;font-weight:700;letter-spacing:.4px;
+  color:var(--text);white-space:nowrap;
+}
+/* "Powered by Galápagos" footer */
+.powered-by{
+  display:flex;justify-content:flex-end;align-items:center;gap:10px;
+  padding:14px 18px 18px;margin-top:24px;
+  border-top:1px solid var(--bdr);
+  color:var(--muted);font-size:10px;letter-spacing:.4px;text-transform:uppercase;
+}
+.powered-by img{height:18px;width:auto;opacity:.85}
 .tab-btn{
   height:44px;padding:0 16px;border:none;background:none;color:var(--muted);
   font-size:13px;cursor:pointer;border-bottom:2px solid transparent;
@@ -135,7 +149,10 @@ th[data-pkey]:hover{color:var(--text)!important}
 <body>
 
 <header>
-  <span class="site-title">GLPG Monitor</span>
+  <div class="brand">
+    <svg class="rm-logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-label="Risk Monitor"><defs><linearGradient id="rmGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#2a7ec8"/><stop offset="100%" stop-color="#0a1f4a"/></linearGradient></defs><rect width="100" height="100" rx="18" fill="url(#rmGrad)"/><path d="M 16 74 L 32 58 L 44 64 L 58 44 L 70 52 L 80 30" stroke="#5db6f3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M 80 30 L 68 28 M 80 30 L 80 42" stroke="#5db6f3" stroke-width="7" stroke-linecap="round" fill="none"/></svg>
+    <span class="rm-wordmark">Risk Monitor</span>
+  </div>
   <button class="tab-btn active" data-tab="pnl" onclick="switchTab('pnl')">Daily P&amp;L</button>
   <button class="tab-btn" data-tab="peers" onclick="switchTab('peers')">Peers</button>
   <div class="header-right">
@@ -681,5 +698,9 @@ async function loadPeers() {
 bpnlLoadState();
 loadPnl();
 </script>
+<footer class="powered-by">
+  <span>Powered by</span>
+  <img src="/assets/galapagos.png" alt="Galápagos">
+</footer>
 </body>
 </html>

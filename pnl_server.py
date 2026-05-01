@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -37,6 +38,13 @@ PEERS_PATH = Path(os.environ.get(
 ))
 
 THIS_DIR = Path(__file__).parent
+GALAPAGOS_LOGO_B64 = THIS_DIR / "credit" / "_galapagos_logo_b64.txt"
+
+# Decode logo once at startup; serve raw bytes on every request.
+try:
+    _GALAPAGOS_PNG = base64.b64decode(GALAPAGOS_LOGO_B64.read_text(encoding="ascii").strip())
+except Exception:
+    _GALAPAGOS_PNG = None
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -66,8 +74,21 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_pnl()
         elif path == "/api/peers":
             self._serve_peers()
+        elif path == "/assets/galapagos.png":
+            self._serve_logo()
         else:
             self.send_error(404, "Not found")
+
+    def _serve_logo(self):
+        if _GALAPAGOS_PNG is None:
+            self.send_error(404, "logo not available")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(_GALAPAGOS_PNG)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(_GALAPAGOS_PNG)
 
     def _serve_file(self, fpath: Path, content_type: str):
         try:

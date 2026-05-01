@@ -30,7 +30,7 @@ from risk_config import (
     _FUND_DESK_FOR_EXPO,
     _PRODCLASS_TO_FACTOR,
 )
-from db_helpers import _parse_rf, _parse_pm, _prev_bday, _NAV_CACHE, _latest_nav
+from db_helpers import _parse_rf, _parse_pm, _prev_bday, _NAV_CACHE, _latest_nav, _require_nav
 
 
 def fetch_pm_pnl_history() -> pd.DataFrame:
@@ -1783,7 +1783,7 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
 
 def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
     """Returns (df_expo, df_var, aum) for the given date."""
-    aum = _latest_nav("Galapagos Macro FIM", date_str) or 1.0
+    aum = _require_nav("Galapagos Macro FIM", date_str)
 
     expo = read_sql(f"""
         SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
@@ -2027,7 +2027,7 @@ def fetch_quant_var(date_str: str = DATA_STR) -> pd.DataFrame:
     """QUANT parametric VaR per (BOOK, PRODUCT, PRODUCT_CLASS) at LEVEL=3.
        Returns df with: BOOK, PRODUCT, PRODUCT_CLASS, var_brl, var_pct (bps of NAV, positive = loss).
     """
-    nav = _latest_nav("Galapagos Quantitativo FIM", date_str) or 1.0
+    nav = _require_nav("Galapagos Quantitativo FIM", date_str)
     df = read_sql(f"""
         SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS",
                SUM("PARAMETRIC_VAR") AS var_brl
@@ -2410,7 +2410,7 @@ def fetch_evolution_var(date_str: str = DATA_STR) -> pd.DataFrame:
        Same shape as MACRO's var_df — column name `rf` used by _build_expo_unified_table
        after rename. Returns df with BOOK, PRODUCT, PRODUCT_CLASS, var_brl, var_pct.
     """
-    nav = _latest_nav("Galapagos Evolution FIC FIM CP", date_str) or 1.0
+    nav = _require_nav("Galapagos Evolution FIC FIM CP", date_str)
     df = read_sql(f"""
         SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS",
                SUM("PARAMETRIC_VAR") AS var_brl
@@ -2449,7 +2449,7 @@ def fetch_macro_pm_book_var(date_str: str = DATA_STR) -> dict[str, float]:
        Soma-se |PARAMETRIC_VAR| por prefixo de PM → magnitude de perda em bps de NAV.
        Usa |·| por book para preservar o caráter conservador "não diversificado"
        (não permite hedge natural entre books do mesmo PM)."""
-    nav = _latest_nav("Galapagos Macro FIM", date_str) or 1.0
+    nav = _require_nav("Galapagos Macro FIM", date_str)
     df = read_sql(f"""
         SELECT "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
         FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
@@ -2505,12 +2505,16 @@ def fetch_macro_pm_var_history(date_str: str = DATA_STR,
     df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"])
     rows: list[dict] = []
     for vd, sub in df.groupby("VAL_DATE"):
-        nav = _latest_nav("Galapagos Macro FIM", vd.strftime("%Y-%m-%d")) or 1.0
+        # History loop: skip days with missing/non-positive NAV instead of raising —
+        # one bad day shouldn't kill the whole 121-day series.
+        nav = _latest_nav("Galapagos Macro FIM", vd.strftime("%Y-%m-%d"))
+        if nav is None or nav <= 0:
+            continue
         rec: dict = {"VAL_DATE": vd}
         for pm in ("CI", "LF", "JD", "RJ"):
             mask = sub["BOOK"].str.startswith(f"{pm}_") | (sub["BOOK"] == pm)
             v_brl_signed = float(sub.loc[mask, "var_brl"].sum())
-            rec[pm] = float(abs(v_brl_signed) * 10000 / nav) if nav else 0.0
+            rec[pm] = float(abs(v_brl_signed) * 10000 / nav)
         rows.append(rec)
 
     out = pd.DataFrame(rows).sort_values("VAL_DATE")
