@@ -20,7 +20,7 @@ from risk_config import ALL_FUNDS
 # ── MACRO BOOK-name parsers ───────────────────────────────────────────────────
 def _parse_rf(book: str) -> str:
     """Extract risk factor from BOOK name like 'JD_RF-BZ_Direcional' → 'RF-BZ'."""
-    PMS = ("CI", "LF", "JD", "RJ", "QM", "MD")
+    PMS = ("CI", "LF", "JD", "RJ", "MD")
     parts = book.split("_")
     if len(parts) >= 2 and parts[0] in PMS:
         return parts[1]
@@ -29,7 +29,7 @@ def _parse_rf(book: str) -> str:
 
 def _parse_pm(book: str) -> str:
     """Extract PM prefix from BOOK name like 'JD_RF-BZ_Direcional' → 'JD'."""
-    PMS = ("CI", "LF", "JD", "RJ", "QM", "MD")
+    PMS = ("CI", "LF", "JD", "RJ", "MD")
     parts = book.split("_")
     if len(parts) >= 1 and parts[0] in PMS:
         return parts[0]

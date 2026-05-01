@@ -1988,7 +1988,7 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
     pm_var_today = dict(zip(pm_var_today["pm"], pm_var_today["var_tot"]))
 
     # ── Global PM VaR table — expandable, same structure as POSIÇÕES ─────────
-    PM_ORDER_LIST = ["CI", "LF", "JD", "RJ", "QM"]
+    PM_ORDER_LIST = ["CI", "LF", "JD", "RJ"]
     pm_summary_rows = ""
     for pm_name in PM_ORDER_LIST:
         prod_sub = pm_prod[pm_prod["pm"] == pm_name].sort_values("pct_nav")

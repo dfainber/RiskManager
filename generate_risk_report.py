@@ -21,7 +21,7 @@ matplotlib.use("Agg")
 sys.path.insert(0, str(Path(__file__).parent))
 from risk_runtime import DATA_STR, DATA, OUT_DIR
 from risk_config import (
-    FUNDS, RAW_FUNDS, IDKA_FUNDS, ALL_FUNDS,
+    FUNDS, RAW_FUNDS, IDKA_FUNDS, RF_BENCH_FUNDS, ALL_FUNDS,
     ALERT_THRESHOLD, UTIL_WARN, UTIL_HARD,
     STOP_BASE, ALBATROZ_STOP_BPS,
     REPORTS, FUND_ORDER, FUND_LABELS,
@@ -92,6 +92,7 @@ from data_fetch import (
     fetch_risk_history,
     fetch_risk_history_raw,
     fetch_risk_history_idka,
+    fetch_risk_history_rf_bench,
     fetch_frontier_mainboard,
     fetch_frontier_exposure_data,
     fetch_aum_history,
@@ -217,7 +218,7 @@ class ReportData:
 
 # ── Fetch data ───────────────────────────────────────────────────────────────
 # ── Build series ─────────────────────────────────────────────────────────────
-def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
+def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None, df_risk_rf_bench=None):
     result = {}
     for td, cfg in FUNDS.items():
         rsk = df_risk[df_risk["TRADING_DESK"] == td].copy().sort_values("VAL_DATE")
@@ -255,6 +256,15 @@ def build_series(df_risk, df_aum, df_risk_raw=None, df_risk_idka=None):
     if df_risk_idka is not None and not df_risk_idka.empty:
         for td in IDKA_FUNDS:
             rsk = df_risk_idka[df_risk_idka["TRADING_DESK"] == td].copy()
+            if rsk.empty:
+                continue
+            rsk["VAL_DATE"] = rsk["VAL_DATE"].astype("datetime64[us]")
+            result[td] = rsk.sort_values("VAL_DATE").reset_index(drop=True)
+    # RF bench-relative funds (Nazca, ...) — BVaR computed from realized active
+    # returns; abs VaR from LOTE_FUND_STRESS. Already in pct units.
+    if df_risk_rf_bench is not None and not df_risk_rf_bench.empty:
+        for td in RF_BENCH_FUNDS:
+            rsk = df_risk_rf_bench[df_risk_rf_bench["TRADING_DESK"] == td].copy()
             if rsk.empty:
                 continue
             rsk["VAL_DATE"] = rsk["VAL_DATE"].astype("datetime64[us]")
@@ -724,7 +734,11 @@ def build_html(d: ReportData) -> str:
                     dates, series_payload, width=820, height=320,
                     y_suffix=" bps",
                 )
-                sections.append(("MACRO", "risk-monitor", f"""
+                # Append to the parent risk-monitor entry rather than as a new
+                # section: lazy hydration's querySelector('template[data-fund=...]
+                # [data-report=...]') matches only the first template, so a
+                # duplicate (fund, report) pair never reaches the live DOM.
+                _chart_html = f"""
                 <section class="card">
                   <div class="card-head">
                     <span class="card-title">VaR Histórico</span>
@@ -734,7 +748,9 @@ def build_html(d: ReportData) -> str:
                   <div class="bar-legend" style="margin-top:8px">
                     Fund total via <code>LOTE_FUND_STRESS_RPM</code> (LEVEL=2). PMs via mesma tabela TREE='Main_Macro_Ativos' (LEVEL=10), agregando |Σ signed PARAMETRIC_VAR| por book do PM. Diversificado dentro do PM, não entre PMs.
                   </div>
-                </section>"""))
+                </section>"""
+                _f, _r, _h = sections[-1]
+                sections[-1] = (_f, _r, _h + _chart_html)
             except Exception as _e:
                 print(f"  MACRO PM VaR history chart failed ({_e})")
 
@@ -2826,8 +2842,27 @@ def build_html(d: ReportData) -> str:
     if (!tpl) {{ _sectionsHydrated[key] = true; return; }}
     var host = document.getElementById('sections-container');
     if (!host) return;
-    host.appendChild(tpl.content.cloneNode(true));
+    // Hide before append so idle-hydration in summary/quality/etc. mode never
+    // flashes the section visible — applyState's visibility loop only runs on
+    // mode/sel changes, not after lazy clones.
+    var frag = tpl.content.cloneNode(true);
+    Array.prototype.forEach.call(frag.querySelectorAll('.section-wrap'), function(el) {{
+      el.style.display = 'none';
+    }});
+    host.appendChild(frag);
     _sectionsHydrated[key] = true;
+    // If the just-hydrated section matches the current mode/sel, reveal it.
+    var mode = document.body.dataset.mode || '';
+    if (mode === 'fund' || mode === 'report') {{
+      var bar = document.querySelector('.sub-tabs[data-for="' + mode + '"]');
+      var active = bar ? bar.querySelector('.tab.active') : null;
+      var sel = active ? active.dataset.target : '';
+      var match = (mode === 'fund' && sel === fund) || (mode === 'report' && sel === report);
+      if (match) {{
+        host.querySelectorAll('.section-wrap[data-fund="' + fund + '"][data-report="' + report + '"]')
+          .forEach(function(el) {{ el.style.display = ''; }});
+      }}
+    }}
     // Re-run handlers that walk the DOM at startup so they pick up newly
     // injected nodes (credit-section sort, vol-regime caret toggle, peers
     // tables, CSV buttons, fund-name highlighting).
@@ -4191,8 +4226,8 @@ window.refreshRptPnl = function() {{
 
   function cleanName(n) {{
     if (!n) return '—';
-    var tokens = /\b(FIC|FIF|FIM|FICFIM|FICFIA|FIA|FII|FIP|Feeder|Multimercado|Resp(?:onsabilidade)?\s*Limitada|R\.?L\.?|S\.?A\.?|Crédito\s*Privado|CP|IE|Invest(?:imento)?s?|Fundo\s*de\s*Investimento)\b\.?/gi;
-    return n.replace(tokens,'').replace(/^GALAPAGOS\s+/i,'GLPG ').replace(/\s{{2,}}/g,' ').trim() || n;
+    var tokens = /\\b(FIC|FIF|FIM|FICFIM|FICFIA|FIA|FII|FIP|Feeder|Multimercado|Resp(?:onsabilidade)?\\s*Limitada|R\\.?L\\.?|S\\.?A\\.?|Crédito\\s*Privado|CP|IE|Invest(?:imento)?s?|Fundo\\s*de\\s*Investimento)\\b\\.?/gi;
+    return n.replace(tokens,'').replace(/^GALAPAGOS\\s+/i,'GLPG ').replace(/\\s{{2,}}/g,' ').trim() || n;
   }}
   function truncName(s, maxLen) {{
     return s.length <= maxLen ? s : s.slice(0, maxLen-1) + '…';
@@ -4864,6 +4899,7 @@ def main():  # noqa: C901
         fut_risk       = ex.submit(fetch_risk_history)
         fut_risk_raw   = ex.submit(fetch_risk_history_raw)
         fut_risk_idka  = ex.submit(fetch_risk_history_idka)
+        fut_risk_rfb   = ex.submit(fetch_risk_history_rf_bench)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl       = ex.submit(fetch_pm_pnl_history)
         fut_pm_book_pnl  = ex.submit(fetch_pm_book_pnl_history)
@@ -4950,6 +4986,11 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  IDKA risk fetch failed ({e})")
         df_risk_idka = None
+    try:
+        df_risk_rfb = fut_risk_rfb.result()
+    except Exception as e:
+        print(f"  RF bench-relative risk fetch failed ({e})")
+        df_risk_rfb = None
     df_aum      = fut_aum.result()
     df_pm_pnl   = fut_pm_pnl.result()
     try:
@@ -4962,7 +5003,7 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  PM book-report VaR failed ({e})")
         pm_book_var = {}
-    series      = build_series(df_risk, df_aum, df_risk_raw, df_risk_idka)
+    series      = build_series(df_risk, df_aum, df_risk_raw, df_risk_idka, df_risk_rfb)
     stop_hist = build_stop_history(df_pm_pnl)
 
     # PM MTD/YTD from PA leaves — avoids MES column (often NULL in REPORT_ALPHA_ATRIBUTION).

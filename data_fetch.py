@@ -21,7 +21,7 @@ import pandas as pd
 from glpg_fetch import read_sql
 from risk_runtime import DATA_STR, DATA, DATE_1Y, DATE_60D
 from risk_config import (
-    ALL_FUNDS, FUNDS, RAW_FUNDS, IDKA_FUNDS,
+    ALL_FUNDS, FUNDS, RAW_FUNDS, IDKA_FUNDS, RF_BENCH_FUNDS,
     _PM_LIVRO, _ETF_TO_LIST,
     _EXCL_PRIM, _RATE_PRIM,
     _QUANT_BOOK_FACTOR, _QUANT_VAR_BOOK_FACTOR,
@@ -42,7 +42,7 @@ def fetch_pm_pnl_history() -> pd.DataFrame:
     WHERE "FUNDO" = 'MACRO'
       AND "DATE" >= DATE '2025-01-01'
       AND "DATE" <= DATE '{DATA_STR}'
-      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ','Macro_QM')
+      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
     GROUP BY DATE_TRUNC('month', "DATE"), "LIVRO"
     ORDER BY "LIVRO", mes
     """
@@ -67,7 +67,7 @@ def fetch_pm_book_pnl_history() -> pd.DataFrame:
     WHERE "FUNDO" = 'MACRO'
       AND "DATE" >= DATE '2025-01-01'
       AND "DATE" <= DATE '{DATA_STR}'
-      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ','Macro_QM')
+      AND "LIVRO" IN ('CI','Macro_LF','Macro_JD','Macro_RJ')
     GROUP BY DATE_TRUNC('month', "DATE"), "LIVRO", "BOOK"
     ORDER BY "LIVRO", mes, "BOOK"
     """
@@ -178,6 +178,92 @@ def fetch_risk_history_idka() -> pd.DataFrame:
     df["var_pct"]    = -df["bvar_pct_raw"] * 100.0   # BVaR as % (primary slot)
     df["stress_pct"] = -df["var_pct_raw"]  * 100.0   # VaR as % (secondary / reference)
     return df[["TRADING_DESK", "VAL_DATE", "var_pct", "stress_pct"]]
+
+
+# Index identifiers in public.ECO_INDEX for benchmark return series.
+_BENCH_INDEX_MAP = {
+    "IMA-B":  ("IMA-B",  "INDEX"),
+    # Add more bench indices here as RF_BENCH_FUNDS grows (e.g. IDA-Infra, IMA-S).
+}
+
+
+def fetch_risk_history_rf_bench() -> pd.DataFrame:
+    """BVaR (active-return σ × 1.645) + abs VaR for RF_BENCH_FUNDS funds.
+
+    For funds whose BVaR is NOT in LOTE_PARAMETRIC_VAR_TABLE (e.g. Nazca):
+      • Pull daily NAV_SHARE.SHARE → fund returns
+      • Pull benchmark INDEX from ECO_INDEX → bench returns
+      • Compute active return per day, rolling 252d BVaR_95_1d = 1.645 × σ
+      • Pull abs VaR from LOTE_FUND_STRESS (TREE='Main') / NAV — secondary slot
+
+    Returns same shape as fetch_risk_history_idka:
+      TRADING_DESK, VAL_DATE, var_pct (BVaR%), stress_pct (abs VaR%)
+    """
+    if not RF_BENCH_FUNDS:
+        return pd.DataFrame(columns=["TRADING_DESK", "VAL_DATE", "var_pct", "stress_pct"])
+
+    out_frames = []
+    for td, cfg in RF_BENCH_FUNDS.items():
+        bench = cfg.get("benchmark")
+        idx_key = _BENCH_INDEX_MAP.get(bench)
+        if idx_key is None:
+            continue
+        instr, field = idx_key
+
+        # Fund NAV_SHARE → daily returns
+        nav = read_sql(f"""
+            SELECT "VAL_DATE", "SHARE", "NAV"
+            FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+            WHERE "TRADING_DESK" = '{td}'
+            ORDER BY "VAL_DATE"
+        """)
+        if nav.empty:
+            continue
+        nav["VAL_DATE"] = pd.to_datetime(nav["VAL_DATE"]).astype("datetime64[us]")
+        nav["ret_fund"] = nav["SHARE"].pct_change()
+
+        # Benchmark INDEX → daily returns
+        bench_df = read_sql(f"""
+            SELECT "DATE" AS "VAL_DATE", "VALUE" AS bench_idx
+            FROM public."ECO_INDEX"
+            WHERE "INSTRUMENT" = '{instr}' AND "FIELD" = '{field}'
+            ORDER BY "DATE"
+        """)
+        if bench_df.empty:
+            continue
+        bench_df["VAL_DATE"] = pd.to_datetime(bench_df["VAL_DATE"]).astype("datetime64[us]")
+        bench_df["ret_bench"] = bench_df["bench_idx"].pct_change()
+
+        merged = nav.merge(bench_df[["VAL_DATE", "ret_bench"]], on="VAL_DATE", how="inner")
+        merged = merged.dropna(subset=["ret_fund", "ret_bench"])
+        merged["ret_active"] = merged["ret_fund"] - merged["ret_bench"]
+        # Rolling 252d BVaR 95% 1d as % of NAV.
+        merged["var_pct"] = -1.645 * merged["ret_active"].rolling(252, min_periods=63).std() * 100.0
+        merged = merged.dropna(subset=["var_pct"])
+
+        # Abs VaR from LOTE_FUND_STRESS (TREE='Main'), normalized by NAV.
+        abs_var = read_sql(f"""
+            SELECT "VAL_DATE", SUM("PVAR1DAY") AS var_total
+            FROM "LOTE45"."LOTE_FUND_STRESS"
+            WHERE "TRADING_DESK" = '{td}'
+              AND "VAL_DATE" >= DATE '{DATE_1Y.date()}'
+              AND "TREE" = 'Main'
+            GROUP BY "VAL_DATE"
+            ORDER BY "VAL_DATE"
+        """)
+        if not abs_var.empty:
+            abs_var["VAL_DATE"] = pd.to_datetime(abs_var["VAL_DATE"]).astype("datetime64[us]")
+            merged = merged.merge(abs_var, on="VAL_DATE", how="left")
+            merged["stress_pct"] = -merged["var_total"] / merged["NAV"] * 100.0
+        else:
+            merged["stress_pct"] = 0.0
+
+        merged["TRADING_DESK"] = td
+        out_frames.append(merged[["TRADING_DESK", "VAL_DATE", "var_pct", "stress_pct"]])
+
+    if not out_frames:
+        return pd.DataFrame(columns=["TRADING_DESK", "VAL_DATE", "var_pct", "stress_pct"])
+    return pd.concat(out_frames, ignore_index=True)
 
 
 def fetch_frontier_mainboard(date_str: str) -> pd.DataFrame:
@@ -796,7 +882,7 @@ def fetch_frontier_alpha_series(date_str: str = DATA_STR, window_days: int = 252
 # fund_key → (data_source, desk_full_name, metric_label, bench_primitive_or_None)
 # bench_primitive: nome do PRIMITIVE no LOTE_PARAMETRIC_VAR_TABLE que representa
 # a obrigação de tracking do índice (passivo). Por mandato deveria ser sempre -1×NAV;
-# o engine às vezes recalibra pra -0.62/-0.71 (parking lot — ver memory/project_todo_idka_bench_engine_recalibration.md).
+# o engine às vezes recalibra pra -0.62/-0.71 (parking lot — engine recalibration).
 _VAR_DOD_DISPATCH = {
     "IDKA_3Y":   ("idka_param", "IDKA IPCA 3Y FIRF",                       "BVaR", "IDKA IPCA 3Y"),
     "IDKA_10Y":  ("idka_param", "IDKA IPCA 10Y FIRF",                      "BVaR", "IDKA IPCA 10Y"),
@@ -873,8 +959,7 @@ def _var_dod_idka(desk: str, date_d: str, date_d1: str,
     (ratio -1.00) sempre que o engine reportar magnitude diferente. Escala
     contrib_bps e vol_bps proporcionalmente. Razão: por mandato o passivo
     é 100% NAV; recalibrações intermitentes do engine para -0.62/-0.71
-    geram ΔBVaR artificial sem mudança real de risco. Ver
-    memory/project_todo_idka_bench_engine_recalibration.md."""
+    geram ΔBVaR artificial sem mudança real de risco."""
     q = f"""
     SELECT "VAL_DATE", "PRIMITIVE",
            "DELTA",
@@ -1254,9 +1339,8 @@ def _var_dod_lote_fund(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd
 
     # Look-through regrouping: positions sourced from sub-funds (BALTRA holds
     # IDKAs, Albatroz) are grouped under synthetic parent rows.
-    # NOTE: longer-term, BALTRA should be populated in LOTE_FUND_STRESS_RPM
-    # where the engine already does this look-through aggregation natively.
-    # Parked in memory/project_todo_baltra_lote_fund_stress_rpm.md.
+    # NOTE: BALTRA migrado para LOTE_FUND_STRESS_RPM em 2026-04-28 (look-through
+    # nativo). Esta path só ativa pra ALBATROZ/MACRO_Q que continuam em LOTE_FUND_STRESS.
     out = _regroup_lookthrough(out, desk, date_d)
 
     out = out[_VAR_DOD_COLUMNS].reset_index(drop=True)
@@ -1708,7 +1792,7 @@ def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
         FROM "LOTE45"."LOTE_PRODUCT_EXPO"
         WHERE "TRADING_DESK_SHARE_SOURCE" = 'Galapagos Evolution FIC FIM CP'
           AND "VAL_DATE"                  = DATE '{date_str}'
-          AND "BOOK" ~* 'CI|JD|LF|QM|RJ'
+          AND "BOOK" ~* 'CI|JD|LF|RJ'
           AND "BOOK" ~* 'Direcional|Relativo|Hedge|Volatilidade|SS'
         GROUP BY "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS"
     """)
@@ -2465,6 +2549,8 @@ def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
     df = read_sql(q)
     num_cols = ["dia_bps","mtd_bps","ytd_bps","m12_bps","position_brl"]
     df[num_cols] = df[num_cols].astype(float).fillna(0.0)
+    # Drop Macro_QM (descontinued PM) — historical PA rows linger but the book is closed.
+    df = df[df["LIVRO"] != "Macro_QM"].reset_index(drop=True)
     # Dust filter: drop leaves with zero contribution across every horizon AND no position.
     # Keeps totals intact (dropped rows were 0 anyway) and trims ~20-30% of JSON payload.
     dust = (

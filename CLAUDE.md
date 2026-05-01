@@ -134,9 +134,23 @@ Nunca escrever `SISTEMATICO` em query — o nome real no banco é **`QUANT`**.
 | FRONTIER   | ✅ BVaR HS          | ✅ (GFA) | ✅ active wt      | ✅ α vs IBOV   | —               |
 | IDKA 3Y    | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
 | IDKA 10Y   | ✅ BVaR param       | ✅       | ✅ 3-vias toggle  | ✅ HS active    | —               |
+| NAZCA      | ✅ BVaR realizado (vs IMA-B) — wired but hidden in `FUND_ORDER` | — | — | — | — |
 
 Limites provisórios: ALBATROZ, MACRO_Q, BALTRA, IDKA 3Y (soft 0.40/hard 0.60 daily),
-IDKA 10Y (soft 1.00/hard 1.50 daily). Aguardam mandatos definitivos.
+IDKA 10Y (soft 1.00/hard 1.50 daily), NAZCA (soft 2.0/hard 3.0 — hidden). Aguardam mandatos definitivos.
+
+### Crédito sub-projeto (standalone — `generate_credit_report.py`)
+
+| Fundo     | Snapshot | Distribuição | Concentração | Alocação drill | Mercado | AUM | Retorno | Sanity Preços |
+|-----------|----------|--------------|--------------|----------------|---------|-----|---------|---------------|
+| Sea Lion  | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
+| Iguana    | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
+| Pelican   | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
+| Dragon    | ✅       | ✅           | ✅           | ✅ 4 modos (default subord) | ✅ | ✅ | ✅ | ✅ |
+| Barbacena | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
+| Nazca     | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
+
+Crédito tab no main report cobre **BALTRA + EVOLUTION** via look-through `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE`. MACRO_Q **não** tem look-through Albatroz — fora do escopo do tab. ALBATROZ tem CRIs/debentures direto (ainda não wired no tab Crédito do main report).
 
 ---
 
@@ -146,10 +160,9 @@ IDKA 10Y (soft 1.00/hard 1.50 daily). Aguardam mandatos definitivos.
 
 Fila priorizada (fazer nesta ordem):
 
-1. **MACRO↔QUANT exposure harmonization** — unificar layout, QUANT herda Δ Expo + σ + VaR signed
-2. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing`
-3. **Wire `evolution_diversification_card.py`** no relatório principal
-4. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia)
+1. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing`
+2. **Wire `evolution_diversification_card.py`** no relatório principal
+3. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia)
 
 Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 
@@ -167,7 +180,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Peers charts** — bar chart (horizontal, sorted desc) + scatter (Vol vs Retorno 12M), SVG puro, portado de `GLPG_Fetch/app.js`; vista padrão = Gráficos; toggles de período MTD/YTD/12M/24M/36M
 - **`risk_config._FUND_PEERS_GROUP`** — dict canônico fundo → peer group; QUANT→MACRO, MACRO_Q→EVOLUTION
 - **VaR/BVaR table rows** — clicáveis (`selectFund`) via `summary_renderers.py`
-- **Market tab parked** — `fetch_market_snapshot()` em `data_fetch.py`, seção HTML pronta; parkeado por 3 bugs de query (ver `memory/project_todo_market_tab_fixes.md`)
+- **Market tab parked** — `fetch_market_snapshot()` em `data_fetch.py`, seção HTML pronta; parkeado por 3 bugs de query.
 
 **Features entregues 2026-04-27:**
 - **Exposure Total — 3 métricas** (`_build_expo_unified_table` em `expo_renderers.py`): linha "Total não-diversificado" (Σ |VaR fator|, cinza) + linha "Diversificado HS portfolio" (de `series_map[td]`) + benefício em bps. Aplicado MACRO/QUANT/EVOLUTION via novo helper `_latest_hs_var_bps(short)` em `generate_risk_report.build_html`.
@@ -195,7 +208,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Catálogo de tabelas/defaults** (`docs/REPORT_TABLES_DEFAULTS.txt` + `.md`) — documentação completa de todos os cards do relatório por (mode, fund), com handlers JS de drill/toggle e estado default atual de cada um. Útil pra discutir mudanças sistemáticas de UX.
 
 **Features entregues 2026-04-28 (segunda sessão — commits `2e948f0`, `c870de1`):**
-- **Risk Budget — nova regra de carry** (`fund_renderers.carry_step`) — pnl positivo: `next = 63 + 0.5 × pnl` SEMPRE (substitui o reset-para-63 + bônus de crossover YTD); pnl negativo: 3 camadas de penalty (extra `B_t − 63` = 25% · base 63 = 50% · excedente acima de B_t = 100%) + cap em `min(B_t, 63)`. Carry extra não consumido evapora ("use it or lose it"). Detalhado em `memory/project_rule_macro_carry_step.md`.
+- **Risk Budget — nova regra de carry** (`fund_renderers.carry_step`) — pnl positivo: `next = 63 + 0.5 × pnl` SEMPRE (substitui o reset-para-63 + bônus de crossover YTD); pnl negativo: 3 camadas de penalty (extra `B_t − 63` = 25% · base 63 = 50% · excedente acima de B_t = 100%) + cap em `min(B_t, 63)`. Carry extra não consumido evapora ("use it or lose it").
 - **Override LF Apr/26 = 20 bps** (`data/mandatos/risk_budget_overrides.json`) — segundo override ativo (RJ Apr = 63 já existia).
 - **STOP → ⚪ FLAT downgrade** (`fund_renderers.build_stop_section` + plumbing em `generate_risk_report.build_html`) — quando PM em STOP territory mas sem exposição viva (`Σ|delta| < 0.05% NAV` em `df_expo`), status passa a FLAT cinza. Não aplica a CI.
 - **Stop history modal — drill-down BOOK-level** (`_build_stop_history_modal` + `data_fetch.fetch_pm_book_pnl_history` + handler JS `toggleStopHistRow`) — cada linha-mês ganha caret `▶` clicável; expande mostrando breakdown por BOOK do PnL daquele mês, ordenado por |PnL| desc.
@@ -208,9 +221,9 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **IDKA HS replication — engine-style + strict NTN-B coupon TR** (`data_fetch._compute_idka_replication_returns` + cache `data/idka_replication_cache.json`) — substitui o approach asset-based ("hold same NTN-Bs, replay history") por engine-style: **at each historical date `t`, solve a constant-DV-target NTN-B-only portfolio at `t_prev` and earn its 1d total return on `t`**. Replication independente da posição do fundo. Cache JSON imutável (243 dates × 2 targets ≈ 19KB), backfill ~10s on cold start, ~0.3s daily marginal. Plus: strict coupon adjustment via `_get_vna_ntnb` — `r_TR = r_clean + (semi_coupon × VNA(cup)) / P_prev` (era `(1+r)(1+c)−1` que tinha bias ~9 bps em coupon days). VNA puxado de `ECO_INDEX.VNA_NTNB`. Spread mean centrado em ~0 agora (antes -0.14 bps).
 - **VaR DoD attribution — Fase 1 (data layer)** (`data_fetch.fetch_var_dod_decomposition`) — função pública que devolve decomposição D-vs-D-1 por leaf factor. Schema 16 colunas (label, group, contrib_d1/d/delta, pos_d1/d/d_pos_pct, vol_d1/d/d_vol, pos_effect/vol_effect, sign, override_note, children). 8 fundos: IDKAs (LOTE_PARAMETRIC_VAR_TABLE per PRIMITIVE) · MACRO/QUANT/EVO (LOTE_FUND_STRESS_RPM LEVEL=10 per BOOK) · ALBATROZ/MACRO_Q/BALTRA (LOTE_FUND_STRESS per PRODUCT). Decomposição "today's pos constant": `pos_effect = (pos_d − pos_d1) × g_d1`, `vol_effect = pos_d × (g_d − g_d1)`, exact sum.
 - **VaR DoD attribution — Fase 2 (modal)** (`vardod_renderers.py` novo + 5 triggers em `expo_renderers.py` + injection em `generate_risk_report.build_html`) — popup modal acionado por botão azul outlined "VaR DoD →" no header de cada exposure section. Modal compacto ~820px com tabela ordenada por |Δ| desc, sortável por header. Headline: ΔVaR + breakdown pos/vol. Filter zero-rows (`|contrib_d1| < 0.05 AND |contrib_d| < 0.05`). Linhas com override em destaque amarelo. ESC/backdrop fecha. JSON payload embedded `window.__VAR_DOD_DATA` (~190KB).
-- **IDKA bench primitive override — unconditional** (`data_fetch._var_dod_idka`) — força DELTA do passivo (`PRIMITIVE='IDKA IPCA 3Y'`/`'IDKA IPCA 10Y'`) para `-NAV` sempre, escala `contrib`/`vol` proporcionalmente. Resolve bug intermitente do engine que oscila ratio bench/NAV entre -1.00 e -0.62/-0.71 nos 2 IDKAs simultaneamente, gerando ΔBVaR artificial. Audit trail em `override_note` quando correção é material (`|ratio + 1| > 0.05`). Parking lot em `memory/project_todo_idka_bench_engine_recalibration.md`.
+- **IDKA bench primitive override — unconditional** (`data_fetch._var_dod_idka`) — força DELTA do passivo (`PRIMITIVE='IDKA IPCA 3Y'`/`'IDKA IPCA 10Y'`) para `-NAV` sempre, escala `contrib`/`vol` proporcionalmente. Resolve bug intermitente do engine que oscila ratio bench/NAV entre -1.00 e -0.62/-0.71 nos 2 IDKAs simultaneamente, gerando ΔBVaR artificial. Audit trail em `override_note` quando correção é material (`|ratio + 1| > 0.05`).
 - **Albatroz look-through inline nos modais IDKA** (`data_fetch._explode_albatroz_for_idka` + JS expandable rows) — linha "GALAPAGOS ALBATROZ FIRF LP" na tabela IDKA agora tem caret ▶ que expande pras 4 posições internas do Albatroz (DI1F33, DI1F28, DAPK35, NTNB 15/08/2050) reescaladas pra bps no NAV do IDKA. Position via `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE='IDKA IPCA Xy FIRF'`. VaR via `LOTE_FUND_STRESS` Albatroz × scale = parent_idka / albatroz_total. Soma dos children = parent (exato).
-- **BALTRA look-through synthetic parents** (`data_fetch._regroup_lookthrough` + `_fetch_lookthrough_source_funds`) — modal BALTRA agrupa posições look-through sob 3 parent rows: ↻ IDKA 10Y holdings (10 children) · ↻ IDKA 3Y holdings (9) · ↻ Albatroz holdings (22). Direct rows (Prev book, CRIs) ficam standalone. Workaround usando cross-join LOTE_FUND_STRESS × LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE — quando upstream popular BALTRA em LOTE_FUND_STRESS_RPM (que faz isso nativo igual MACRO/QUANT/EVO), simplificar dispatch. Parking lot em `memory/project_todo_baltra_lote_fund_stress_rpm.md`.
+- **BALTRA look-through synthetic parents** (`data_fetch._regroup_lookthrough` + `_fetch_lookthrough_source_funds`) — modal BALTRA agrupa posições look-through sob 3 parent rows: ↻ IDKA 10Y holdings (10 children) · ↻ IDKA 3Y holdings (9) · ↻ Albatroz holdings (22). Direct rows (Prev book, CRIs) ficam standalone. Workaround usando cross-join LOTE_FUND_STRESS × LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE. **Resolvido 2026-04-28** com migração BALTRA → LOTE_FUND_STRESS_RPM (LEVEL=10 nativo) — workaround só ativa pra ALBATROZ/MACRO_Q.
 - **Fund switcher scroll-to-top** (`generate_risk_report.selectFund` JS) — clicar em outro fundo no nav agora scrollTo(0) instant. Antes ficava na posição vertical anterior.
 
 **Features entregues 2026-04-28 (quarta sessão):**
@@ -223,8 +236,8 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **BALTRA TREE='Main' filter** (`data_fetch.fetch_risk_history_raw` + `_var_dod_lote_fund`) — BALTRA era único RAW_FUND com 3 TREEs em LOTE_FUND_STRESS (Main / Main_Macro_Gestores / Main_Macro_Ativos), todas com mesmo total — `SUM(PVAR1DAY)` triplicava. Filtro `TREE='Main'` reduz VaR card BALTRA pra valor real (~3× menor). Outros RAW_FUNDS só têm Main → no-op.
 - **IGPM exposure — Fase 1 (silent-drop fix)** (`data_fetch.fetch_rf_exposure_map`) — `_RATE_PRIM_BY_CLASS["NTN-C"/"DAC Future"]: "IPCA Coupon" → "IGPM Coupon"`. `keep_mask` aceita `PRIMITIVE_CLASS in ("IPCA","IGPM")`. Override factor: `PRIMITIVE_CLASS='IGPM' → factor='igpm_idx'`. `rate_prims` (sign-flip set) inclui `'IGPM Coupon'`. Antes: NTN-Cs eram silenciosamente dropados do Exposure Map (mismatch entre _RATE_PRIM mapping e PRIMITIVE_CLASS upstream).
 - **IGPM — Fase 2 (rendering)** (`risk_config._RF_FACTOR_MAP`, `expo_renderers.{build_idka_exposure_section, build_rf_exposure_map_section}`) — `_RF_FACTOR_MAP["NTN-C"/"DAC Future"] = "real_igpm"` (separado de "real" IPCA). `FACTOR_ORDER`/`FACTOR_LABEL`/`_DUR_FAC`/`_DUR_FACTORS` ganham `real_igpm` + `igpm_idx`. Pivot RF map inclui `real_igpm`. Stat row tem chip "Juros Reais (IGPM)" condicional (só quando |val| > 0.005yr). Position table mostra factor=real_igpm/igpm_idx.
-- **`fetch_albatroz_exposure` rewrite** — bug pré-existente de `SUM(DELTA)` sobre todos primitives (spread + face + coupon, sinais inconsistentes → garbage). Fix: WHERE filtra UM rate primitive por PRODUCT_CLASS (NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`). DV01: `DELTA × 0.0001` (era `× MOD_DUR × 0.0001` → squared duration, inflava ~10×). Filtro `MOD_DURATION IS NOT NULL` exclui face values. CRIs/Debentures parked (`memory/project_todo_cri_primitive_decomp.md`).
-- **Cobertura IGPM no kit**: BALTRA (NTNC 01/01/2031 book Prev, 51.6M ano_eq, ~1.02yr) + EVOLUTION (via Evo Strategy CI_Macro look-through, 30.7M ano_eq, ~0.11yr). PA `REPORT_ALPHA_ATRIBUTION` já tinha CLASSE='RF BZ IGP-M' separada — PA cards renderizam automaticamente. Para 252d HS / vol regime / replication: tratar IGPM como IPCA proxy (sem vertices upstream — ver `memory/project_rule_igpm_treatment.md`).
+- **`fetch_albatroz_exposure` rewrite** — bug pré-existente de `SUM(DELTA)` sobre todos primitives (spread + face + coupon, sinais inconsistentes → garbage). Fix: WHERE filtra UM rate primitive por PRODUCT_CLASS (NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`). DV01: `DELTA × 0.0001` (era `× MOD_DUR × 0.0001` → squared duration, inflava ~10×). Filtro `MOD_DURATION IS NOT NULL` exclui face values. CRIs/Debentures parked (somam todos primitives — sinal misto).
+- **Cobertura IGPM no kit**: BALTRA (NTNC 01/01/2031 book Prev, 51.6M ano_eq, ~1.02yr) + EVOLUTION (via Evo Strategy CI_Macro look-through, 30.7M ano_eq, ~0.11yr). PA `REPORT_ALPHA_ATRIBUTION` já tinha CLASSE='RF BZ IGP-M' separada — PA cards renderizam automaticamente. Para 252d HS / vol regime / replication: tratar IGPM como IPCA proxy (sem vertices upstream).
 - **Lista de distribuição daily** (`scripts/send_risk_monitor_email.ps1`) — BCC expandido de 9 → 31 destinatários (lista completa do time).
 
 **Features entregues 2026-04-28 (sexta sessão):**
@@ -290,7 +303,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **`setDistBench` precisa chamar `_applyDistVisibility`** — trocar bench tab (Benchmark/Replication/Comparação) sem reaplicar mode/window faz a tabela aparecer vazia. As 4 views internas (bw1/fw1/bw21/fw21) ficam com display:none até que `_applyDistVisibility(card)` seja chamado.
 - **Exposure RF — LFTs (CDI) inflam métricas cosméticas** — `cls_to_idx["LFT"] = "CDI"` em `fetch_albatroz_exposure`. LFTs são floating-rate (mod_dur ≈ 0), e somam em Gross/Net %NAV sem representar risco real. `build_albatroz_exposure` filtra `indexador != "CDI"` no início. Adicionalmente filtra `mod_dur > 0.01` pra remover Equity / IBOVSPFuture / USDBRLFuture / FIDCs / Corn Futures que também não têm rate sensitivity (deixa só CRIs e bonds).
 - **Exposure RF — Net (yrs)** — após o fix de `fetch_albatroz_exposure` (filtro de rate primitive), `delta_brl` é POSITION × MOD_DURATION. Logo `delta_brl/nav` dá duração em yrs direto. Coluna "Net" mostra yrs, não %NAV. `yr_cell(v_brl)` em `expo_renderers.py` faz a conversão.
-- **`fetch_albatroz_exposure` — primitive filter** — engine decompõe NTN-B/DAP em 3 primitives (sovereign spread + IPCA face + IPCA Coupon rate), com sinais inconsistentes entre primitives. SUM(DELTA) sem filtro = garbage. Função filtra UM rate primitive por PRODUCT_CLASS via WHERE clause: NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`. CRIs ainda somam todos primitives (parking lot `memory/project_todo_cri_primitive_decomp.md`).
+- **`fetch_albatroz_exposure` — primitive filter** — engine decompõe NTN-B/DAP em 3 primitives (sovereign spread + IPCA face + IPCA Coupon rate), com sinais inconsistentes entre primitives. SUM(DELTA) sem filtro = garbage. Função filtra UM rate primitive por PRODUCT_CLASS via WHERE clause: NTN-B/DAP→`IPCA Coupon`, NTN-C/DAC→`IGPM Coupon`, DI/NTN-F/LTN→`BRL Rate Curve`. CRIs ainda somam todos primitives (parking lot).
 - **TRADING_DESK_SHARE_SOURCE faz look-through nativo** — em `LOTE_PRODUCT_EXPO`, filtrar **só** `SHARE_SOURCE='X'` captura direto + look-through. Adicionar `AND TRADING_DESK='X'` filtra fora as cotas do fundo (IDKA, Albatroz, Estrat. Prev. CP) e quebra fundos cotistas (BALTRA, IDKAs). Memory: `project_rule_share_source_lookthrough.md`.
 - **`LOTE_PRODUCT_BOOK_POSITION_PL.PL_PCT` é per-position** — `PL_PCT = PL/AMOUNT` por linha, NÃO somável em agregação por book/PM. Sempre recomputar bps como `PL / fund_NAV` em qualquer agregação. Frontend group header deve **somar** os pl_pct dos books-filhos (que agora são `PL/NAV`), não calcular média. Memory: `project_rule_book_pnl_per_position_pct.md`.
 - **`pnl_server.py` precisa restart manual após editar `data_fetch.py`** — Python importa o módulo uma vez no startup; edits não fazem reload automático. Localizar PID via `wmic process where "CommandLine like '%pnl_server%'" get ProcessId,CommandLine` + `taskkill /PID <pid> /F` + relançar.
@@ -302,8 +315,8 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 Fora de escopo até decisão explícita:
 
 - ~~Fundos **BALTRA**~~ — **implementado 2026-04-26, migrado pra LOTE_FUND_STRESS_RPM em 2026-04-28** (commit `51be7a9`): VaR/Stress via RPM (LEVEL=10 nativo) + PA + Exposure RF + Exposure Map + Top Movers Produto. Benchmark = IPCA+ (~3-4 anos duration real), a confirmar. Limites provisórios (soft 1.75%/hard 2.50% VaR; soft 12.6%/hard 18% stress).
+- ~~Família **Crédito**~~ — **implementado 2026-04-30** (sub-projeto standalone `generate_credit_report.py` cobre 6 fundos; tab Crédito no main report cobre BALTRA + EVOLUTION via look-through). Mandatos formais aguardam confirmação por fundo.
 - Fundos **FMN** (relatório separado via xlwings existe)
-- Família **Crédito** (entra só após MM + RF estáveis)
 
 ---
 

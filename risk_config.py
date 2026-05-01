@@ -36,7 +36,17 @@ IDKA_FUNDS = {
     "IDKA IPCA 3Y FIRF":  {"short": "IDKA_3Y",  "primary": "bvar", "var_soft": 0.40, "var_hard": 0.60, "stress_soft": 99.0, "stress_hard": 99.0},
     "IDKA IPCA 10Y FIRF": {"short": "IDKA_10Y", "primary": "bvar", "var_soft": 1.00, "var_hard": 1.50, "stress_soft": 99.0, "stress_hard": 99.0},
 }
-ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS}
+# Bench-relative RF funds whose BVaR is NOT in LOTE_PARAMETRIC_VAR_TABLE — computed
+# from realized active returns (fund NAV_SHARE pct_change minus benchmark INDEX
+# pct_change) over a rolling 252d window: BVaR_95_1d = 1.645 × σ.
+# Stress holds absolute VaR from LOTE_FUND_STRESS (informative; no limit).
+# Limites provisórios — confirmar mandato.
+RF_BENCH_FUNDS = {
+    "Galapagos Nazca FIRF": {"short": "NAZCA", "primary": "bvar", "benchmark": "IMA-B",
+                             "var_soft": 2.0, "var_hard": 3.0,
+                             "stress_soft": 99.0, "stress_hard": 99.0},
+}
+ALL_FUNDS = {**FUNDS, **RAW_FUNDS, **IDKA_FUNDS, **RF_BENCH_FUNDS}
 
 
 # ── Alert / utilization thresholds ────────────────────────────────────────────
@@ -71,10 +81,13 @@ REPORTS = [
     ("peers",           "Peers"),
 ]
 FUND_ORDER  = ["MACRO", "QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "BALTRA", "FRONTIER", "IDKA_3Y", "IDKA_10Y"]
+# NAZCA wired but hidden — RF_BENCH_FUNDS dict + fetch_risk_history_rf_bench() stay in place;
+# add "NAZCA" back to FUND_ORDER (and FUND_LABELS keeps the entry) when ready to surface.
 FUND_LABELS = {
     "MACRO": "Macro", "QUANT": "Quantitativo", "EVOLUTION": "Evolution",
     "MACRO_Q": "Macro Q", "ALBATROZ": "Albatroz", "BALTRA": "Baltra",
     "FRONTIER": "Frontier", "IDKA_3Y": "IDKA 3Y", "IDKA_10Y": "IDKA 10Y",
+    "NAZCA": "Nazca",
 }
 
 
@@ -146,7 +159,7 @@ _EXCL_PRIM = {"Cash", "Provisions and Costs", "Margin"}
 _RATE_PRIM = {"Brazil Sovereign Yield", "BRL Rate Curve", "BRD Rate Curve"}
 
 # MACRO PM shorthand → canonical LIVRO name in REPORT_ALPHA_ATRIBUTION.
-_PM_LIVRO = {"CI": "CI", "LF": "Macro_LF", "JD": "Macro_JD", "RJ": "Macro_RJ", "QM": "Macro_QM"}
+_PM_LIVRO = {"CI": "CI", "LF": "Macro_LF", "JD": "Macro_JD", "RJ": "Macro_RJ"}
 
 
 # ── ETF → index composition list (for look-through explosion) ─────────────────
@@ -260,7 +273,6 @@ _DIST_PORTFOLIOS = [
     ("LF",          "LF — Luiz Felipe",   "livro", "Macro_LF", "MACRO"),
     ("JD",          "JD — Joca Dib",      "livro", "Macro_JD", "MACRO"),
     ("RJ",          "RJ — Rodrigo Jafet", "livro", "Macro_RJ", "MACRO"),
-    ("QM",          "QM",                 "livro", "Macro_QM", "MACRO"),
     ("RF-BZ",       "Fator · RF-BZ",      "rf",    "RF-BZ",    "MACRO"),
     ("RF-DM",       "Fator · RF-DM",      "rf",    "RF-DM",    "MACRO"),
     ("RF-EM",       "Fator · RF-EM",      "rf",    "RF-EM",    "MACRO"),
@@ -366,7 +378,7 @@ _PRODCLASS_TO_FACTOR = {
 # PA display renames — strip "Macro_" prefix on PM names
 _PA_LIVRO_RENAMES = {
     "Macro_JD": "JD", "Macro_LF": "LF", "Macro_RJ": "RJ",
-    "Macro_MD": "MD", "Macro_QM": "QM", "Macro_AC": "AC",
+    "Macro_MD": "MD", "Macro_AC": "AC",
     "Macro_DF": "DF", "Macro_FG": "FG",
 }
 # Rows that should always sit at the bottom of their sibling group and never be sorted.
@@ -388,7 +400,7 @@ _PA_ORDER_LIVRO = {
     "CI": 100,
     "JD": 101, "Macro_JD": 101, "LF": 102, "Macro_LF": 102,
     "RJ": 103, "Macro_RJ": 103, "MD": 104, "Macro_MD": 104,
-    "QM": 105, "Macro_QM": 105, "AC": 106, "Macro_AC": 106,
+    "AC": 106, "Macro_AC": 106,
     "DF": 107, "Macro_DF": 107, "FG": 108, "Macro_FG": 108,
     # Quant
     "Bracco": 200, "Quant_PA": 201,
