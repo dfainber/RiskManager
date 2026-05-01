@@ -1215,7 +1215,7 @@ def build_pm_budget_vs_var_section(pm_book_var: dict[str, float],
     def _bps(v, decimals=1):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return '<td class="mono" style="text-align:right;color:var(--muted)">—</td>'
-        return f'<td class="mono" style="text-align:right">{v:,.{decimals}f}</td>'
+        return f'<td class="mono" style="text-align:right">{_fmt_br_num(f"{v:,.{decimals}f}")}</td>'
 
     def _var_cell(v, ref):
         """Cell colored by vol-multiples of the PM's current Margem (ref).

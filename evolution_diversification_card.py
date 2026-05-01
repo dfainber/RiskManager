@@ -654,7 +654,7 @@ def compute_camada4(c1_rows: list, d: dict, c3: dict, c_dir: dict,
 # ───────────────────── Render ─────────────────────
 
 def _fmt_bps(x: float) -> str:
-    return "—" if pd.isna(x) else f"{x:,.1f}"
+    return "—" if pd.isna(x) else _fmt_br_num(f"{x:,.1f}")
 
 
 def _fmt_pct(x: float) -> str:
@@ -727,7 +727,7 @@ def render_card(d: dict) -> str:
 
     strat_rows_html = ""
     for s, v in rows:
-        vstr = "—" if v is None else f"{v:,.1f}"
+        vstr = "—" if v is None else _fmt_br_num(f"{v:,.1f}")
         share = "—" if (v is None or d["var_soma_bps"] == 0) else (
             f"{v/d['var_soma_bps']*100:.0f}%"
         )
@@ -738,7 +738,7 @@ def render_card(d: dict) -> str:
             craw  = d["var_credito_bps"]
             if abs(cwins - craw) > 0.01:
                 extra = (f" <span style='color:#b88700;font-size:11px'>"
-                         f"(winsor. → {cwins:,.1f})</span>")
+                         f"(winsor. → {_fmt_br_num(f'{cwins:,.1f}')})</span>")
             else:
                 extra = " <span style='color:#888;font-size:11px'>⚠️</span>"
         strat_rows_html += (
@@ -748,11 +748,12 @@ def render_card(d: dict) -> str:
         )
 
     # Two totals: raw Σ and winsorized Σ
+    soma_bps_str = _fmt_br_num(f"{d['var_soma_bps']:,.1f}")
+    soma_wins_bps_str = _fmt_br_num(f"{d['var_soma_wins_bps']:,.1f}")
     strat_rows_html += (
         "<tr style='border-top:1.5px solid #ccc;font-weight:600'>"
         f"<td>Σ VaR estratégias <span style='color:#888;font-weight:400'>(raw)</span></td>"
-        f"<td style='text-align:right;font-family:monospace'>"
-        f"{d['var_soma_bps']:,.1f}</td>"
+        f"<td style='text-align:right;font-family:monospace'>{soma_bps_str}</td>"
         f"<td style='text-align:right;color:#888'>100%</td>"
         "</tr>"
     )
@@ -761,8 +762,7 @@ def render_card(d: dict) -> str:
             "<tr style='font-weight:700'>"
             f"<td>Σ VaR estratégias <span style='color:#0e7a32;font-weight:400'>"
             f"(winsorizado)</span></td>"
-            f"<td style='text-align:right;font-family:monospace;color:#0e7a32'>"
-            f"{d['var_soma_wins_bps']:,.1f}</td>"
+            f"<td style='text-align:right;font-family:monospace;color:#0e7a32'>{soma_wins_bps_str}</td>"
             f"<td style='text-align:right;color:#888'>—</td>"
             "</tr>"
         )
@@ -770,6 +770,8 @@ def render_card(d: dict) -> str:
     spark       = build_spark_svg(d["ratio_wins_series"], d["ratio_wins"])
     nav_m       = d["nav"] / 1e6 if d["nav"] else 0.0
     saving_pct  = (1.0 - d["ratio_wins"]) * 100
+    var_real_bps_str = _fmt_br_num(f"{d['var_real_bps']:,.1f}")
+    benefit_bps_str  = _fmt_br_num(f"{d['var_soma_wins_bps'] - d['var_real_bps']:,.1f}")
     cr_share    = d["credito_share_raw"]  * 100 if not pd.isna(d["credito_share_raw"])  else float("nan")
     cr_share_w  = d["credito_share_wins"] * 100 if not pd.isna(d["credito_share_wins"]) else float("nan")
     cr_share_color = ("#a8001a" if cr_share > 40
@@ -848,12 +850,12 @@ def render_card(d: dict) -> str:
 
           <div style="margin-top:16px;font-size:13px;line-height:1.7">
             <div><b>VaR real (fundo):</b>
-              <span style="font-family:monospace">{d['var_real_bps']:,.1f} bps</span></div>
+              <span style="font-family:monospace">{var_real_bps_str} bps</span></div>
             <div><b>Σ estratégias (winsor.):</b>
-              <span style="font-family:monospace">{d['var_soma_wins_bps']:,.1f} bps</span></div>
+              <span style="font-family:monospace">{soma_wins_bps_str} bps</span></div>
             <div><b>Benefício:</b>
               <span style="font-family:monospace">
-                −{d['var_soma_wins_bps'] - d['var_real_bps']:,.1f} bps
+                −{benefit_bps_str} bps
                 ({saving_pct:.0f}% de redução)
               </span></div>
             <div style="margin-top:6px"><b>Share CREDITO na Σ:</b>
@@ -917,7 +919,7 @@ def render_camada1(rows: list[dict]) -> str:
     tr_html = ""
     for r in rows:
         c = _pct_color(r["pct"])
-        vstr = "—" if pd.isna(r["var_today"]) else f"{r['var_today']:,.1f}"
+        vstr = "—" if pd.isna(r["var_today"]) else _fmt_br_num(f"{r['var_today']:,.1f}")
         pstr = "—" if pd.isna(r["pct"]) else f"P{r['pct']:.0f}"
         if pd.isna(r["pct"]):
             badge = "<span style='color:#888'>—</span>"

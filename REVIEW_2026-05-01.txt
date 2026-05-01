@@ -58,10 +58,14 @@ Top findings (ordered by severity):
     Risk: IndexError on rare schema/race edge cases halts midnight run.
     Fix: introduce `_first_or_default(df, default)` helper, use everywhere.
 
- 5. [HIGH] evolution_diversification_card.py:169, 226, 333, 448, 496
-    Chained `.iloc[-1]` on filtered series that may be empty.
-    Risk: IndexError aborts the whole report build.
-    Fix: `if len(s) > 0` guard before indexing.
+ 5. [VERIFIED — false positive 2026-05-01] evolution_diversification_card.py
+    All 5 cited sites are already guarded:
+      - 169: `return float(sub.iloc[-1]) if len(sub) else None`
+      - 226: preceded by `if eligible.empty: raise RuntimeError(...)` (line 224)
+      - 333: preceded by `if len(series) < 20: continue` (line 329)
+      - 448: preceded by `if not net.empty:` (line 447) — `.iloc[0]` is safe
+      - 496: preceded by `if not net_row.empty:` (line 495)
+    The auditor flagged the iloc[] pattern but missed the guards.
 
  6. [HIGH] generate_credit_report.py:1352, 1681
     HTML injection via r["produto"] / r["product_class"].
@@ -276,23 +280,36 @@ NEXT ACTIONS WHEN YOU'RE BACK
 Pick what you actually want to fix. My recommended order:
 
   IMMEDIATE (silent-corruption risk to Morning Call):
-    [X] Security #1 — glpg_fetch bare except               (already fixed)
-    [X] Security #2 — `nav or 1.0` fallback (3 sites)      (already fixed)
-    [X] Security #3 — division-by-NAV guards               (already fixed)
-    [ ] Security #6 — html.escape in credit report (XSS in emails)
+    [X] Security #1 — glpg_fetch bare except               (committed)
+    [X] Security #2 — `nav or 1.0` fallback (3 sites)      (committed)
+    [X] Security #3 — division-by-NAV guards               (committed)
+    [X] Security #6 — html.escape in credit report (XSS in emails)
+    [X] Security #5 — verified false positive (already guarded)
+    [X] Security #9 — RISK_MIRROR_PATH env var + WARN log
 
   HOUSEKEEPING (quick wins, low risk):
-    [ ] Verify evolution_diversification_card wiring status (Code #7 vs Content B)
-    [ ] CLAUDE.md surgery — move §7 changelog to docs/CHANGELOG.md
-    [ ] Add Status headers to IDKA_VAR_EXPLORATION + CREDITO_TREATMENT
-    [ ] Update memory/project_status.md (drop stale wire-it TODO)
-    [ ] Confirm + delete docs/REPORTS.html if unused
+    [X] Verified evolution_diversification_card wiring (was wired)
+    [X] CLAUDE.md surgery — moved changelog to docs/CHANGELOG.md
+    [X] Added Status headers to IDKA_VAR_EXPLORATION + CREDITO_TREATMENT
+    [X] memory/project_status.md — does not exist; not applicable
+    [X] Deleted docs/REPORTS.html (zero consumers)
+    [X] Created docs/CODE_REVIEW_2026-05-01.md (curated punch list)
 
   AESTHETICS (from Part D — see priorities at end of file):
-    [X] Daily monitor — add Risk Monitor SVG header + Galápagos footer (D #7)
-    [X] vardod / pmovers modals — fix CSV button injection (D #11, #12)
+    [X] Daily monitor — Risk Monitor SVG header + Galápagos footer (D #7)
+    [X] vardod / pmovers modals — CSV button injection (D #11, #12)
     [X] svg_renderers hex audit — both already remapped (D #1, #2)
-    [ ] fund_renderers — wrap raw `:.2f`/`:.0f` numerics with fmt_br_num (D #5)
+    [X] fund_renderers + evolution_diversification_card — fmt_br_num wrap (D #5)
+
+  STILL OPEN (deferred to safe-refactor sessions — see CODE_REVIEW_2026-05-01.md):
+    [ ] Wider iloc[]/iloc[-1] sweep across data_fetch/expo/fund/credit/monthly
+    [ ] pnl_server.py JSON error sanitization (#13)
+    [ ] hardcoded employee-name path in data_fetch:3013 (#14)
+    [ ] log.warning on map().get() silent None default (#15)
+    [ ] CSV escape via csv.DictWriter in credit report (#17)
+    [ ] build_html mega-function refactor (Code #1)
+    [ ] dedup PA-FX-split scripts (Code #2)
+    [ ] confirm pm_vol_card.py is alive or delete (Code #6)
 
   LARGER (use safe-refactor skill, separate sessions):
     [ ] Consolidate the 4 PA-FX-split scripts (~1,700 LOC dedup)

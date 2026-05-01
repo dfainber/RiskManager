@@ -66,9 +66,11 @@ Severity rubric reminder:
 
 ### 2a. Robustness (defense-in-depth, not currently breaking)
 
-- [ ] **HIGH** — `evolution_diversification_card.py:169, 226, 333, 448, 496` —
-  chained `.iloc[-1]` on filtered series that may be empty. IndexError aborts
-  the whole report build. Wrap with `if len(s) > 0`.
+- [x] ~~**HIGH** — `evolution_diversification_card.py:169, 226, 333, 448, 496`~~
+  → **verified false positive 2026-05-01.** All 5 sites already guarded
+  (`if len(sub)`, `if eligible.empty: raise`, `if len(series) < 20: continue`,
+  `if not net.empty:`, `if not net_row.empty:`). Auditor saw the iloc[] pattern
+  but missed the surrounding guards.
 - [ ] **MEDIUM** — `data_fetch.py:441, 541, 1775, 2710, 2716, 2784, 2790,
   2824, 2852, 2858, 2893, 2943` and `expo_renderers.py:680, 1106-1107, 2248,
   2502` and `fund_renderers.py:1851, 1989, 2048, 2181, 2390, 2482, 2488,
