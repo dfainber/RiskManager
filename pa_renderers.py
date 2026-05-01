@@ -406,29 +406,37 @@ def _build_pa_bench_decomp_view(fund_short: str, df: pd.DataFrame, cdi: dict,
     </div>"""
 
 
+_FX_SPLIT_CLASSES = ("BRLUSD", "FX", "FX Carry & Bases Risk")
+_FX_SPLIT_GRUPO_MAP = {
+    "Commodities":     "FX em Commodities",
+    "Precious Metals": "FX em Precious Metals",
+    "RV Intl":         "FX em RV Intl",
+    "RF Intl":         "FX em RF Intl",
+}
+
+
 def _apply_fx_split_remap(df: pd.DataFrame) -> pd.DataFrame:
-    """Reagrupa CLASSE='BRLUSD' e CLASSE='FX' em "FX Basis Risk & Carry" antes de
-    construir a árvore PA. Linhas BRLUSD com GRUPO específico (Commodities / RV
-    Intl / RF Intl) ganham GRUPO='FX em <X>' pra preservar drill-down.
-    Demais linhas — unchanged. Total preservado (pura recategorização)."""
+    """Reagrupa CLASSE FX em "FX Basis Risk & Carry" antes de construir a
+    árvore PA. Cobre tanto o legado (`'BRLUSD'`/`'FX'`, pré-2026-04-24) quanto
+    a CLASSE nativa do DB (`'FX Carry & Bases Risk'`, desde 2026-04-24) — sem
+    o tratamento da nativa, ela aparece como bucket separado duplicado lado-a-lado
+    do bucket legado relabelado.
+
+    Linhas com GRUPO específico (Commodities / Precious Metals / RV Intl /
+    RF Intl) ganham GRUPO='FX em <X>' pra preservar drill-down; demais GRUPOs
+    viram 'FX Spot & Futuros'. Total preservado (pura recategorização)."""
     if df.empty or "CLASSE" not in df.columns:
         return df
     out = df.copy()
-    is_brlusd = out["CLASSE"] == "BRLUSD"
-    is_fx     = out["CLASSE"] == "FX"
-    if not (is_brlusd.any() or is_fx.any()):
+    is_fx = out["CLASSE"].isin(_FX_SPLIT_CLASSES)
+    if not is_fx.any():
         return out
-    # Map GRUPO sub-bucket only for BRLUSD rows (FX cross stays "FX Spot & Futuros")
     if "GRUPO" in out.columns:
-        grp_map = {
-            "Commodities": "FX em Commodities",
-            "RV Intl":     "FX em RV Intl",
-            "RF Intl":     "FX em RF Intl",
-        }
-        new_grupo = out.loc[is_brlusd, "GRUPO"].map(grp_map).fillna("FX Spot & Futuros")
-        out.loc[is_brlusd, "GRUPO"] = new_grupo
-        out.loc[is_fx,     "GRUPO"] = "FX Spot & Futuros"
-    out.loc[is_brlusd | is_fx, "CLASSE"] = "FX Basis Risk & Carry"
+        grupo_clean = out.loc[is_fx, "GRUPO"].astype(str).str.strip()
+        out.loc[is_fx, "GRUPO"] = (
+            grupo_clean.map(_FX_SPLIT_GRUPO_MAP).fillna("FX Spot & Futuros")
+        )
+    out.loc[is_fx, "CLASSE"] = "FX Basis Risk & Carry"
     return out
 
 
