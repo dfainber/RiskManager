@@ -5,8 +5,16 @@ __pycache__/
 *.pyc
 *.pyo
 data/morning-calls/
+data/morning-calls-meeting/
+data/market-review/
+data/monthly-reviews/
+data/_pptx_inspection/
+data/peers_data.json
 data/macro-stops/snapshots/
 data/.smoke_snapshots/
 data/email-logs/
 logs/
 tmp_*.py
+smoketest_out.txt
+.claude/scheduled_tasks.lock
+Thumbs.db
