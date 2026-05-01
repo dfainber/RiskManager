@@ -62,17 +62,22 @@ def _fetch_macroq_pa(date_str: str) -> pd.DataFrame:
     return df
 
 
+_FX_CLASSES = ("BRLUSD", "FX", "FX Carry & Bases Risk")
+_FX_GRUPO_MAP = {
+    "Commodities":     "FX em Commodities",
+    "Precious Metals": "FX em Precious Metals",
+    "RV Intl":         "FX em RV Intl",
+    "RF Intl":         "FX em RF Intl",
+}
+
+
 def _remap_classe(classe: str, grupo: str) -> tuple[str, str]:
-    if classe == "BRLUSD":
-        if grupo == "Commodities":
-            return (FX_BASIS_LABEL, "FX em Commodities")
-        if grupo == "RV Intl":
-            return (FX_BASIS_LABEL, "FX em RV Intl")
-        if grupo == "RF Intl":
-            return (FX_BASIS_LABEL, "FX em RF Intl")
-        return (FX_BASIS_LABEL, "FX Spot & Futuros")
-    if classe == "FX":
-        return (FX_BASIS_LABEL, "FX Spot & Futuros")
+    """Fold legacy ('BRLUSD'/'FX') and DB-native ('FX Carry & Bases Risk',
+    emitted since 2026-04-24) into a single FX_BASIS_LABEL bucket."""
+    if classe in _FX_CLASSES:
+        grupo_clean = (grupo or "").strip()
+        return (FX_BASIS_LABEL,
+                _FX_GRUPO_MAP.get(grupo_clean, "FX Spot & Futuros"))
     return (classe, grupo)
 
 

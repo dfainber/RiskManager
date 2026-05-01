@@ -4,14 +4,18 @@ Pure re-ordering of the existing PA (q_models.REPORT_ALPHA_ATRIBUTION):
 the *total* PnL is identical to the canonical PA — only the categorization
 changes, separating asset effect from FX effect.
 
-Re-mapping (only CLASSE column changes):
-  CLASSE='BRLUSD', GRUPO='Commodities'  → "FX Basis Risk & Carry" / "FX em Commodities"
-  CLASSE='BRLUSD', GRUPO='RV Intl'      → "FX Basis Risk & Carry" / "FX em RV Intl"
-  CLASSE='BRLUSD', GRUPO='RF Intl'      → "FX Basis Risk & Carry" / "FX em RF Intl"
-  CLASSE='BRLUSD', GRUPO='BRLUSD'       → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  CLASSE='BRLUSD', GRUPO='Custos'       → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  CLASSE='FX'                           → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  Everything else                       → unchanged
+Re-mapping (only CLASSE column changes). Recognizes both legacy CLASSE
+(emitted pre-2026-04-24) and the DB-native CLASSE='FX Carry & Bases Risk'
+(emitted from 2026-04-24 onward) — folds both into one bucket so the
+top-level does not show two near-identical FX rows.
+
+  CLASSE in ('BRLUSD', 'FX', 'FX Carry & Bases Risk'):
+    GRUPO='Commodities'      → "FX Basis Risk & Carry" / "FX em Commodities"
+    GRUPO='Precious Metals'  → "FX Basis Risk & Carry" / "FX em Precious Metals"
+    GRUPO='RV Intl'          → "FX Basis Risk & Carry" / "FX em RV Intl"
+    GRUPO='RF Intl'          → "FX Basis Risk & Carry" / "FX em RF Intl"
+    everything else          → "FX Basis Risk & Carry" / "FX Spot & Futuros"
+  Everything else            → unchanged
 
 Output: standalone HTML at data/morning-calls/<date>_macro_pa_fx_split.html
 """
@@ -61,19 +65,21 @@ def _fetch_macro_pa(date_str: str) -> pd.DataFrame:
     return df
 
 
+_FX_CLASSES = ("BRLUSD", "FX", "FX Carry & Bases Risk")
+_FX_GRUPO_MAP = {
+    "Commodities":     "FX em Commodities",
+    "Precious Metals": "FX em Precious Metals",
+    "RV Intl":         "FX em RV Intl",
+    "RF Intl":         "FX em RF Intl",
+}
+
+
 def _remap_classe(classe: str, grupo: str) -> tuple[str, str]:
     """Apply the FX-split re-mapping. See module docstring for the table."""
-    if classe == "BRLUSD":
-        if grupo == "Commodities":
-            return ("FX Basis Risk & Carry", "FX em Commodities")
-        if grupo == "RV Intl":
-            return ("FX Basis Risk & Carry", "FX em RV Intl")
-        if grupo == "RF Intl":
-            return ("FX Basis Risk & Carry", "FX em RF Intl")
-        # BRLUSD/BRLUSD (USD Brasil hedge + spot) and Custos
-        return ("FX Basis Risk & Carry", "FX Spot & Futuros")
-    if classe == "FX":  # cross-FX (Europa USD, USD Canadá, USD Japão)
-        return ("FX Basis Risk & Carry", "FX Spot & Futuros")
+    if classe in _FX_CLASSES:
+        grupo_clean = (grupo or "").strip()
+        return ("FX Basis Risk & Carry",
+                _FX_GRUPO_MAP.get(grupo_clean, "FX Spot & Futuros"))
     return (classe, grupo)
 
 
@@ -322,9 +328,11 @@ def _build_verification_block(df: pd.DataFrame) -> str:
     # Per-CLASSE_NEW totals from new view
     new_tot = df.groupby("CLASSE_NEW")[cols].sum()
 
-    # Original CLASSE totals (canonical PA — what each row WAS labeled as)
+    # Original CLASSE totals (canonical PA — what each row WAS labeled as).
+    # Includes the DB-native 'FX Carry & Bases Risk' (since 2026-04-24) plus
+    # legacy 'BRLUSD'/'FX' rows kept for pre-cutover history.
     old_tot = df.groupby("CLASSE")[cols].sum()
-    fx_old  = old_tot.loc[old_tot.index.isin(["BRLUSD", "FX"])][cols].sum()
+    fx_old  = old_tot.loc[old_tot.index.isin(_FX_CLASSES)][cols].sum()
 
     rows = []
     rows.append((
@@ -344,9 +352,9 @@ def _build_verification_block(df: pd.DataFrame) -> str:
     if "RF Intl" in old_tot.index and "RF Intl" in new_tot.index:
         rows.append(("RF Intl (preservado)",
                      old_tot.loc["RF Intl"], new_tot.loc["RF Intl"]))
-    # FX Basis = old BRLUSD + FX
+    # FX Basis = old BRLUSD + FX + DB-native 'FX Carry & Bases Risk'
     if "FX Basis Risk & Carry" in new_tot.index:
-        rows.append(("FX Basis Risk & Carry (= antigo BRLUSD + FX)",
+        rows.append(("FX Basis Risk & Carry (= BRLUSD + FX + FX Carry & Bases Risk)",
                      fx_old, new_tot.loc["FX Basis Risk & Carry"]))
 
     head = (
@@ -420,7 +428,7 @@ def _build_html(df: pd.DataFrame, date_str: str) -> str:
 
 <div class="legend">
   <b>DIA</b>: PnL realizado hoje · <b>MTD</b>: mês corrente · <b>YTD</b>: ano corrente · <b>12M</b>: últimos 12 meses · todos em % de NAV.<br>
-  Sanity: TOTAL desta tabela = soma de todas as linhas DIA/MTD/YTD/12M originais (CLASSE×GRUPO×PRODUTO) — a recategorização só renomeia top-level &quot;BRLUSD&quot;+&quot;FX&quot; em &quot;FX Basis Risk &amp; Carry&quot;.
+  Sanity: TOTAL desta tabela = soma de todas as linhas DIA/MTD/YTD/12M originais (CLASSE×GRUPO×PRODUTO) — a recategorização só renomeia top-level &quot;BRLUSD&quot;+&quot;FX&quot;+&quot;FX Carry &amp; Bases Risk&quot; (DB nativo desde 2026-04-24) em &quot;FX Basis Risk &amp; Carry&quot;.
 </div>
 
 <script>{JS}</script>

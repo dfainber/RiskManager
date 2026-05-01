@@ -70,17 +70,22 @@ def _fetch_evolution_pa(date_str: str) -> pd.DataFrame:
     return df
 
 
+_FX_CLASSES = ("BRLUSD", "FX", "FX Carry & Bases Risk")
+_FX_GRUPO_MAP = {
+    "Commodities":     "FX em Commodities",
+    "Precious Metals": "FX em Precious Metals",
+    "RV Intl":         "FX em RV Intl",
+    "RF Intl":         "FX em RF Intl",
+}
+
+
 def _remap_classe(classe: str, grupo: str) -> tuple[str, str]:
-    if classe == "BRLUSD":
-        if grupo == "Commodities":
-            return ("FX Basis Risk & Carry", "FX em Commodities")
-        if grupo == "RV Intl":
-            return ("FX Basis Risk & Carry", "FX em RV Intl")
-        if grupo == "RF Intl":
-            return ("FX Basis Risk & Carry", "FX em RF Intl")
-        return ("FX Basis Risk & Carry", "FX Spot & Futuros")
-    if classe == "FX":
-        return ("FX Basis Risk & Carry", "FX Spot & Futuros")
+    """Fold legacy ('BRLUSD'/'FX') and DB-native ('FX Carry & Bases Risk',
+    emitted since 2026-04-24) into a single 'FX Basis Risk & Carry' bucket."""
+    if classe in _FX_CLASSES:
+        grupo_clean = (grupo or "").strip()
+        return ("FX Basis Risk & Carry",
+                _FX_GRUPO_MAP.get(grupo_clean, "FX Spot & Futuros"))
     return (classe, grupo)
 
 
