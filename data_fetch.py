@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2600,6 +2601,10 @@ def fetch_fund_position_changes(short: str, date_str: str, d1_str: str) -> pd.Da
     if df.empty:
         return None
 
+    unknown_pc = sorted(set(df["PRODUCT_CLASS"]) - set(_PRODCLASS_TO_FACTOR.keys()))
+    if unknown_pc:
+        print(f"WARNING [fetch_fund_position_changes:{short}]: dropped unknown PRODUCT_CLASS(es) {unknown_pc}",
+              file=sys.stderr)
     df["factor"] = df["PRODUCT_CLASS"].map(lambda pc: _PRODCLASS_TO_FACTOR.get(pc))
     df = df[df["factor"].notna()]
     if df.empty:
@@ -2649,6 +2654,10 @@ def fetch_fund_position_changes_by_product(short: str, date_str: str, d1_str: st
     if df.empty:
         return None
 
+    unknown_pc = sorted(set(df["PRODUCT_CLASS"]) - set(_PRODCLASS_TO_FACTOR.keys()))
+    if unknown_pc:
+        print(f"WARNING [fetch_fund_position_changes_by_product:{short}]: dropped unknown PRODUCT_CLASS(es) {unknown_pc}",
+              file=sys.stderr)
     df["factor"] = df["PRODUCT_CLASS"].map(lambda pc: _PRODCLASS_TO_FACTOR.get(pc))
     df = df[df["factor"].notna()]
     if df.empty:
@@ -3014,7 +3023,10 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
     }
 
 
-_EXCEL_MARKET_PATH = r"F:\Macros\Gestao\Miguel Ishimura\Prices_Close_Global - Copy.xlsm"
+_EXCEL_MARKET_PATH = os.environ.get(
+    "MARKET_FALLBACK_XLSM",
+    r"F:\Macros\Gestao\Miguel Ishimura\Prices_Close_Global - Copy.xlsm",
+)
 
 
 def _read_excel_market_fallback() -> dict:

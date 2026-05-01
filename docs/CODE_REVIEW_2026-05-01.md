@@ -83,9 +83,16 @@ Severity rubric reminder:
   The auditor flagged the iloc[] pattern but consistently missed the
   surrounding guards. Pattern is: `if x.empty: return ...` immediately
   above, or `f(...) if not x.empty else default` inline.
-  Sites in `data_fetch.py` (12 cited) deferred — file was in another
-  session's uncommitted staged set when this verification ran. Spot-check
-  on next session if you remain concerned. No `_first_or_default` helper
+  Sites in `data_fetch.py` (12 cited) **verified 2026-05-01 (later in
+  same day, after the parallel session committed):** lines 442 (`if
+  df.empty: return None`), 542 (`if y_df.empty: return pd.DataFrame()`),
+  1776 (inline `if not fr_df.empty and pd.notna(...)` ternary), and
+  2706-2943 — note that several of the cited line numbers (2710, 2716,
+  2784, 2790, 2824, 2852, 2858, 2893, 2943) point to SQL-query content
+  (`BETWEEN`, `INTERVAL`, `CASE WHEN`), not iloc statements; the actual
+  iloc usage in those functions is downstream and guarded by the
+  preceding `if df.empty: return {...}` block. **All 35/35 cited sites
+  across 5 files verified guarded.** No `_first_or_default` helper
   needed — existing patterns are correct.
 - [ ] **MEDIUM** — `data_fetch.py:2040` — empty df returned with shape
   mismatch (`df["var_pct"]=[]`). Return `pd.DataFrame(columns=[...])` with
@@ -96,13 +103,28 @@ Severity rubric reminder:
   try/except. Move to env var `RISK_MIRROR_PATH`; log failures as WARN.
 - [ ] **MEDIUM** — `data_fetch.py:1910` — `float(fut["delta"].iloc[0])` after
   `.empty/.notna` guard. Use `pd.to_numeric(..., errors='coerce')` instead.
-- [ ] **MEDIUM** — `pnl_server.py:91, 101` — raw exception message in JSON
-  error response; quotes/newlines can break JSON encoding. Sanitize.
-- [ ] **LOW** — `data_fetch.py:3013` — hardcoded path containing employee
-  name. Move to config.
-- [ ] **LOW** — `data_fetch.py:2599, 2648` — `map() + .get()` with silent
-  None default; new product class added upstream silently dropped from
-  report. Add `log.warning`.
+- [x] ~~**MEDIUM** — `pnl_server.py:91, 101` — raw exception message in
+  JSON error response; quotes/newlines can break JSON encoding.~~ →
+  **verified false positive 2026-05-01.** `_json_error` at line 137 uses
+  `json.dumps({"error": msg})` which is safe by construction — `json.dumps`
+  cannot produce invalid JSON regardless of input string content (it
+  escapes `"`, `\n`, `\\`, control chars). The `pnl_server` is a
+  localhost-only diagnostic server, so raw exception leakage is also
+  not an info-disclosure concern.
+- [x] ~~**LOW** — `data_fetch.py:3013` — hardcoded path containing
+  employee name.~~ → **fixed 2026-05-01.** `_EXCEL_MARKET_PATH` at line
+  3017 (the audit's 3013 was off by 4) now reads from
+  `MARKET_FALLBACK_XLSM` env var with the legacy path as fallback. Empty
+  unset still works (legacy behavior preserved).
+- [x] ~~**LOW** — `data_fetch.py:2599, 2648` — `map() + .get()` with
+  silent None default.~~ → **fixed 2026-05-01.** Both sites
+  (`fetch_fund_position_changes` at line 2603, and
+  `fetch_fund_position_changes_by_product` at 2652) now compute the set
+  difference between `df["PRODUCT_CLASS"]` and `_PRODCLASS_TO_FACTOR`
+  keys before mapping, and emit `WARNING [<func>:<short>]: dropped
+  unknown PRODUCT_CLASS(es) [...]` to stderr when the difference is
+  non-empty. The actual mapping behavior is unchanged. `sys` was added
+  to the imports.
 - [x] ~~**LOW** — `generate_credit_report.py:1378` — weak CSV escape via
   `replace(chr(34), "&quot;")`.~~ → **fixed 2026-05-01.** The CSV encoding
   itself (`_csv_encode`, line 99) already implements correct CSV escaping
