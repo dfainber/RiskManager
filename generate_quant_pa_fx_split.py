@@ -15,7 +15,6 @@ Output: data/morning-calls/<date>_quant_pa_fx_split.html
 from __future__ import annotations
 
 import argparse
-import html as html_lib
 import sys
 from pathlib import Path
 
