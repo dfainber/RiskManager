@@ -162,11 +162,20 @@ e fixes (entradas anteriores migradas pra fora do CLAUDE.md em 2026-05-01).
 
 Fila priorizada (fazer nesta ordem):
 
-1. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing`
-2. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia)
-3. **Code review follow-ups** — ver [`docs/CODE_REVIEW_2026-05-01.md`](docs/CODE_REVIEW_2026-05-01.md) (iloc guards, refactor de `build_html`, dedup PA-FX-split).
+1. **PA-FX-split dedup** — 4 near-clones (`generate_macro_pa_fx_split.py` +
+   `_evolution_` + `_quant_` + `_macroq_`), ~1,700 LOC shared. Bem-bounded;
+   snapshot-diff via `smoke_test.py --save-snapshot` é a rede de segurança.
+   Maior LOC return do backlog atual.
+2. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing`
+3. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia)
+4. **`build_html` mega-function** (4,419 linhas) — extract tab-switching +
+   fund section builders pra `_build_tab_*` helpers; mover CSS/JS blob pra
+   `html_assets.py`. Maior impacto, mais risco — sessão dedicada.
 
-Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
+Audit follow-ups da sessão 2026-05-01 fechados (ver
+[`docs/CODE_REVIEW_2026-05-01.md`](docs/CODE_REVIEW_2026-05-01.md) pro
+detalhe + evidências). Backlog completo em
+`memory/project_todo_risk_analytics_roadmap.md`.
 
 ---
 
@@ -193,6 +202,7 @@ Backlog completo em `memory/project_todo_risk_analytics_roadmap.md`.
 - **Lazy hydration + visibility** — `_idleHydrateAll` clona templates em background depois do first paint. `applyState`'s visibility loop NÃO re-roda. Sections recém-clonadas herdam `display:block` (default CSS). Se user está em summary/quality/etc. quando idle-hydration completa, todas as cards de fundo aparecem dumped na view. Fix em `_hydrateSection`: hide cada section antes de append; reveal só se mode/sel da tab ativa fizer match.
 - **JS regex em Python f-string** — Python interpreta `\s`, `\b`, `\d` em strings. `\s` emite SyntaxWarning (a partir de 3.12 pode virar SyntaxError); `\b` é convertido pra backspace (0x08) silently → o JS recebe `<BS>` em vez de `\b`. Sempre doublar (`\\s`, `\\b`, `\\.`) ou usar raw f-string `rf"""..."""` pro bloco JS.
 - **Nazca wired hidden** — entry em `RF_BENCH_FUNDS` + fetch + label, mas NÃO em `FUND_ORDER`. Re-enable adicionando `"NAZCA"` em `risk_config.FUND_ORDER`. Ver `fetch_risk_history_rf_bench` para extender a outros fundos com bench-relative BVaR computado de retornos realizados.
+- **Python 3.11 não suporta same-quote nested f-strings** — venv é 3.11.7; PEP 701 só vem em 3.12. `f"{r["key"]}"` quebra com `SyntaxError: f-string: f-string: unmatched '['`. Extrair pra var local (`v_str = fmt(r["key"])` antes do template) ou usar single quote interno (`f"{r['key']}"`). Caught em compile-sweep 2026-05-01 (commit `f1563913` introduziu — corrigido em `825c02b`).
 
 ---
 

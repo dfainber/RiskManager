@@ -7,6 +7,108 @@ the latest session.
 
 ---
 
+## 2026-05-01 (sessão 3) — Audit follow-ups + safe-refactor Phase 1+2 + housekeeping
+
+Continuation of the audit-driven cleanup. All `STILL OPEN` items in
+`REVIEW_2026-05-01.txt` and `docs/CODE_REVIEW_2026-05-01.md` closed
+(5 fixed, 4 verified-no-action). Snapshot-diff validation on every commit
+(`smoke_test.py --save-snapshot` + diff = 4629 risk_report + 8 vol_card
+values byte-identical to baseline through all commits). Branch went from
+3 to 10 commits ahead of `origin/master`.
+
+### Code changes
+- **`generate_credit_report.py` CSV-attribute escape (commit 32fa6de)** —
+  6 sites of `csv.replace(chr(34), "&quot;")` replaced with
+  `html.escape(csv, quote=True)`. The CSV encoding itself (`_csv_encode`)
+  was already correct. The bug was the HTML-attribute escape on
+  `data-csv="..."` only handled `"`; a bond name like "Smith & Co" would
+  emit raw `&` into the attribute. `html.escape` is a strict superset
+  (handles `&`, `<`, `>`, `"`, `'`) and decodes identically in browsers
+  when the JS reads `data-csv`. Closes CODE_REVIEW #17.
+- **`evolution_diversification_card.py` + `fund_renderers.py` fmt_br_num
+  wrap (commit 825c02b)** — 10 unwrapped `:,.Nf` sites wrapped with
+  `_fmt_br_num` (`_fmt_bps` helper, strat rows, soma totals, benefit line,
+  per-strat percentile rows; `_bps` helper in fund_renderers). Bps values
+  >1000 in tail scenarios were rendering en-US "1,234.5" instead of
+  BR-locale "1.234,5".
+- **Nested-f-string `SyntaxError` fix at `generate_risk_report.py:722`
+  (commit 825c02b)** — pre-existing bug introduced same day in commit
+  `f1563913`. Python 3.11 (project venv) does not support f-strings with
+  same quote re-used inside (`f"{r["pos_brl"]:,.0f}"`). Extracted to
+  local var `pos_brl_str = fmt_br_num(f"{r['pos_brl']:,.0f}")`. Would
+  have crashed the next daily run. PEP 701 (Python 3.12+) lifts this
+  restriction.
+- **`RISK_MIRROR_PATH` env var (commit 825c02b)** — hardcoded
+  `F:\Bloomberg\Risk_Manager\Data\Morningcall` now overridable via env
+  var; empty disables the mirror; failures log WARN to stderr instead of
+  silent try/except. Applied at `generate_risk_report.main` and
+  `generate_risk_report_meeting.py`. Note: this change was folded into
+  the parallel session's commit `437aedb` since both sessions had the
+  files in their staged set.
+- **`MARKET_FALLBACK_XLSM` env var (commit 2ea8deb)** — `_EXCEL_MARKET_PATH`
+  in `data_fetch.py` (line 3017) now reads from env var with the legacy
+  `F:\Macros\Gestao\Miguel Ishimura\Prices_Close_Global - Copy.xlsm`
+  path as fallback. Closes CODE_REVIEW #14.
+- **WARN on unknown PRODUCT_CLASS (commit 2ea8deb)** — both
+  `fetch_fund_position_changes` and `_by_product` now compute the set
+  difference between `df["PRODUCT_CLASS"]` and `_PRODCLASS_TO_FACTOR`
+  keys before mapping; emit `WARNING [<func>:<short>]: dropped unknown
+  PRODUCT_CLASS(es) [...]` to stderr when non-empty. Mapping behavior
+  unchanged. Closes CODE_REVIEW #15. `sys` added to data_fetch imports.
+
+### Audit verifications (no-code-change)
+- **iloc[] guards review #4 — verified false positive 35/35**
+  (commits 0d5eb8c + 2ea8deb): spot-checked all cited sites across
+  `evolution_diversification_card.py` (5), `expo_renderers.py` (5),
+  `fund_renderers.py` (9), `generate_credit_report.py` (4 in
+  `compute_period_returns`), `data_fetch.py` (12). Every site is already
+  guarded by `.empty` / `len() >= N` / ternary fallback. Several cited
+  line numbers in `data_fetch.py` (2710, 2716, 2784, 2790, 2824, 2852,
+  2858, 2893, 2943) point to SQL-content (`BETWEEN`/`INTERVAL`/`CASE`),
+  not iloc statements. The auditor consistently missed surrounding
+  guards. No `_first_or_default` helper warranted.
+- **`pm_vol_card.py` review #6 — verified alive (commit 32fa6de)**: it
+  is a standalone diagnostic (file docstring already says so), not
+  imported anywhere (`grep` returns zero), runs via `run_vol_card.bat`,
+  exercised by `smoke_test.check_vol_card`. Output: `data/morning-calls/
+  pm_vol_card_<DATA>.html`. The auditor's claim that it is "imported by
+  generate_risk_report.py via evolution_renderers" was incorrect.
+- **`pnl_server.py` JSON error review #13 — verified false positive
+  (commit 2ea8deb)**: `_json_error` uses `json.dumps({"error": msg})`
+  which is safe by construction — `json.dumps` cannot produce invalid
+  JSON regardless of input. Localhost-only server so info disclosure
+  isn't a concern either.
+
+### Housekeeping
+- **CLAUDE.md surgery (commit 87c23b5)** — moved 135-line / ~37 KB
+  changelog block from CLAUDE.md to `docs/CHANGELOG.md` (this file).
+  CLAUDE.md down from ~360 lines to ~280, all actionable sections.
+  §7 fila got pointer to CHANGELOG and CODE_REVIEW; dropped stale
+  wire-it TODO for `evolution_diversification_card` (verified wired
+  at `generate_risk_report.py:808`).
+- **`docs/CODE_REVIEW_2026-05-01.md` created (commit 87c23b5)** —
+  curated audit punch list with resolved-vs-open status; folded
+  evidence inline as items closed.
+- **Archive Status banners (commit 87c23b5)** — added explicit
+  `Status: RESOLVED` / `ARCHIVED` headers to
+  `docs/IDKA_VAR_EXPLORATION.md` and `docs/CREDITO_TREATMENT.md`.
+- **`docs/REPORTS.html` deleted (commit 87c23b5)** — zero consumers in
+  source code; `docs/REPORTS.md` is the human-readable source of truth.
+- **`.gitignore` extension (commit a627a2a)** — added
+  `data/morning-calls-meeting/`, `data/market-review/`,
+  `data/monthly-reviews/`, `data/_pptx_inspection/`,
+  `data/peers_data.json`, `smoketest_out.txt`,
+  `.claude/scheduled_tasks.lock`, `Thumbs.db`. Following the same
+  pattern as `data/morning-calls/` (output dirs ignored).
+- **Untracked source committed (commit db07e96)** —
+  `generate_market_review.py` (1,147 LOC), `generate_monthly_review.py`
+  (1,783 LOC, was supposed to be committed 2026-04-26 per CLAUDE.md
+  but was left in working tree), `month_bdays.py` (38 LOC helper that
+  lists VAL_DATEs with data in LOTE_FUND_STRESS_RPM for a given month),
+  `run_monthly_review.bat` (55 LOC), and
+  `data/_credit_validation_xlsm_sealion_d2.csv` (6.6 KB validation gold
+  std referenced in CLAUDE.md).
+
 ## 2026-05-01 (segunda sessão) — Audit-driven hardening
 
 Driven by `REVIEW_2026-05-01.txt` Parts A (security) + D (aesthetics).
