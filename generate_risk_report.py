@@ -3002,7 +3002,20 @@ def build_html(d: ReportData) -> str:
       function(el) {{ return el.style.display !== 'none'; }}
     );
     var empty = document.getElementById('empty-state');
-    if (empty) empty.style.display = anyVisible ? 'none' : '';
+    if (empty) {{
+      empty.style.display = anyVisible ? 'none' : '';
+      if (!anyVisible) {{
+        var activeTab = document.querySelector('.sub-tabs[data-for="' + mode + '"] .tab.active');
+        var label = activeTab ? activeTab.textContent.trim() : (sel || '');
+        if (mode === 'fund' && label) {{
+          empty.textContent = 'Nenhum dado disponível para o fundo ' + label + ' nesta data.';
+        }} else if (mode === 'report' && label) {{
+          empty.textContent = 'Nenhum fundo tem dados para o report ' + label + ' nesta data.';
+        }} else {{
+          empty.textContent = 'Sem dados para essa combinação de fundo × report.';
+        }}
+      }}
+    }}
     // Recompute header height — it changes when #report-jump-bar shows/hides.
     syncHeaderH();
   }}
@@ -4041,7 +4054,7 @@ def build_html(d: ReportData) -> str:
   </div>
   <div id="report-jump-bar" role="tablist"></div>
 </header>
-<div class="subtitle">Data-base: <span class="mono">{DATA_STR}</span> &nbsp;·&nbsp; gerado em <span class="mono">{date.today().isoformat()}</span></div>
+<div class="subtitle">Data-base: <span class="mono">{pd.to_datetime(DATA_STR).strftime("%d/%m/%Y")}</span> &nbsp;·&nbsp; gerado em <span class="mono">{date.today().strftime("%d/%m/%Y")}</span></div>
 <main>
   {summary_html}
   {quality_html}
