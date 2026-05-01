@@ -1321,7 +1321,7 @@ def render_performance_card(fund_label: str, fund_rets: dict, bench_rets: dict,
     csv = _csv_encode(csv_rows)
 
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}"><div class="card-hd">'
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}"><div class="card-hd">'
         '<div class="card-title">Retorno</div>'
         '<div class="card-hd-actions">'
         f'<div class="card-sub">vs {bench_label} · D-2 · 24m rebased + heatmap mensal (com Total)</div>'
@@ -1390,7 +1390,7 @@ def render_quality_card(flags: pd.DataFrame, ref_dt: date, prev_dt: date) -> str
     csv = _csv_encode(csv_rows)
 
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}" '
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}" '
         f'style="border-color:rgba(255,90,106,.40)">'
         '<div class="card-hd">'
         f'<div class="card-title" style="color:var(--down)">⚠ Sanity Check de Preços — {len(flags)} ativo(s) sem preço</div>'
@@ -1414,7 +1414,7 @@ def render_aum_card(nav_h: pd.DataFrame) -> str:
         csv_rows.append([dt.strftime("%Y-%m-%d"), f"{r['NAV']:.2f}", f"{r['SHARE']:.6f}"])
     csv = _csv_encode(csv_rows)
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}"><div class="card-hd">'
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}"><div class="card-hd">'
         '<div class="card-title">AUM Histórica</div>'
         '<div class="card-hd-actions">'
         '<div class="card-sub">NAV diário · marcado peak / trough / atual</div>'
@@ -1562,7 +1562,7 @@ def render_distribuicao_card(positions: pd.DataFrame, nav: float,
                     " (% NAV)" if denom_nav else ""
 
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}"><div class="card-hd">'
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}"><div class="card-hd">'
         '<div class="card-title">Distribuição</div>'
         '<div class="card-hd-actions">'
         f'<div class="card-sub">Tipo · Setores · Rating{sub_label}{nav_qualifier}</div>'
@@ -1973,7 +1973,7 @@ def render_concentracao_card(positions: pd.DataFrame, limits: pd.DataFrame, nav:
     csv = _csv_encode(csv_rows)
 
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}"><div class="card-hd">'
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}"><div class="card-hd">'
         '<div class="card-title">Concentração</div>'
         '<div class="card-hd-actions">'
         '<div class="card-sub">Limites · Top Emissores · Top Grupos Econômicos</div>'
@@ -2028,7 +2028,7 @@ def render_indices_card(idx_panel: pd.DataFrame, curves: dict[str, pd.DataFrame]
     csv = _csv_encode(csv_rows)
 
     return (
-        f'<div class="card" data-csv="{csv.replace(chr(34), "&quot;")}"><div class="card-hd">'
+        f'<div class="card" data-csv="{html.escape(csv, quote=True)}"><div class="card-hd">'
         '<div class="card-title">Mercado de Crédito</div>'
         '<div class="card-hd-actions">'
         '<div class="card-sub">Índices BR · Curvas ANBIMA por Rating</div>'

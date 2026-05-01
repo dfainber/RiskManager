@@ -96,8 +96,16 @@ Severity rubric reminder:
 - [ ] **LOW** — `data_fetch.py:2599, 2648` — `map() + .get()` with silent
   None default; new product class added upstream silently dropped from
   report. Add `log.warning`.
-- [ ] **LOW** — `generate_credit_report.py:1378` — weak CSV escape via
-  `replace(chr(34), "&quot;")`. Use `csv.DictWriter` or `pandas.to_csv`.
+- [x] ~~**LOW** — `generate_credit_report.py:1378` — weak CSV escape via
+  `replace(chr(34), "&quot;")`.~~ → **fixed 2026-05-01.** The CSV encoding
+  itself (`_csv_encode`, line 99) already implements correct CSV escaping
+  (doubles `"`, quotes every cell). The actual issue was the HTML-attribute
+  escape on the `data-csv="..."` interpolation — only `"` was being escaped,
+  so a bond name like "Smith & Co" would emit raw `&` into the attribute.
+  Replaced `csv.replace(chr(34), "&quot;")` with `html.escape(csv, quote=True)`
+  at all 6 call sites. Validated zero numeric divergence via smoke-test
+  snapshot diff (4629 risk_report + 8 vol_card values byte-identical to
+  pre-refactor baseline).
 
 ### 2b. Code quality / efficiency (use safe-refactor skill — separate sessions)
 
@@ -116,8 +124,14 @@ Severity rubric reminder:
   over 4-level grouped data. O(n²); ~100k+ allocations per run.
 - [ ] **MEDIUM** — `generate_risk_report.py:713, 1673, 1695` — `iterrows()`
   in tight HTML-row loops. Vectorize.
-- [ ] **MEDIUM** — `pm_vol_card.py` (1,122 LOC) — confirm whether wired into
-  the main HTML or dead. Delete if dead, document if alive.
+- [x] ~~**MEDIUM** — `pm_vol_card.py` (1,122 LOC) — confirm whether wired into
+  the main HTML or dead.~~ → **verified alive 2026-05-01.** It is a standalone
+  diagnostic (file docstring line 1 already says "Standalone card"), not
+  imported by any other module (`grep` for `pm_vol_card` returns zero hits in
+  source). Run via `run_vol_card.bat` and exercised by `smoke_test.py`
+  (`check_vol_card`). Output: `data/morning-calls/pm_vol_card_<DATA>.html`.
+  The auditor's claim that it is "imported by generate_risk_report.py via
+  evolution_renderers" was incorrect — no such import exists.
 - [ ] **LOW** — Inconsistent date / NAV / book-code parsing. Centralize in
   `risk_runtime.py`.
 - [ ] **LOW** — `generate_risk_report.py:1–50` — 93 import lines, several
