@@ -98,6 +98,24 @@ def build_credit_section(positions: pd.DataFrame, nav: float, fund_label: str,
     else:
         carry_med = None
 
+    # Top issuer (by grupo_economico, fallback apelido_emissor) — share of corp credit.
+    issuer_col = None
+    for col in ("grupo_economico", "apelido_emissor"):
+        if col in p.columns and p[col].astype(str).str.strip().ne("").any():
+            issuer_col = col
+            break
+    top_issuer_label = None
+    top_issuer_pct = None
+    if issuer_col is not None and corp_pos > 0:
+        agg = (
+            p[p[issuer_col].astype(str).str.strip() != ""]
+            .groupby(issuer_col, dropna=False)["pos_brl"].sum()
+            .sort_values(ascending=False)
+        )
+        if len(agg):
+            top_issuer_label = str(agg.index[0])
+            top_issuer_pct = float(agg.iloc[0]) / corp_pos * 100.0
+
     def _tile(label: str, value: str, sub: str = "") -> str:
         sub_html = f'<div class="cs-tile-sub">{sub}</div>' if sub else ""
         return (
@@ -108,12 +126,17 @@ def build_credit_section(positions: pd.DataFrame, nav: float, fund_label: str,
         )
 
     # Sovereign holdings filtered out upstream — only corp credit shown
+    if top_issuer_label is not None:
+        top_tile = _tile("Top emissor", top_issuer_label, f"{top_issuer_pct:.1f}% do corp")
+    else:
+        top_tile = ""
     tiles_html = (
         '<div class="cs-tiles">'
         + _tile("Corp Credit", _fmt_brl(corp_pos),
                 _fmt_pct_pl(corp_pos, nav) + " do PL")
         + _tile("Carry médio (corp)", _fmt_pct(carry_med),
                 "ponderado por posição" if carry_med is not None else "")
+        + top_tile
         + '</div>'
     )
 

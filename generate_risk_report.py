@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 sys.path.insert(0, str(Path(__file__).parent))
-from risk_runtime import DATA_STR, DATA, OUT_DIR
+from risk_runtime import DATA_STR, DATA, OUT_DIR, fmt_br_num
 from risk_config import (
     FUNDS, RAW_FUNDS, IDKA_FUNDS, RF_BENCH_FUNDS, ALL_FUNDS,
     ALERT_THRESHOLD, UTIL_WARN, UTIL_HARD,
@@ -134,7 +134,7 @@ from credit_card_renderers import (
     CREDIT_SECTION_CSS,
     CREDIT_ALOC_JS,
 )
-from credit.credit_data import fetch_cdi_annual_rate, fetch_ipca_12m
+from credit.credit_data import fetch_cdi_annual_rate, fetch_ipca_12m, fetch_price_quality_flags
 
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
 
@@ -178,6 +178,9 @@ class ReportData:
     alb_nav:          Optional[float]           = None
     df_baltra_expo:   Optional[pd.DataFrame]    = None
     baltra_nav:       Optional[float]           = None
+    # Price quality (LOTE_BOOK_OVERVIEW PRICE non-null on D and D-1) — flagged rows only.
+    alb_pq_flags:     Optional[pd.DataFrame]    = None
+    baltra_pq_flags:  Optional[pd.DataFrame]    = None
     # Credit look-through (BALTRA, EVOLUTION) — see credit_card_renderers.build_credit_section
     df_baltra_credit: Optional[pd.DataFrame]    = None
     df_evo_credit:    Optional[pd.DataFrame]    = None
@@ -686,6 +689,51 @@ def build_html(d: ReportData) -> str:
             <span style="color:#fb923c">▏</span> 80° pct (alerta)
           </div>
         </section>"""
+
+        # Price-quality pill — ALBATROZ + BALTRA have direct credit-bearing
+        # instruments (CRIs/debentures + Prev-book NTN-Bs). Flag if any PRICE is
+        # null in LOTE_BOOK_OVERVIEW for D or D-1.
+        pq_flags = None
+        if short == "ALBATROZ":
+            pq_flags = d.alb_pq_flags
+        elif short == "BALTRA":
+            pq_flags = d.baltra_pq_flags
+        if pq_flags is not None:
+            n = 0 if pq_flags.empty else len(pq_flags)
+            if n == 0:
+                pq_html = (
+                    '<section class="card" style="border-color:rgba(38,208,124,.40);padding:8px 14px">'
+                    '<span style="color:var(--up);font-weight:600">✓ Sanity Check de Preços</span> '
+                    '<span class="card-sub">— todos os ativos não-cota com PRICE em D e D-1</span>'
+                    '</section>'
+                )
+            else:
+                _d1_str = str(_prev_bday(DATA_STR))
+                rows = []
+                for _, r in pq_flags.iterrows():
+                    miss_t = bool(r["missing_today"]); miss_p = bool(r["missing_prev"])
+                    why = []
+                    if miss_t: why.append(f"D ({DATA_STR})")
+                    if miss_p: why.append(f"D-1 ({_d1_str})")
+                    rows.append(
+                        f'<tr><td>{r["produto"]}</td>'
+                        f'<td style="color:var(--muted)">{r["product_class"] or "—"}</td>'
+                        f'<td class="mono" style="text-align:right">{fmt_br_num(f"{r["pos_brl"]:,.0f}")}</td>'
+                        f'<td style="color:var(--down);font-size:11px">{" · ".join(why)}</td></tr>'
+                    )
+                pq_html = (
+                    '<section class="card" style="border-color:rgba(255,90,106,.40)">'
+                    '<div class="card-head">'
+                    f'<span class="card-title" style="color:var(--down)">⚠ Sanity Check de Preços — {n} ativo(s) sem preço</span>'
+                    f'<span class="card-sub">— {short} · cotas/caixa/provisões isentas</span>'
+                    '</div>'
+                    '<table class="summary-table" data-no-sort="1">'
+                    '<thead><tr><th>Produto</th><th>Tipo</th>'
+                    '<th style="text-align:right">Posição (R$)</th><th>Falha</th></tr></thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></section>'
+                )
+            risk_monitor_html = risk_monitor_html + pq_html
+
         sections.append((short, "risk-monitor", risk_monitor_html))
 
         # MACRO PM VaR history chart — inline below Risk Monitor (CI/LF/RJ/JD + fund total).
@@ -4900,6 +4948,11 @@ def main():  # noqa: C901
         fut_risk_raw   = ex.submit(fetch_risk_history_raw)
         fut_risk_idka  = ex.submit(fetch_risk_history_idka)
         fut_risk_rfb   = ex.submit(fetch_risk_history_rf_bench)
+        # Price quality (LOTE_BOOK_OVERVIEW PRICE non-null on D and D-1) for funds
+        # with direct credit-bearing instruments. ALBATROZ has CRIs/debentures;
+        # BALTRA has NTN-Bs in the Prev book.
+        fut_alb_pq     = ex.submit(fetch_price_quality_flags, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR, d1_str)
+        fut_baltra_pq  = ex.submit(fetch_price_quality_flags, "Galapagos Baltra Icatu Qualif Prev FIM CP", DATA_STR, d1_str)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl       = ex.submit(fetch_pm_pnl_history)
         fut_pm_book_pnl  = ex.submit(fetch_pm_book_pnl_history)
@@ -4991,6 +5044,16 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  RF bench-relative risk fetch failed ({e})")
         df_risk_rfb = None
+    try:
+        alb_pq_flags = fut_alb_pq.result()
+    except Exception as e:
+        print(f"  ALBATROZ price quality fetch failed ({e})")
+        alb_pq_flags = None
+    try:
+        baltra_pq_flags = fut_baltra_pq.result()
+    except Exception as e:
+        print(f"  BALTRA price quality fetch failed ({e})")
+        baltra_pq_flags = None
     df_aum      = fut_aum.result()
     df_pm_pnl   = fut_pm_pnl.result()
     try:
@@ -5370,6 +5433,7 @@ def main():  # noqa: C901
         df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1, df_evo_pnl_prod=df_evo_pnl_prod,
         df_alb_expo=df_alb_expo, alb_nav=alb_nav,
         df_baltra_expo=df_baltra_expo, baltra_nav=baltra_nav,
+        alb_pq_flags=alb_pq_flags, baltra_pq_flags=baltra_pq_flags,
         df_baltra_credit=df_baltra_credit, df_evo_credit=df_evo_credit,
         cdi_annual=cdi_annual, ipca_annual=ipca_annual,
         df_frontier=df_frontier, frontier_bvar=frontier_bvar, frontier_bvar_d1=frontier_bvar_d1,
