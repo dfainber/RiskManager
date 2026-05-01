@@ -22,6 +22,16 @@ from pathlib import Path
 import pandas as pd
 
 from glpg_fetch import read_sql
+from pa_renderers import (
+    _FX_SPLIT_CLASSES as _FX_CLASSES,
+    _pa_fx_bps_cell as _bps_cell,
+    _pa_fx_bps_color as _bps_color,
+    _pa_fx_esc as _esc,
+    fx_split_classify,
+    PA_FX_SPLIT_CSS_BASE,
+    PA_FX_SPLIT_CSS_TOOLBAR,
+    PA_FX_SPLIT_JS_TOGGLE,
+)
 from risk_runtime import DATA_STR, OUT_DIR
 
 
@@ -58,51 +68,14 @@ def _fetch_quant_pa(date_str: str) -> pd.DataFrame:
     return df
 
 
-_FX_CLASSES = ("BRLUSD", "FX", "FX Carry & Bases Risk")
-_FX_GRUPO_MAP = {
-    "Commodities":     "FX em Commodities",
-    "Precious Metals": "FX em Precious Metals",
-    "RV Intl":         "FX em RV Intl",
-    "RF Intl":         "FX em RF Intl",
-}
-
-
-def _remap_classe(classe: str, grupo: str) -> tuple[str, str]:
-    """Fold legacy ('BRLUSD'/'FX') and DB-native ('FX Carry & Bases Risk',
-    emitted since 2026-04-24) into a single 'FX Basis Risk & Carry' bucket."""
-    if classe in _FX_CLASSES:
-        grupo_clean = (grupo or "").strip()
-        return ("FX Basis Risk & Carry",
-                _FX_GRUPO_MAP.get(grupo_clean, "FX Spot & Futuros"))
-    return (classe, grupo)
-
-
 def _apply_remap(df: pd.DataFrame) -> pd.DataFrame:
+    """Add CLASSE_NEW / GRUPO_NEW columns; original columns preserved.
+    Source-of-truth classifier lives in `pa_renderers.fx_split_classify`."""
     out = df.copy()
-    new = out.apply(lambda r: _remap_classe(r["CLASSE"], r["GRUPO"]), axis=1)
+    new = out.apply(lambda r: fx_split_classify(r["CLASSE"], r["GRUPO"]), axis=1)
     out["CLASSE_NEW"] = [t[0] for t in new]
     out["GRUPO_NEW"]  = [t[1] for t in new]
     return out
-
-
-# ─── Render helpers ──────────────────────────────────────────────────────────
-def _bps_color(v: float) -> str:
-    if v > 0.5:  return "#26a65b"
-    if v < -0.5: return "#e74c3c"
-    return "#9aa3b2"
-
-
-def _bps_cell(v: float, bold: bool = False) -> str:
-    if abs(v) < 0.05:
-        return '<td class="num" style="color:#666">—</td>'
-    col = _bps_color(v)
-    pct = v / 100.0
-    weight = "font-weight:700;" if bold else ""
-    return f'<td class="num" style="color:{col};{weight}">{pct:+.2f}%</td>'
-
-
-def _esc(s: str) -> str:
-    return html_lib.escape(str(s) if s is not None else "")
 
 
 def _build_tree_table(df: pd.DataFrame) -> str:
@@ -325,62 +298,9 @@ def _build_verification_block(df: pd.DataFrame) -> str:
     return f'<table class="pa-tree">{head}<tbody>{"".join(body_rows)}</tbody></table>'
 
 
-CSS = """
-* { box-sizing:border-box }
-body { background:#0a0f1a; color:#e6e6e6; font-family:'Segoe UI',system-ui,sans-serif; margin:0; padding:24px; }
-h1 { font-size:18px; margin:0 0 4px; color:#5aa3e8 }
-.sub { color:#888; font-size:12px; margin-bottom:16px }
-table.pa-tree { width:100%; border-collapse:collapse; background:#0d1626; border:1px solid #1f2940; border-radius:8px; overflow:hidden }
-table.pa-tree th, table.pa-tree td { padding:6px 10px; font-size:12px }
-table.pa-tree td.num, table.pa-tree th.num { text-align:right; font-variant-numeric:tabular-nums; min-width:70px }
-table.pa-tree tr:hover { background:#15203a }
-.caret { display:inline-block; transition:transform 0.15s; font-size:9px; color:#5aa3e8; width:10px }
-.caret.open { transform:rotate(90deg) }
-.cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:20px }
-.top-block { background:#0d1626; border:1px solid #1f2940; border-radius:8px; padding:12px 14px }
-.top-title { font-weight:700; color:#5aa3e8; font-size:13px; margin-bottom:8px }
-.top-sub { font-size:10px; font-weight:700; letter-spacing:0.05em; margin-bottom:4px }
-.top-tbl { width:100%; border-collapse:collapse }
-.top-tbl td { padding:3px 6px; font-size:11px; border-bottom:1px solid #1a1f30 }
-.top-tbl td.num { text-align:right; font-variant-numeric:tabular-nums }
-.legend { color:#888; font-size:11px; margin-top:18px; line-height:1.5 }
-.legend b { color:#cfd6e0 }
-.pa-toolbar-mini { display:flex; justify-content:flex-end; gap:8px; margin-bottom:6px }
-.pa-btn { background:#1a2030; border:1px solid #2a3550; color:#cfd6e0; padding:4px 10px; font-size:11px; border-radius:4px; cursor:pointer; font-family:inherit }
-.pa-btn:hover { background:#2a3550 }
-th.sortable { cursor:pointer; user-select:none }
-th.sortable:hover { color:#cfd6e0 }
-th.sort-asc::after { content:' ▲'; color:#5aa3e8; font-size:9px }
-th.sort-desc::after { content:' ▼'; color:#5aa3e8; font-size:9px }
-"""
+CSS = PA_FX_SPLIT_CSS_BASE + PA_FX_SPLIT_CSS_TOOLBAR
 
-JS = """
-function paToggle(tr) {
-  var id = tr.dataset.rowId;
-  if (!id) return;
-  var caret = tr.querySelector('.caret');
-  var rows = document.querySelectorAll('tr[data-row-parent="'+id+'"]');
-  rows.forEach(function(r) {
-    if (r.style.display === 'none') {
-      r.style.display = '';
-    } else {
-      r.style.display = 'none';
-      var subId = r.dataset.rowId;
-      if (subId) {
-        document.querySelectorAll('tr[data-row-parent^="'+subId+'"]').forEach(function(d) {
-          d.style.display = 'none';
-          var dc = d.querySelector('.caret');
-          if (dc) dc.classList.remove('open');
-        });
-        var c = r.querySelector('.caret');
-        if (c) c.classList.remove('open');
-      }
-    }
-  });
-  var anyVisible = Array.prototype.some.call(rows, function(r) { return r.style.display !== 'none'; });
-  if (caret) caret.classList.toggle('open', anyVisible);
-}
-
+JS = PA_FX_SPLIT_JS_TOGGLE + """
 var _evoSort = { col: null, asc: false };
 var _evoOriginal = null;
 

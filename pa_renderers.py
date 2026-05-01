@@ -5,10 +5,17 @@ pa_renderers.py — Performance Attribution (PA) section renderers.
 into a hierarchical HTML card with lazy-loaded descendants, heatmaps, filtering,
 and an optional benchmark-decomposition view for IDKA funds.
 
+Also hosts (since 2026-05-01) the shared substrate for the 4 standalone
+`generate_*_pa_fx_split.py` scripts: `fx_split_classify` (per-row classifier),
+`_apply_fx_split_remap` (vectorized in-place version), the helper trio
+`_pa_fx_bps_color` / `_pa_fx_bps_cell` / `_pa_fx_esc`, and the CSS+JS blobs
+(`PA_FX_SPLIT_CSS_BASE`, `PA_FX_SPLIT_CSS_TOOLBAR`, `PA_FX_SPLIT_JS`).
+
 Pure HTML rendering — no DB access. Consumers pass in pre-fetched dataframes.
 """
 from __future__ import annotations
 
+import html as _html
 import json
 
 import pandas as pd
@@ -413,6 +420,21 @@ _FX_SPLIT_GRUPO_MAP = {
     "RV Intl":         "FX em RV Intl",
     "RF Intl":         "FX em RF Intl",
 }
+FX_SPLIT_BUCKET = "FX Basis Risk & Carry"
+
+
+def fx_split_classify(classe: str, grupo: str) -> tuple[str, str]:
+    """Per-row classifier — returns (CLASSE_NEW, GRUPO_NEW). Folds legacy
+    'BRLUSD'/'FX' (pre-2026-04-24) and DB-native 'FX Carry & Bases Risk'
+    (post-cutover) into a single FX_SPLIT_BUCKET. Used by the 4 generate_*_pa_fx_split
+    scripts which need to keep CLASSE/GRUPO + add CLASSE_NEW/GRUPO_NEW
+    columns (for verification). The vectorized in-place version
+    `_apply_fx_split_remap` is used by the main report's PA tree builder."""
+    if classe in _FX_SPLIT_CLASSES:
+        grupo_clean = (grupo or "").strip()
+        return (FX_SPLIT_BUCKET,
+                _FX_SPLIT_GRUPO_MAP.get(grupo_clean, "FX Spot & Futuros"))
+    return (classe, grupo)
 
 
 def _apply_fx_split_remap(df: pd.DataFrame) -> pd.DataFrame:
@@ -546,3 +568,94 @@ def _pa_filter_alpha(df):
     for pa_key, livros in _PA_BENCH_LIVROS.items():
         mask = mask & ~((df["FUNDO"] == pa_key) & (df["LIVRO"].isin(livros)))
     return df[mask]
+
+
+# ─── Shared substrate for the 4 standalone PA-FX-split scripts ───────────
+# (generate_macro_pa_fx_split.py + _evolution_ + _quant_ + _macroq_)
+# Centralized 2026-05-01 to eliminate ~250 LOC of identical near-clones.
+
+def _pa_fx_bps_color(v: float) -> str:
+    if v > 0.5:
+        return "#26a65b"
+    if v < -0.5:
+        return "#e74c3c"
+    return "#9aa3b2"
+
+
+def _pa_fx_bps_cell(v: float, bold: bool = False) -> str:
+    if abs(v) < 0.05:
+        return '<td class="num" style="color:#666">—</td>'
+    col = _pa_fx_bps_color(v)
+    pct = v / 100.0
+    weight = "font-weight:700;" if bold else ""
+    return f'<td class="num" style="color:{col};{weight}">{pct:+.2f}%</td>'
+
+
+def _pa_fx_esc(s) -> str:
+    return _html.escape(str(s) if s is not None else "")
+
+
+PA_FX_SPLIT_CSS_BASE = """
+* { box-sizing:border-box }
+body { background:#0a0f1a; color:#e6e6e6; font-family:'Segoe UI',system-ui,sans-serif; margin:0; padding:24px; }
+h1 { font-size:18px; margin:0 0 4px; color:#5aa3e8 }
+.sub { color:#888; font-size:12px; margin-bottom:16px }
+table.pa-tree { width:100%; border-collapse:collapse; background:#0d1626; border:1px solid #1f2940; border-radius:8px; overflow:hidden }
+table.pa-tree th, table.pa-tree td { padding:6px 10px; font-size:12px }
+table.pa-tree td.num, table.pa-tree th.num { text-align:right; font-variant-numeric:tabular-nums; min-width:70px }
+table.pa-tree tr:hover { background:#15203a }
+.caret { display:inline-block; transition:transform 0.15s; font-size:9px; color:#5aa3e8; width:10px }
+.caret.open { transform:rotate(90deg) }
+.cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:20px }
+.top-block { background:#0d1626; border:1px solid #1f2940; border-radius:8px; padding:12px 14px }
+.top-title { font-weight:700; color:#5aa3e8; font-size:13px; margin-bottom:8px }
+.top-sub { font-size:10px; font-weight:700; letter-spacing:0.05em; margin-bottom:4px }
+.top-tbl { width:100%; border-collapse:collapse }
+.top-tbl td { padding:3px 6px; font-size:11px; border-bottom:1px solid #1a1f30 }
+.top-tbl td.num { text-align:right; font-variant-numeric:tabular-nums }
+.legend { color:#888; font-size:11px; margin-top:18px; line-height:1.5 }
+.legend b { color:#cfd6e0 }
+"""
+
+# Used by evolution + quant (sortable PA tree with mini-toolbar). Macroq has
+# its own toolbar variant with `align-items:center` + `.pa-btn.active` + the
+# `.fx-consol-row` rule, so it does not import this block.
+PA_FX_SPLIT_CSS_TOOLBAR = """.pa-toolbar-mini { display:flex; justify-content:flex-end; gap:8px; margin-bottom:6px }
+.pa-btn { background:#1a2030; border:1px solid #2a3550; color:#cfd6e0; padding:4px 10px; font-size:11px; border-radius:4px; cursor:pointer; font-family:inherit }
+.pa-btn:hover { background:#2a3550 }
+th.sortable { cursor:pointer; user-select:none }
+th.sortable:hover { color:#cfd6e0 }
+th.sort-asc::after { content:' ▲'; color:#5aa3e8; font-size:9px }
+th.sort-desc::after { content:' ▼'; color:#5aa3e8; font-size:9px }
+"""
+
+# `paToggle(tr)` — expand/collapse handler for a single-tree FX-split page.
+# Used by macro / evolution / quant. Macroq has a tbody-scoped variant for
+# its multi-table layout and keeps that JS local.
+PA_FX_SPLIT_JS_TOGGLE = """
+function paToggle(tr) {
+  var id = tr.dataset.rowId;
+  if (!id) return;
+  var caret = tr.querySelector('.caret');
+  var rows = document.querySelectorAll('tr[data-row-parent="'+id+'"]');
+  rows.forEach(function(r) {
+    if (r.style.display === 'none') {
+      r.style.display = '';
+    } else {
+      r.style.display = 'none';
+      var subId = r.dataset.rowId;
+      if (subId) {
+        document.querySelectorAll('tr[data-row-parent^="'+subId+'"]').forEach(function(d) {
+          d.style.display = 'none';
+          var dc = d.querySelector('.caret');
+          if (dc) dc.classList.remove('open');
+        });
+        var c = r.querySelector('.caret');
+        if (c) c.classList.remove('open');
+      }
+    }
+  });
+  var anyVisible = Array.prototype.some.call(rows, function(r) { return r.style.display !== 'none'; });
+  if (caret) caret.classList.toggle('open', anyVisible);
+}
+"""
