@@ -1,8 +1,12 @@
 # IDKA — Exploração de VaR e BVaR
 
+> **Status: RESOLVED** — investigação de 2026-04-17, bug estrutural corrigido em
+> commit `e053a40`. Mantido aqui como histórico/referência do raciocínio. Não é
+> mais um documento ativo.
+
 **Data-base:** 2026-04-17
 **Escopo:** auditoria do parametric da Lote + construção de HS do zero + comparação
-**Status:** bug estrutural encontrado e corrigido (fix em commit `e053a40`). Gap residual ~1.5-3x é esperado (parametric vs HS).
+**Resolução:** bug estrutural encontrado e corrigido (fix em commit `e053a40`). Gap residual ~1.5-3x é esperado (parametric vs HS).
 
 ---
 

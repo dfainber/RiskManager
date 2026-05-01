@@ -464,7 +464,7 @@ Orquestrador: `generate_risk_report.py` (~4280 linhas após refactor de 2026-04)
 | `fund_renderers.py` | build_stop_section, briefings, distribuição (com 1d/21d), peers, vol regime |
 | `summary_renderers.py` | summary cards (Status, Top Movers, Outliers, Mudanças, Top Posições) |
 | `html_assets.py` | UEXPO_JS blob |
-| `evolution_diversification_card.py` | placeholder pra futuro card consolidado (não wireado ainda) |
+| `evolution_diversification_card.py` | compute layer das 4 camadas de diversificação do EVOLUTION; renderizado via `evo_renderers.build_evolution_diversification_section` em `generate_risk_report.py:808` |
 
 ### 5.2 Layout interno
 

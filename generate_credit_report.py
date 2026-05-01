@@ -13,6 +13,7 @@ Output: data/credit-reports/{date}_{fund}_credit.html
 from __future__ import annotations
 
 import argparse
+import html
 import math
 import re
 from datetime import date, datetime, timedelta
@@ -21,6 +22,17 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+
+def _h(s) -> str:
+    """HTML/SVG-escape DB-sourced strings before interpolating into output.
+    Bond/issuer names with `<` `>` `&` `"` would otherwise break table layout
+    or, in the credit report emailed to 31 recipients, allow injected markup."""
+    if s is None:
+        return "—"
+    if isinstance(s, float) and pd.isna(s):
+        return "—"
+    return html.escape(str(s), quote=True)
 
 from credit.credit_config import (
     CREDIT_FUNDS,
@@ -941,7 +953,7 @@ def _svg_donut(items: list[tuple[str, float]], width: int = 260, height: int = 2
         lbl_str = str(lbl) if lbl is not None and not (isinstance(lbl, float) and pd.isna(lbl)) else "—"
         title = tooltip_fmt(lbl_str, v, frac) if tooltip_fmt else f'{lbl_str} · {frac*100:.1f}%'
         parts.append(
-            f'<path d="{d}" fill="{color}" stroke="#181d24" stroke-width="1.5"><title>{title}</title></path>'
+            f'<path d="{d}" fill="{color}" stroke="#181d24" stroke-width="1.5"><title>{_h(title)}</title></path>'
         )
         # Inside-slice % label only for big slices (>= 7%)
         if frac >= 0.07:
@@ -962,10 +974,11 @@ def _svg_donut(items: list[tuple[str, float]], width: int = 260, height: int = 2
 
     legend_rows = []
     for color, lbl, frac, _ in legend_items:
+        lbl_safe = _h(lbl)
         legend_rows.append(
             f'<div class="dl-row">'
             f'<span class="dl-dot" style="background:{color}"></span>'
-            f'<span class="dl-lbl" title="{lbl}">{lbl}</span>'
+            f'<span class="dl-lbl" title="{lbl_safe}">{lbl_safe}</span>'
             f'<span class="dl-val">{frac*100:.1f}%</span>'
             f'</div>'
         )
@@ -991,15 +1004,16 @@ def _svg_hbar(items: list[tuple[str, float]], width: int = 460, row_h: int = 22,
         y = i * row_h + row_h - 6
         bar_w = (v / max_v) * bar_max
         full = lbl or "—"
-        title = f'{full} · {fmt(v)}'
+        full_safe = _h(full)
+        title_safe = f'{full_safe} · {fmt(v)}'
         # Label with foreignObject would be ideal but SVG <text> + clipPath also works.
         parts.append(
             f'<text x="6" y="{y+1}" font-size="11" fill="#e7ecf2" font-family="Inter">'
-            f'<title>{title}</title>{full}</text>'
+            f'<title>{title_safe}</title>{full_safe}</text>'
         )
         parts.append(
             f'<rect x="{bar_x0}" y="{y-12}" width="{bar_w:.1f}" height="14" rx="2" '
-            f'fill="{color}" opacity="0.85"><title>{title}</title></rect>'
+            f'fill="{color}" opacity="0.85"><title>{title_safe}</title></rect>'
         )
         parts.append(f'<text x="{width-6}" y="{y+1}" text-anchor="end" font-size="11" fill="#e7ecf2" font-family="JetBrains Mono">{fmt(v)}</text>')
     return f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + '</svg>'
@@ -1030,18 +1044,19 @@ def _svg_vbar(items: list[tuple[str, float]], width: int = 540, height: int = 32
         x = pad_l + i * (bar_w + gap)
         h = (v / max_v) * plot_h
         y = pad_t + (plot_h - h)
-        title = f'{lbl} · {fmt(v)}'
+        full = lbl or "—"
+        full_safe = _h(full)
+        title_safe = f'{full_safe} · {fmt(v)}'
         parts.append(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{h:.1f}" rx="2" '
-            f'fill="{color}" opacity="0.88"><title>{title}</title></rect>'
+            f'fill="{color}" opacity="0.88"><title>{title_safe}</title></rect>'
         )
         parts.append(f'<text x="{x+bar_w/2:.1f}" y="{y-4:.1f}" text-anchor="middle" font-size="10" fill="#e7ecf2" font-family="JetBrains Mono">{fmt(v)}</text>')
         cx = x + bar_w / 2
         cy_lbl = pad_t + plot_h + 10
-        full = lbl or "—"
         parts.append(
             f'<text x="{cx:.1f}" y="{cy_lbl:.1f}" text-anchor="end" font-size="10" fill="#a8b3c2" '
-            f'font-family="Inter" transform="rotate(-45 {cx:.1f} {cy_lbl:.1f})">{full}</text>'
+            f'font-family="Inter" transform="rotate(-45 {cx:.1f} {cy_lbl:.1f})">{full_safe}</text>'
         )
     return f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + '</svg>'
 
@@ -1349,8 +1364,8 @@ def render_quality_card(flags: pd.DataFrame, ref_dt: date, prev_dt: date) -> str
         pp_disp = fmt_brl(r["price_prev"], 4)  if pd.notna(r["price_prev"])  else "—"
         rows_html.append(
             "<tr>"
-            f'<td>{r["produto"]}</td>'
-            f'<td>{r["product_class"] or "—"}</td>'
+            f'<td>{_h(r["produto"])}</td>'
+            f'<td>{_h(r["product_class"])}</td>'
             f'<td class="mono">{fmt_brl(r["pos_brl"])}</td>'
             f'<td class="mono" style="{"color:var(--down)" if miss_p else ""}">{pp_disp}</td>'
             f'<td class="mono" style="{"color:var(--down)" if miss_t else ""}">{pt_disp}</td>'
@@ -1668,7 +1683,7 @@ def render_alocacao_card(positions: pd.DataFrame, nav: float, ref_dt: date,
     def _child_row(r) -> str:
         rating_val = r.get("rating_eff") or ""
         tag = _rating_class(rating_val)
-        tag_html = f'<span class="tag tag-{tag}">{rating_val or "—"}</span>'
+        tag_html = f'<span class="tag tag-{tag}">{_h(rating_val) if rating_val else "—"}</span>'
         rating_rank = RATING_ORDER.get(str(rating_val).strip(), 99)
         tr_val = r.get("tranche") or "Sem Subordinação"
         tr_rank = _TRANCHE_ORDER.get(tr_val, 9)
@@ -1678,18 +1693,18 @@ def render_alocacao_card(positions: pd.DataFrame, nav: float, ref_dt: date,
             # Sem Subordinação / non-tranched — keep the cell compact with "—"
             tr_html = '<span class="tag tag-na">—</span>'
         return (
-            f'<td>{r["produto"]}</td>'
-            f'<td>{r.get("tipo_ativo") or "—"}</td>'
+            f'<td>{_h(r["produto"])}</td>'
+            f'<td>{_h(r.get("tipo_ativo"))}</td>'
             f'<td data-sort="{tr_rank}">{tr_html}</td>'
-            f'<td>{r.get("indexador") or "—"}</td>'
+            f'<td>{_h(r.get("indexador"))}</td>'
             f'<td class="mono">{money(r["pos_brl"])}</td>'
             f'<td class="mono">{fmt_pct(r["pct_pl"])}</td>'
             f'<td class="mono">{fmt_pct(r["spread"]) if pd.notna(r["spread"]) else "—"}</td>'
             f'<td class="mono">{fmt_pct(r.get("carry_anual")) if pd.notna(r.get("carry_anual")) else "—"}</td>'
             f'<td class="mono">{fmt_yr(r["dur_yrs"])}</td>'
             f'<td data-sort="{rating_rank}">{tag_html}</td>'
-            f'<td>{r.get("setor") or "—"}</td>'
-            f'<td>{r.get("grupo_eff") or "—"}</td>'
+            f'<td>{_h(r.get("setor"))}</td>'
+            f'<td>{_h(r.get("grupo_eff"))}</td>'
         )
 
     def _build_pane(group_col: str, key_order: list, mode: str, default_visible: bool) -> tuple[str, float, float, float, float, float, float, float, float]:
@@ -1914,10 +1929,10 @@ def render_concentracao_card(positions: pd.DataFrame, limits: pd.DataFrame, nav:
             )
         rows_html.append(
             "<tr>"
-            f'<td>{r["grupo_economico"] or "—"}</td>'
+            f'<td>{_h(r["grupo_economico"])}</td>'
             f'<td class="mono">{int(r["n"])}</td>'
             f'<td class="mono">{fmt_pct(r["pct"])}</td>'
-            f'<td class="mono">{fmt_pct(lim) if lim else (r["limit_text"] or "—")}</td>'
+            f'<td class="mono">{fmt_pct(lim) if lim else _h(r["limit_text"])}</td>'
             f'<td class="mono" style="color:{util_color(util)}">{util_str}</td>'
             f'<td style="width:140px">{bar_html}</td>'
             "</tr>"

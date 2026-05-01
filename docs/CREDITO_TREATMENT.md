@@ -1,5 +1,12 @@
 # Tratamento do CREDITO no card Evolution — Diversification Benefit
 
+> **Status: ARCHIVED 2026-05-01** — design notes da Camada 2 do card de
+> diversificação. Implementação wired desde o spike inicial; o card vive em
+> [`evolution_diversification_card.py`](../evolution_diversification_card.py)
+> e é renderizado via `evo_renderers.build_evolution_diversification_section`
+> em [`generate_risk_report.py:808`](../generate_risk_report.py#L808).
+> Documento mantido como histórico do raciocínio sobre treatment de crédito.
+
 **Data:** 2026-04-20
 **Código:** [`evolution_diversification_card.py`](../evolution_diversification_card.py)
 **Relacionado:** skill [`evolution-risk-concentration`](../.claude/skills/evolution-risk-concentration/SKILL.md)

@@ -1,0 +1,455 @@
+================================================================================
+RISK MONITOR — PROJECT REVIEW
+Date: 2026-05-01
+Status: Phase 1 (read-only triage) — 4 of 4 agents completed
+================================================================================
+
+WHAT WAS ANALYZED
+-----------------
+[X] Security & robustness audit       — done (Explore agent)
+[X] Code quality & efficiency audit   — done (Explore agent)
+[X] Content quality & docs audit      — done (Explore agent)
+[X] Aesthetics / UX consistency audit — done (Agent)
+
+WHAT WAS NOT TOUCHED
+--------------------
+- No files were edited.
+- No code was run, no DB queries issued.
+- No MD updates applied yet (you wanted a plan + review first).
+- Phase 2 (you triage) and Phase 3 (execute) — not started.
+
+CAVEATS
+-------
+- Findings are based on Explore agents reading code excerpts. They are
+  high-confidence but spot-check before acting. Some line numbers may be
+  approximate (agents read excerpts, not full files).
+- Severity rubrics differ between audits — see each section for its rubric.
+- Author preference (per CLAUDE.md): consolidate, do not proliferate docs;
+  no over-engineering; no backwards-compat shims for removed code.
+
+
+================================================================================
+PART A — SECURITY & ROBUSTNESS AUDIT
+================================================================================
+Severity rubric:
+  critical = silent data corruption in Morning Call OR live external impact
+  high     = crash that takes down daily run, OR wrong number shown to PMs
+  medium   = brittle code that breaks on next fund/factor addition
+  low      = cosmetic / maintainability
+
+Top findings (ordered by severity):
+
+ 1. [RESOLVED 2026-05-01] glpg_fetch.py:64-72
+    Verified current code already logs the close error, drops _tl.conn,
+    and re-raises. No bare except remaining. Likely already fixed before
+    audit excerpt was read, or fixed between audit and triage.
+
+ 2. [RESOLVED 2026-05-01] data_fetch.py:2030, 2073, 2368
+    Verified `nav or 1.0` pattern no longer present anywhere in the repo.
+    Cited sites now use `_require_nav` (raises on None / non-positive)
+    or `_latest_nav` + explicit None-guard returning early.
+
+ 3. [RESOLVED 2026-05-01] data_fetch.py:2045, 2429
+    Both division sites consume NAV from `_require_nav` (db_helpers.py:113),
+    which raises if NAV is None or <= 0. Guarded upstream.
+
+ 4. [HIGH] data_fetch.py:441, 541, 1775, 2824, 2943
+    `.iloc[0]` after `.empty` check but no len guard.
+    Risk: IndexError on rare schema/race edge cases halts midnight run.
+    Fix: introduce `_first_or_default(df, default)` helper, use everywhere.
+
+ 5. [HIGH] evolution_diversification_card.py:169, 226, 333, 448, 496
+    Chained `.iloc[-1]` on filtered series that may be empty.
+    Risk: IndexError aborts the whole report build.
+    Fix: `if len(s) > 0` guard before indexing.
+
+ 6. [HIGH] generate_credit_report.py:1352, 1681
+    HTML injection via r["produto"] / r["product_class"].
+    Risk: bond names from DB containing < > " could break table layout
+    (or worse) in the HTML emailed to 31 recipients.
+    Fix: `import html; html.escape(str(r["produto"]))` before <td>.
+
+ 7. [MEDIUM] data_fetch.py:2710, 2716, 2784, 2790, 2852, 2858, 2893
+    `.iloc[-1]` after filter, no len guard. Edge case: holidays/weekends.
+
+ 8. [MEDIUM] data_fetch.py:2040
+    Empty df returned with shape mismatch (df["var_pct"]=[]) — downstream
+    code expecting numeric array will break.
+    Fix: return `pd.DataFrame(columns=[...])` with proper dtype.
+
+ 9. [MEDIUM] generate_risk_report.py:5477, 5480 + generate_monthly_review.py:1764
+    Hardcoded `F:\Bloomberg\Risk_Manager\Data\Morningcall` mirror path,
+    silent-fail in try/except. Looks like success when it isn't.
+    Fix: env var RISK_MIRROR_PATH; log failures as WARN, do not swallow.
+
+10. [MEDIUM] fund_renderers.py:1851, 1989, 2048, 2181, 2390, 2482, 2488, 2602, 2634
+    Multiple chained `.iloc[-1]`/`.iloc[-2]` on same filtered df; if len<2
+    second access crashes. Extract once, check length once, reuse.
+
+11. [MEDIUM] data_fetch.py:1910
+    `float(fut["delta"].iloc[0])` after .empty/notna guard but type cast
+    can still fail if value is unexpected string. Use pd.to_numeric coerce.
+
+12. [MEDIUM] generate_credit_report.py:134, 141, 144, 189–192
+    Cascading `.iloc[0]` on nav_last/nav_first without single length pre-check.
+
+13. [MEDIUM] pnl_server.py:91, 101
+    Raw exception message in JSON error response — quotes/newlines can break
+    JSON encoding. Sanitize before returning.
+
+14. [LOW] data_fetch.py:3013
+    Hardcoded path containing employee name (F:\Macros\Gestao\...).
+    Risk: breaks if person leaves or path moves. Move to config.
+
+15. [LOW] data_fetch.py:2599, 2648
+    `map() + .get()` with silent None default; new product class added
+    upstream silently dropped from report. Add log.warning.
+
+16. [LOW] expo_renderers.py:680, 1106, 1107, 2248, 2502
+    Same `.iloc[0]` no-guard pattern.
+
+17. [LOW] generate_credit_report.py:1378
+    Weak CSV escape via replace(chr(34), "&quot;"). Use csv.DictWriter or
+    pandas.to_csv instead.
+
+18. [LOW] generate_monthly_review.py:194, 217, 251, 276, 316, 349, 375
+    Chained `.iloc[-1]` / `.iloc[-2]` without len>=2 guard.
+
+19. [LOW] generate_risk_report.py:4941
+    Very long inline HTML string baked into Python — hard to maintain;
+    extract to separate file or templates folder.
+
+SQL INJECTION: Low risk overall — date and fund values come from internal
+config dicts, not CLI input. No exploitable f-string SQL pattern found.
+
+PRIORITIZE BEFORE NEXT PROD RUN: #6 (XSS in emailed credit report).
+[#1, #2, #3 verified already resolved 2026-05-01.]
+
+
+================================================================================
+PART B — CODE QUALITY & EFFICIENCY AUDIT
+================================================================================
+31,117 LOC Python | 41 fetch_* functions | 4 near-clone PA/FX generators
+
+ 1. [HIGH] generate_risk_report.py:528–4946  → build_html mega-function
+    4,419 lines in ONE function. 85% of orchestrator logic. Hard to test.
+    Fix: extract tab-switching + fund section builders to _build_tab_*
+    helpers; move CSS/JS blob to html_assets.py.
+
+ 2. [HIGH] generate_macro_pa_fx_split.py + _evolution_ + _quant_ + _macroq_
+    4 near-clones, ~2,310 LOC total, ~1,700 shared.
+    `_remap_classe` (65 LOC) is identical in all four.
+    CSS, JS, _bps_cell, _bps_color, _esc, tree-cell helpers all duplicated.
+    Fix: extract _remap_classe → risk_config.py; move shared helpers →
+    html_assets.py / pa_renderers.py; call shared builders with hierarchy
+    params per fund.
+
+ 3. [HIGH] generate_risk_report.py:4947–5492 → main() (546 lines, noqa:C901)
+    Fetch tasks, error handling, exception wrapping all inline.
+    Fix: split into _fetch_all_data(), _build_report_data(), _write_output(),
+    each ≤100 LOC.
+
+ 4. [MEDIUM] data_fetch.py:1417
+    df.iterrows() inside nested loop over 4-level grouped data.
+    O(n²) on deep hierarchies; ~100k+ small allocations per run.
+    Fix: df.to_dict('records') once, group in-memory.
+
+ 5. [MEDIUM] generate_risk_report.py:713, 1673, 1695
+    iterrows() in tight HTML-row loops. Vectorize with apply or to_dict.
+
+ 6. [MEDIUM] pm_vol_card.py — 1,122 LOC
+    Imported by generate_risk_report.py via evolution_renderers but the
+    rendered output is not visibly wired into the main HTML.
+    Fix: confirm if dead. If dead, delete. If alive, document the wiring.
+
+ 7. [MEDIUM] evolution_diversification_card.py
+    CLAUDE.md §7 fila #2 says "Wire it" (still TODO).
+    Content audit (Part C) says it IS already wired at
+    generate_risk_report.py:808. Reconcile — one of the two is wrong.
+
+ 8. [MEDIUM] generate_macro_pa_fx_split.py:286–314 + Evo + QUANT
+    JS tree-toggle / sort / expand-collapse copied 3 ways with subtle
+    variants. Centralize to single parameterized JS in html_assets.py.
+
+ 9. [MEDIUM] generate_risk_report.py:1843, 1913, 2227, 2826, 2994, 4061
+    "Market tab" wired in daily, BUT generate_market_review.py is a separate
+    standalone pilot. Risk of divergence; clarify ownership.
+
+10. [LOW] Inconsistent date / NAV / book-code parsing across files.
+    Centralize date helpers and NAV lookup in risk_runtime.py.
+
+11. [LOW] generate_risk_report.py:1–50 → 93 import lines, several unused.
+    Run `pylint --unused-imports`; defer matplotlib.use() to actual plot
+    sites only.
+
+12. [LOW] generate_quant_pa_fx_split.py:203–217
+    QUANT/MACRO_Q call evoSortBy / evoExpandAll JS — misleading names.
+    Rename to paSort / paExpand in shared html_assets.py.
+
+13. [LOW] generate_risk_report.py:556–4945
+    Massive inline HTML+CSS+JS f-string. No syntax highlight, escape risk.
+    Move <script>/<style> blocks to html_assets.py module-level strings.
+
+14. [LOW] data_fetch.py:1415–1439
+    Manual dict construction row-by-row, 12 nullable fields. Use to_dict.
+
+REFACTOR ORDER (if you choose to do this): consolidate PA logic →
+split build_html → unify JS/CSS assets → vectorize hot loops.
+Use the safe-refactor skill — author's house rule per CLAUDE.md.
+
+
+================================================================================
+PART C — CONTENT / DOCS AUDIT
+================================================================================
+
+A. CLAUDE.md SURGERY (file is 357 lines, ~56KB, ~56% is changelog bloat)
+-------------------------------------------------------------------------
+KEEP (timeless reference):
+  §1 Purpose                  lines  8– 19
+  §2 Architecture             lines 22– 39
+  §3 Modules table            lines 42– 61
+  §4 Data sources             lines 88–112
+  §5 Fund map                 lines 115–122
+  §6 State table              lines 124–153
+  §8 Armadilhas (load-bearing)lines 306–329
+  §10 Conventions             lines 342–350
+  §11 Session kickoff         lines 354–358
+
+MOVE OUT to new docs/CHANGELOG.md:
+  Lines 169–249 — "Fixes/Features entregues 2026-04-XX"
+  ~81 lines covering 6 sessions. Backward-looking. Git log already serves
+  as VCS history. After move: CLAUDE.md drops to ~280 lines, all actionable.
+
+CONSOLIDATE §7:
+  Keep lines 157–167 (Phase 4 context + 3-item TODO fila)
+  Update §9 references: BALTRA shipped 2026-04-26, Crédito shipped 2026-04-30
+  (already noted but ~~strikethrough~~ format is awkward — convert to plain
+  "Done — see CHANGELOG").
+
+
+B. STALE OR WRONG CONTENT
+-------------------------
+- CLAUDE.md §7 line 164 says "Wire evolution_diversification_card.py" as
+  a TODO. Code audit (Part B #7) thinks it MAY already be wired at
+  generate_risk_report.py:808. Manually verify which is correct before
+  editing — if wired, drop the TODO.
+
+- docs/REPORTS.html (51 KB, last touched 2026-04-23) and docs/REPORTS.md
+  (34 KB, last touched 2026-04-29) have diverged. MD is the human-readable
+  source. Recommend deleting REPORTS.html (no consumer reads it).
+
+- docs/CREDITO_TREATMENT.md — design notes for evolution_diversification_card
+  Camada 2 spike treatment. Card now shipped. Add header
+  "Status: ARCHIVED 2026-04-XX (Camada 2 implemented)".
+
+- docs/IDKA_VAR_EXPLORATION.md — investigation report dated 2026-04-17.
+  Bug fix already shipped (commit e053a40). Add header "Status: RESOLVED".
+
+- docs/EVOLUTION_DIVERSIFICATION_METHODOLOGY.md (2026-04-21) — current. Keep.
+
+
+C. MEMORY + DOCS — orphans, dupes, missing
+-------------------------------------------
+MEMORY.md (5 entries, all active):
+  user_role.md                               — current
+  project_status.md                          — STALE: still lists
+                                               evolution_diversification_card
+                                               wiring as TODO. Update.
+  feedback_key_corrections.md                — current; large overlap with
+                                               CLAUDE.md §8 Armadilhas
+  project_data_sources.md                    — current
+  project_todo_risk_analytics_roadmap.md     — current
+
+DUPLICATION:
+  CLAUDE.md §8 (lines 306–329) and feedback_key_corrections.md cover the
+  same 15 known traps. Both useful in different contexts (CLAUDE.md auto-
+  loads in this project; memory file auto-loads in any session). NOT a fix
+  target — leave as-is, but add cross-reference one-liner in CLAUDE.md §7
+  pointing to the memory file for skill context.
+
+NO ORPHAN MEMORY FILES detected.
+
+
+================================================================================
+NEXT ACTIONS WHEN YOU'RE BACK
+================================================================================
+Pick what you actually want to fix. My recommended order:
+
+  IMMEDIATE (silent-corruption risk to Morning Call):
+    [X] Security #1 — glpg_fetch bare except               (already fixed)
+    [X] Security #2 — `nav or 1.0` fallback (3 sites)      (already fixed)
+    [X] Security #3 — division-by-NAV guards               (already fixed)
+    [ ] Security #6 — html.escape in credit report (XSS in emails)
+
+  HOUSEKEEPING (quick wins, low risk):
+    [ ] Verify evolution_diversification_card wiring status (Code #7 vs Content B)
+    [ ] CLAUDE.md surgery — move §7 changelog to docs/CHANGELOG.md
+    [ ] Add Status headers to IDKA_VAR_EXPLORATION + CREDITO_TREATMENT
+    [ ] Update memory/project_status.md (drop stale wire-it TODO)
+    [ ] Confirm + delete docs/REPORTS.html if unused
+
+  AESTHETICS (from Part D — see priorities at end of file):
+    [X] Daily monitor — add Risk Monitor SVG header + Galápagos footer (D #7)
+    [X] vardod / pmovers modals — fix CSV button injection (D #11, #12)
+    [X] svg_renderers hex audit — both already remapped (D #1, #2)
+    [ ] fund_renderers — wrap raw `:.2f`/`:.0f` numerics with fmt_br_num (D #5)
+
+  LARGER (use safe-refactor skill, separate sessions):
+    [ ] Consolidate the 4 PA-FX-split scripts (~1,700 LOC dedup)
+    [ ] Extract build_html mega-function (4,400 LOC)
+    [ ] Confirm pm_vol_card.py is alive — delete if dead
+
+  NICE TO HAVE:
+    [ ] Vectorize iterrows hot loops
+    [ ] Centralize date/NAV helpers in risk_runtime.py
+    [ ] Extract inline HTML/CSS/JS to html_assets.py
+
+================================================================================
+PART D — AESTHETICS / UX CONSISTENCY AUDIT
+================================================================================
+Severity rubric:
+  high     = visible on meeting projector, breaks layout, or affects PM visibility
+  medium   = cosmetic/drift but no PM-facing impact, or low-frequency table
+  low      = internal/debug, non-rendered code path, or rare edge case
+
+────────────────────────────────────────────────────────────────────────────── 
+A. HEX CODES BYPASSING THE MEETING REMAP
+──────────────────────────────────────────────────────────────────────────────
+
+Remap maps extracted from generate_risk_report_meeting.py:
+
+_BG_HEX_MAP (line 336–368): 32 dark hex → light hex mappings
+  Covers: #0f2d1a, #2d0f0f, #1e293b, #0a0f18, #0f172a, #1e3a5f, #0b0d10,
+  #111418, #14181d, #181d24, #232a33, #2d3540, #14241a, #1e4976, #1c1409,
+  #7c2d12, #fca5a5, #1a2030, #0d1626, #15203a, #1f2940, #2a3550, #cfd6e0,
+  #e6e6e6, #0a0f1a, #11141a, #1a1f26
+
+_TEXT_COLOR_MAP (line 393–417): 21 light-text hex → darker hex mappings
+  Covers: #94a3b8, #cbd5e1, #e2e8f0, #facc15, #fbbf24, #eab308, #fb923c,
+  #60a5fa, #64748b, #f87171, #888888, #aaaaaa, #bbbbbb, #777, #777777,
+  #1a8fd1, #5aa3e8, #22d3ee, #a78bfa, #f472b6
+
+FINDINGS (ordered by severity):
+
+ 1. [RESOLVED — verified 2026-05-01] svg_renderers.py:71, 149
+    Both `#2d2d3d` and `#0b1220` ARE in _BG_HEX_MAP at meeting:349,352.
+    `_apply_bg_swap` regex covers `fill="#XXX"` and `stroke="#XXX"`.
+    The audit reading was incomplete — these are already remapped on white.
+
+ 2. [RESOLVED — see #1]
+
+ 3. [LOW] svg_renderers.py:87, 89, 223–224
+    Hardcoded fill="#555" (text in sparklines).
+    NOT in _TEXT_COLOR_MAP. RGB = 85+85+85 = 255 (medium gray).
+    On white: adequate contrast (~4:1). No action needed.
+
+ 4. [LOW] svg_renderers.py:61, 67, 77, 79, 81, 85, etc.
+    Multiple strokes (#fb923c, #facc15, #f87171, etc.) are already in
+    _TEXT_COLOR_MAP. Confirmed OK.
+
+────────────────────────────────────────────────────────────────────────────── 
+B. BRAZILIAN NUMBER FORMATTING CONSISTENCY
+──────────────────────────────────────────────────────────────────────────────
+
+Helper: fmt_br_num(s: str) in risk_runtime.py converts en-US to pt-BR.
+
+FINDINGS:
+
+ 5. [MEDIUM] fund_renderers.py:191, 304, 306, 683, 740–745, 798, 858–860,
+    1140, 1446, 1554, 1562
+    Raw f-string numeric formatting WITHOUT fmt_br_num wrapping:
+      - Line 191: {gross*100/nav:.2f}%
+      - Line 304, 306: {vol_r:.2f}%, {ratio:.2f}x
+      - Line 683, 740–745: {pct:.0f}°, budget/stop display
+      - Lines 798, 858–860, 1140, 1446, 1554, 1562: misc floats/percents
+    Context: Fund-level Frontier, Distribution, Budget tables in Morning Call.
+    Risk: en-US comma (e.g., "1,234.5%") renders as-is — wrong for Brazilian
+    report. Most values <100 so comma won't appear, but budget/margin values
+    often exceed 1000 bps.
+    Severity: MEDIUM (PM-visible numbers, but inconsistently formatted).
+    Fix: wrap with _fmt_br_num(f"...{x:,.2f}...") or use helper consistently.
+
+ 6. [LOW] summary_renderers.py:84–85, 154–158, 219, 241, 277, etc.
+    Similar patterns in summary tables. Most are <100 or are log/static output.
+    Low frequency rendered to HTML. No action.
+
+────────────────────────────────────────────────────────────────────────────── 
+C. BRAND DRIFT ACROSS DARK / LIGHT / CREDIT / LIVE
+──────────────────────────────────────────────────────────────────────────────
+
+FINDINGS:
+
+ 7. [RESOLVED 2026-05-01] daily_monitor.html
+    Inline `rm-logo` SVG + "Risk Monitor" wordmark + "Powered by Galápagos"
+    footer added. pnl_server.py serves the logo via new
+    `/assets/galapagos.png` endpoint (decoded once at startup from
+    `credit/_galapagos_logo_b64.txt`).
+
+ 8. [LOW] generate_risk_report_meeting.py:79–100
+    Meeting CSS for logo/wordmark is defensive but correct. SVG is already
+    blue (rmGrad), wordmark color explicit (navy). No issues.
+
+ 9. [LOW] generate_credit_report.py:2137 + credit_config.py:17–38
+    Credit uses RISK_MONITOR_LOGO_SVG (same as main report) and POWERED_BY_FOOTER.
+    Brand is properly unified. Layout slightly different (eyebrow/title/meta)
+    but acceptable. No cosmetic drift.
+
+10. [LOW] Gradient ID "rmGrad" — no collision risk.
+    Each inline SVG has its own defs scope. OK.
+
+────────────────────────────────────────────────────────────────────────────── 
+D. SORT INDICATOR + CSV BUTTON COVERAGE
+──────────────────────────────────────────────────────────────────────────────
+
+Implementation: generate_risk_report.py:3304–3323.
+  - attachUniversalSort(): document delegation, OK.
+  - injectCsvButtons(): walks `section.card, .modal` selectors.
+
+FINDINGS:
+
+11. [RESOLVED 2026-05-01] vardod_renderers.py
+    Added `class="modal"` (and `modal-head` / `modal-title`) to vardod-modal.
+    `injectCsvButtons` selector now matches.
+
+12. [RESOLVED 2026-05-01] pmovers_renderers.py
+    Same fix as #11 — `class="modal"` added to pmovers-modal.
+
+13. [LOW] generate_credit_report.py
+    Credit has own table rendering, no attachUniversalSort/injectCsvButtons.
+    Intentional (separate pipeline). OK.
+
+────────────────────────────────────────────────────────────────────────────── 
+E. PRINT AND MOBILE OVERFLOW
+──────────────────────────────────────────────────────────────────────────────
+
+FINDINGS:
+
+14. [LOW] generate_risk_report.py:2105–2187
+    Print CSS well-defined (@page size: A4 landscape, print palette set).
+    No issues.
+
+15. [LOW] generate_risk_report.py:2200
+    max-width: 1280px on main, no min-width forcing horizontal scroll.
+
+16. [LOW] generate_risk_report_meeting.py:286–288
+    .card { overflow-x: auto } — defensive for wide tables. Good.
+
+17. [LOW] SVG charts use viewBox, not fixed pixel widths. No scroll risk.
+
+────────────────────────────────────────────────────────────────────────────── 
+PRIORITIZE BEFORE NEXT MEETING RUN
+──────────────────────────────────────────────────────────────────────────────
+
+1. Add Galápagos footer + Risk Monitor logo to daily_monitor.html (finding #7)
+   — glaring brand mismatch if screens shown together.
+
+2. Fix vardod / pmovers CSV button injection (findings #11–#12) — PMs will
+   notice missing CSV export in frequently-used modals.
+
+3. Verify svg_renderers.py #2d2d3d and #0b1220 hexes on meeting projector
+   (findings #1–#2) — may show poor contrast on white. Add to _BG_HEX_MAP if
+   remap pattern doesn't catch them.
+
+================================================================================
+END OF PART D
+================================================================================
