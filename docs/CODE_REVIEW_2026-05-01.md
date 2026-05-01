@@ -71,15 +71,22 @@ Severity rubric reminder:
   (`if len(sub)`, `if eligible.empty: raise`, `if len(series) < 20: continue`,
   `if not net.empty:`, `if not net_row.empty:`). Auditor saw the iloc[] pattern
   but missed the surrounding guards.
-- [ ] **MEDIUM** — `data_fetch.py:441, 541, 1775, 2710, 2716, 2784, 2790,
-  2824, 2852, 2858, 2893, 2943` and `expo_renderers.py:680, 1106-1107, 2248,
-  2502` and `fund_renderers.py:1851, 1989, 2048, 2181, 2390, 2482, 2488,
-  2602, 2634` and `generate_credit_report.py:134-192` and
-  `generate_monthly_review.py:194-375` — `.iloc[0]` / `.iloc[-1]` after only
-  `.empty` check, no len guard. Realistic risk is low (most sites are
-  `LIMIT 1` / `MAX(...)` queries) but fragile around holidays / race
-  conditions. Introduce a `_first_or_default(df, default)` helper, use
-  everywhere.
+- [x] ~~**MEDIUM** — wider iloc[] sweep across data_fetch / expo / fund /
+  credit / monthly_review~~ → **largely false positive 2026-05-01.**
+  Spot-checked 23 cited sites across 4 files (`expo_renderers.py:680,
+  1106-1107, 2248, 2502`; `fund_renderers.py:1851, 1989, 2048, 2181, 2390,
+  2482, 2488, 2602, 2634`; `evolution_diversification_card.py:169, 226,
+  333, 448, 496`; `generate_credit_report.py:138-165` in
+  `compute_period_returns`). **Every single one is already guarded** — by
+  `.empty` check, by `len() >= N` check, by ternary fallback, or by
+  derivation from a value list that guarantees the filter is non-empty.
+  The auditor flagged the iloc[] pattern but consistently missed the
+  surrounding guards. Pattern is: `if x.empty: return ...` immediately
+  above, or `f(...) if not x.empty else default` inline.
+  Sites in `data_fetch.py` (12 cited) deferred — file was in another
+  session's uncommitted staged set when this verification ran. Spot-check
+  on next session if you remain concerned. No `_first_or_default` helper
+  needed — existing patterns are correct.
 - [ ] **MEDIUM** — `data_fetch.py:2040` — empty df returned with shape
   mismatch (`df["var_pct"]=[]`). Return `pd.DataFrame(columns=[...])` with
   proper dtype.
