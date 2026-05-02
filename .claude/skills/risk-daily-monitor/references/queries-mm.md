@@ -1,6 +1,6 @@
 # Queries SQL — Multimercados
 
-Queries extraídas dos scripts `MACRO_TABLES_GRAPHS.py`, `SISTEMATICO_TABLES_GRAPHS.py` e `EVOLUTION_TABLES_GRAPHS.py`, padronizadas para a skill. Todas usam o padrão `glpg-data-fetch`.
+Queries extraídas dos scripts `MACRO_TABLES_GRAPHS.py`, `(legado, ver data_fetch.py)` e `EVOLUTION_TABLES_GRAPHS.py`, padronizadas para a skill. Todas usam o padrão `glpg_fetch.py`.
 
 ## Conexão padrão
 
@@ -38,7 +38,7 @@ def get_df(query):
 | Fundo | TRADING_DESK | TREE (principal) |
 |-------|--------------|------------------|
 | MACRO | `Galapagos Macro FIM` | `Main_Macro_Ativos` (há também `Main_Macro_Gestores`) |
-| SISTEMATICO | `Galapagos Quantitativo FIM` | *(verificar na primeira execução)* |
+| QUANT | `Galapagos Quantitativo FIM` | *(verificar na primeira execução)* |
 | EVOLUTION | `Galapagos Evolution FIC FIM CP` | `Main` |
 
 ## 1. AUM (NAV) do fundo
@@ -77,7 +77,7 @@ WHERE "VAL_DATE" = DATE '{dia_atual}'
 
 Normalização: `FUND_VAR_PCT = PARAMETRIC_VAR × -10000 / AUM`.
 
-### SISTEMATICO
+### QUANT
 ```sql
 SELECT *
 FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
@@ -85,7 +85,7 @@ WHERE "VAL_DATE" = DATE '{dia_atual}'
   AND "LEVEL" = 10
   AND "TRADING_DESK" = 'Galapagos Quantitativo FIM'
 ```
-(TREE: verificar — provável `Main` ou similar; olhar o `SISTEMATICO_TABLES_GRAPHS.py` na primeira execução)
+(TREE: verificar — provável `Main` ou similar; olhar o `(legado, ver data_fetch.py)` na primeira execução)
 
 ### EVOLUTION
 ```sql

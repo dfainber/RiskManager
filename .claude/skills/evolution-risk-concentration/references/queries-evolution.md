@@ -1,6 +1,6 @@
 # Queries SQL — Evolution Risk Concentration
 
-Todas extraídas do script `EVOLUTION_TABLES_GRAPHS.py`. Padrão de conexão em `glpg-data-fetch`.
+Todas extraídas do script `EVOLUTION_TABLES_GRAPHS.py`. Padrão de conexão em `glpg_fetch.py`.
 
 Parâmetro principal: `dia_atual` (string `YYYY-MM-DD`).
 

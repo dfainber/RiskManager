@@ -1,6 +1,6 @@
 # Queries SQL — IDKA Monitor
 
-Extraídas de `IDKA_TABLES_GRAPHS.py`. Padrão de conexão em `glpg-data-fetch`.
+Extraídas de `IDKA_TABLES_GRAPHS.py`. Padrão de conexão em `glpg_fetch.py`.
 
 Parâmetro principal: `dia_atual` (string `YYYY-MM-DD`).
 

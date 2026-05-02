@@ -137,7 +137,7 @@ for ativo in hist.columns:
 
 **Observação importante:** a coluna `W` desta tabela contém o **retorno simulado do book/portifólio**, não do ativo individual. Se o objetivo é ter o retorno do ativo subjacente (para responder "quanto o petróleo precisa cair?"), precisa de outra fonte:
 
-- Opção A: tabela de preços `PRICES_GLOBAL_EQUITIES` / `FUTURES_PRICES` / `SYNTHETIC_FUTURE` (via `glpg-data-fetch`)
+- Opção A: tabela de preços `PRICES_GLOBAL_EQUITIES` / `FUTURES_PRICES` / `SYNTHETIC_FUTURE` (via `glpg_fetch.py`)
 - Opção B: a própria `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION` mas em granularidade de ativo, se existir
 
 **A confirmar na primeira execução.** Se nenhuma das duas opções atender, adotar fallback: usar o retorno do BOOK como proxy (menos preciso mas consistente), e documentar a limitação.

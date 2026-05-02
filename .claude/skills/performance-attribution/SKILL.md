@@ -8,7 +8,7 @@ description: Atribuição de performance (PA) transversal aos fundos. MACRO, EVO
 Análise de atribuição de performance — transversal aos fundos da gestora. Complementa as skills de risco: onde elas respondem "onde está o risco?", esta responde "de onde veio o retorno?".
 
 **Dependências:**
-- `glpg-data-fetch` — conexão GLPG-DB01
+- `glpg_fetch.py` — conexão GLPG-DB01
 - `risk-manager` — convenções gerais
 - `rf-idka-monitor` — para o módulo IDKA
 
@@ -18,14 +18,18 @@ Análise de atribuição de performance — transversal aos fundos da gestora. C
 
 ### Regime A — PA existente (consumir)
 
-A tabela `q_models.REPORT_ALPHA_ATRIBUTION` já contém PA oficial para:
+A tabela `q_models.REPORT_ALPHA_ATRIBUTION` contém PA oficial para 7 fundos
+(estado em 2026-05-01, espelha `CLAUDE.md` §6 coluna PA):
 
-| Fundo | Nome oficial | Chave sugerida | Valor `FUNDO` na tabela |
-|-------|--------------|----------------|-------------------------|
-| MACRO | Galapagos Macro FIM | `MACRO` | ✅ `'MACRO'` confirmado |
-| EVOLUTION | Galapagos Evolution FIC FIM CP | `EVOLUTION` | ✅ `'EVOLUTION'` confirmado |
-| ALBATROZ | GALAPAGOS ALBATROZ FIRF LP | `GLPG_ALBA` | ⚠️ a confirmar |
-| QUANTITATIVO MACRO Q | (a confirmar) | (a confirmar) | ⚠️ a confirmar |
+| Fundo | Nome oficial | Valor `FUNDO` na tabela |
+|-------|--------------|-------------------------|
+| MACRO | Galapagos Macro FIM | `'MACRO'` ✅ |
+| EVOLUTION | Galapagos Evolution FIC FIM CP | `'EVOLUTION'` ✅ |
+| QUANT | Galapagos Quantitativo (era SISTEMATICO) | `'QUANT'` ✅ |
+| ALBATROZ | GALAPAGOS ALBATROZ FIRF LP | `'ALBATROZ'` ✅ |
+| MACRO_Q | Galapagos Global Macro Q | `'GLOBAL'` ✅ |
+| BALTRA | GALAPAGOS BALTRA FIRF LP | `'BALTRA'` ✅ |
+| FRONTIER | Galapagos Frontier (long-only) | `'GFA'` ✅ (PA via GFA) |
 
 Para esses, a skill **lê, consolida e apresenta**. Não reimplementa.
 
@@ -38,13 +42,13 @@ Os IDKAs são **benchmarked** e não têm PA oficial. A skill **constrói** a at
 
 ---
 
-## Pontos pendentes antes da operação completa
+## Implementação canônica
 
-1. **FUND_KEY_MAP** — usuário tem arquivo central (mencionado na sessão de 13/abr). Quando disponibilizado, integrar em `assets/fund-key-map.json`
-2. **Valor exato do campo `FUNDO`** na `REPORT_ALPHA_ATRIBUTION` para ALBATROZ e QUANT MACRO Q
-3. **Fonte Anbima do retorno IDKA oficial** — via `ECO_INDEX` ou outra via
-
-Enquanto pendentes, skill opera plenamente para MACRO e EVOLUTION, e marca os demais como "aguardando confirmação".
+A skill é a referência conceitual. A implementação live está em
+`pa_renderers.py` (montagem do card hierárquico, 540 linhas) consumindo
+`q_models.REPORT_ALPHA_ATRIBUTION` via `data_fetch.fetch_pa_full`.
+`_FUND_PA_KEY` em `risk_config.py` mapeia short-name (e.g. `MACRO_Q`) →
+`FUNDO` no DB (e.g. `'GLOBAL'`).
 
 ---
 

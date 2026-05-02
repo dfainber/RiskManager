@@ -29,14 +29,14 @@ Lista central de fundos monitorados. A primeira versão (MM apenas):
       "status": "ativo"
     },
     {
-      "ticker": "SISTEMATICO",
+      "ticker": "QUANT",
       "nome_completo": "Galapagos Quantitativo FIM",
       "familia": "multimercados",
       "subfamilia": "sistematico",
       "trading_desk": "Galapagos Quantitativo FIM",
       "tree_principal": "PREENCHER_NA_PRIMEIRA_EXECUCAO",
       "books_ativos": ["PREENCHER_NA_PRIMEIRA_EXECUCAO"],
-      "mandato_path": "mandato-SISTEMATICO.json",
+      "mandato_path": "mandato-QUANT.json",
       "html_path": "F:\\Bloomberg\\Quant\\Rotinas\\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\\dashboard_sistematico_YYYY-MM-DD.html",
       "status": "ativo"
     },
@@ -104,11 +104,11 @@ Ver `risk-manager/references/mandato-estrutura.md` para o schema completo. Abaix
 }
 ```
 
-### `mandato-SISTEMATICO.json` (esqueleto)
+### `mandato-QUANT.json` (esqueleto)
 
 ```json
 {
-  "fundo": "SISTEMATICO",
+  "fundo": "QUANT",
   "nome_completo": "Galapagos Quantitativo FIM",
   "familia": "multimercados",
   "subfamilia": "sistematico",
@@ -191,7 +191,7 @@ Todos os arquivos de configuração em uma pasta dedicada, fora do path da skill
 ├── fund-registry.json
 ├── mandatos/
 │   ├── mandato-MACRO.json
-│   ├── mandato-SISTEMATICO.json
+│   ├── mandato-QUANT.json
 │   └── mandato-EVOLUTION.json
 └── snapshots/
     └── YYYY-MM-DD_mm.json

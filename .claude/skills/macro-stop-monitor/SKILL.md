@@ -8,7 +8,7 @@ description: Monitora orçamento de perda (stop) mensal/anual por PM (CI, LF, JD
 Monitoramento diário do **orçamento de perda por gestor (PM)** dentro do `Galapagos Macro FIM`. Cada PM tem um stop individual com mecânica própria (base + carrego), e o objetivo é ver o consumo do stop em tempo útil para discussão no Morning Call.
 
 **Dependência conceitual:** `risk-manager` (semáforo, taxonomia).  
-**Dependência técnica:** `glpg-data-fetch` (padrão de conexão ao GLPG-DB01).  
+**Dependência técnica:** `glpg_fetch.py` (padrão de conexão ao GLPG-DB01).  
 **Escopo:** exclusivamente o MACRO. Outros fundos não usam esta mecânica.
 
 ## PMs ativos
@@ -63,13 +63,14 @@ Valores-base, extraídos do arquivo `Stop.xlsx` (planilha fonte da gestão):
 - **Carrego negativo em sequência:** parte da base anterior se já menor que stop original; mês positivo volta para 63
 - **First loss sobre base superior ao stop original:** adicional positivo desconta 25%; depois padrão 50% e 100% sobre o que varar
 
-**⚠️ A regra de carrego está em revisão.** Esta skill documenta a regra conforme a planilha atual, mas a lógica de cálculo automático do carrego **não é executada** até que a regra seja finalizada. Enquanto isso, a skill reporta:
-- PnL do mês e do ano por PM
-- Stop base vigente (63/252)
-- Utilização do stop base (sem carrego aplicado)
-- Flag "regra de carrego pendente" em todos os cálculos sujeitos
-
-Quando a regra for travada, implementar em `references/carrego-rules.md` e na função `calcular_stop_vigente()`.
+**Status (2026-05-01):** a regra de carrego foi travada e está implementada em
+`fund_renderers.carry_step` (Risk_Monitor). Detalhes em
+`memory/project_rule_macro_carry_step.md` e em `docs/CHANGELOG.md`. A skill
+reporta:
+- PnL do mês e do ano por PM (de `q_models.REPORT_ALPHA_ATRIBUTION`)
+- Stop vigente já com carrego aplicado (3 camadas: extra 25% / base 50% / excedente 100%, cap min(B_t, 63))
+- Utilização do stop vigente
+- Override JSON (caso configurado) substitui o cálculo automático
 
 ## Workflow
 
@@ -234,7 +235,7 @@ Consumido pela `risk-morning-call` no bloco de MACRO.
 
 - **`risk-manager`** — taxonomia geral.
 - **`risk-daily-monitor`** — monitora fundo agregado; esta skill é complementar, específica para o MACRO em nível PM.
-- **`glpg-data-fetch`** — padrão de conexão ao banco.
+- **`glpg_fetch.py`** — padrão de conexão ao banco.
 - **`risk-morning-call`** (a criar) — agrega o output desta skill no briefing do dia.
 
 ## Roadmap

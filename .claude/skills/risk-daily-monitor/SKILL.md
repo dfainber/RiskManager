@@ -10,14 +10,18 @@ Rotina diária de monitoramento para os três fundos MM ativos:
 | Subfamília | TRADING_DESK | Descrição |
 |-----------|--------------|-----------|
 | MACRO | `Galapagos Macro FIM` | Multimercado macro discricionário |
-| QUANT | `Galapagos Quantitativo FIM` | Multimercado sistemático/quantitativo (era `SISTEMATICO` no design original — renomeado p/ bater com o nome do banco) |
+| QUANT | `Galapagos Quantitativo FIM` | Multimercado sistemático/quantitativo. Canonical name é `QUANT`. HS portfolio key continua `'SIST'` em `PORTIFOLIO_DAILY_HISTORICAL_SIMULATION` (artefato de história) |
 | EVOLUTION | `Galapagos Evolution FIC FIM CP` | Guarda-chuva multi-estratégia (FRONTIER, MACRO, CREDITO, CAIXA) |
 
-**Dependência conceitual:** `risk-manager` (taxonomia, semáforo, schema de mandato). **Dependência técnica:** `glpg-data-fetch` (conexão ao GLPG-DB01 via `GLPG_DBAPI`).
+**Dependência conceitual:** `risk-manager` (taxonomia, semáforo, schema de mandato). **Dependência técnica:** `glpg_fetch.py` (conexão ao GLPG-DB01 via `GLPG_DBAPI`).
 
 ## Princípio: ler do banco, não do HTML
 
-Os scripts existentes em `F:\Bloomberg\Quant\Rotinas\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\` (`MACRO_TABLES_GRAPHS.py`, `SISTEMATICO_TABLES_GRAPHS.py`, `EVOLUTION_TABLES_GRAPHS.py`) geram dashboards HTML via Panel, mas **as queries SQL por trás deles são a fonte canônica**. Esta skill replica aquelas queries, não parseia o HTML.
+A fonte canônica das queries é `data_fetch.py` no Risk Monitor (módulo Python
+que centraliza ~94 fetchers contra GLPG-DB01). Os scripts antigos em
+`F:\Bloomberg\Quant\Rotinas\RELATORIO_EXPO_PNL_AUTOMATICO_HTML\` (Panel-based
+dashboards) ainda existem mas não são mais a referência — `data_fetch.py` os
+substitui em produção.
 
 Vantagens:
 - Não depende de o dashboard ter sido gerado no dia
@@ -39,7 +43,7 @@ Os HTMLs continuam sendo úteis como **referência visual** para o usuário, mas
 
 Para cada fundo do registro, executar o bloco de queries específico. Ver queries completas em `references/queries-mm.md`. Resumo:
 
-**Métricas universais (MACRO, SISTEMATICO, EVOLUTION):**
+**Métricas universais (MACRO, QUANT, EVOLUTION):**
 
 | Métrica | Fonte | Query-chave |
 |---------|-------|-------------|
@@ -53,7 +57,7 @@ Para cada fundo do registro, executar o bloco de queries específico. Ver querie
 **Campos `BOOK` conhecidos:**
 
 - **MACRO:** `RF-BZ, RF-EM, RF-DM, FX-BRL, FX-EM, FX-DM, RV-BZ, RV-EM, RV-DM, COMMODITIES, P-Metals, ALL` (ativos); `CI, LF, JD, RJ, ALL` (gestores)
-- **SISTEMATICO:** (a confirmar na primeira execução — provavelmente similar a MACRO)
+- **QUANT:** (a confirmar na primeira execução — provavelmente similar a MACRO)
 - **EVOLUTION:** `FRONTIER, EVO_STRAT, MACRO, CREDITO, CAIXA` (categorias de book via função `classificar_book`)
 
 ### Passo 3 — Normalização
@@ -175,5 +179,5 @@ A lógica core da skill não muda — só entra novo material em referências e 
 ## Skills relacionadas
 
 - **`risk-manager`** (mãe) — taxonomia, semáforo, schema de mandato.
-- **`glpg-data-fetch`** — padrão de conexão ao GLPG-DB01.
+- **`glpg_fetch.py`** — padrão de conexão ao GLPG-DB01.
 - **`risk-morning-call`** (a criar) — consome snapshot desta skill para gerar dashboard visual + resumo executivo.

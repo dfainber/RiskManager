@@ -20,7 +20,7 @@ O desafio do RF benchmarked é **diferente** do MM: não é limitar perda absolu
 
 **Dependências:**
 - `risk-manager` — taxonomia, semáforo
-- `glpg-data-fetch` — conexão GLPG-DB01
+- `glpg_fetch.py` — conexão GLPG-DB01
 - Biblioteca `GLPG_Public_Bonds` (PB.NTNB, PB.LFT) — cálculo de DV01 por instrumento
 
 ---

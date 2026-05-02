@@ -21,7 +21,7 @@ Esta skill existe para **detectar esse cenário antes que ele se realize**. Trê
 
 **Dependências:**
 - `risk-manager` — taxonomia geral
-- `glpg-data-fetch` — conexão GLPG-DB01
+- `glpg_fetch.py` — conexão GLPG-DB01
 - Queries base em `risk-daily-monitor/references/queries-mm.md`
 
 ---

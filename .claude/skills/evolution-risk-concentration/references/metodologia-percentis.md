@@ -141,4 +141,4 @@ Exemplo de estrutura:
 
 - **Mudança de AUM não deve afetar o percentil de VaR em bps** — porque já está normalizado por AUM. Mas pode haver ruído se AUM teve mudança abrupta (aporte grande, resgate grande). Monitorar.
 - **Mudança de composição do fundo** — se a gestão muda fundamentalmente a política (ex.: corta CREDITO pela metade), percentis históricos ficam enviesados por meses. Documentar mudanças estruturais na nota do relatório.
-- **Calendário de dias úteis** — usar sempre calendário Anbima (`Get_AnbimaCalendar()` do `glpg-data-fetch`), nunca calendário comercial genérico.
+- **Calendário de dias úteis** — usar sempre calendário Anbima (`Get_AnbimaCalendar()` do `glpg_fetch.py`), nunca calendário comercial genérico.

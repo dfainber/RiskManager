@@ -15,7 +15,7 @@ Relatório analítico do `Galapagos Macro FIM` para o Morning Call. Quatro camad
 **Dependências:**
 - `risk-manager` — taxonomia, convenções
 - `macro-stop-monitor` — orçamento por PM
-- `glpg-data-fetch` — padrão de conexão GLPG-DB01
+- `glpg_fetch.py` — padrão de conexão GLPG-DB01
 - Queries canônicas em `risk-daily-monitor/references/queries-mm.md`
 
 **Não é monitor.** Esta skill não emite breach nem aciona semáforo para gestão. É leitura analítica. O semáforo vive na `risk-daily-monitor`.
