@@ -43,6 +43,7 @@ from metrics import compute_distribution_stats, compute_pa_outliers, compute_top
 from pa_renderers import _pa_filter_alpha, _pa_render_name
 from db_helpers import _prev_bday
 from evo_renderers import build_evolution_diversification_section
+from briefing_polish import polish_commentary
 
 
 def build_albatroz_risk_budget(df_pa: pd.DataFrame) -> str:
@@ -2592,6 +2593,11 @@ def _build_fund_mini_briefing(
         commentary_parts.append("Posicionamento: " + "; ".join(pos_notes) + ".")
 
     commentary = " ".join(commentary_parts)
+
+    # LLM-as-editor polish (no-op unless USE_LLM_BRIEFING_POLISH=1).
+    # Numbers + facts come from the deterministic builder above; Haiku 4.5
+    # only rephrases prose. Falls back to deterministic on any failure.
+    commentary = polish_commentary(commentary, short)
 
     return f"""
     <section class="card brief-card">

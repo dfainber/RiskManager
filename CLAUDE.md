@@ -57,6 +57,8 @@ Skills são **complementares, não redundantes**. Não consolidar sem discutir.
 | `evo_renderers.py`   | 4 camadas Evolution + Camada 4 (Bull Market Alignment)       |
 | `expo_renderers.py`  | 8 `build_*_exposure_section`                                 |
 | `fund_renderers.py`  | `build_stop_section`, briefings, distribuição, vol regime    |
+| `section_assembly.py`| `build_secondary_sections` — agrega tudo que não é Risk Monitor card (MACRO+dist+vol+SN+PA+expo+credit+RF+FRONTIER+análise) |
+| `briefing_polish.py` | LLM-as-editor (Haiku 4.5) para `commentary` do briefing — opt-in via `USE_LLM_BRIEFING_POLISH=1` |
 | `html_assets.py`     | `UEXPO_JS` blob                                              |
 
 ### 3a. Variantes de saída — DUAS VERSÕES OBRIGATÓRIAS
@@ -150,7 +152,7 @@ IDKA 10Y (soft 1.00/hard 1.50 daily), NAZCA (soft 2.0/hard 3.0 — hidden). Agua
 | Barbacena | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
 | Nazca     | ✅       | ✅           | ✅           | ✅ 4 modos      | ✅      | ✅  | ✅      | ✅            |
 
-Crédito tab no main report cobre **BALTRA + EVOLUTION** via look-through `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE`. MACRO_Q **não** tem look-through Albatroz — fora do escopo do tab. ALBATROZ tem CRIs/debentures direto (ainda não wired no tab Crédito do main report).
+Crédito tab no main report cobre **BALTRA + EVOLUTION** via look-through `LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE`. MACRO_Q **não** tem look-through Albatroz — fora do escopo do tab. **ALBATROZ é rates-only (sovereign) — não tem crédito; fora do escopo do tab Crédito.**
 
 ---
 
@@ -194,10 +196,10 @@ UI tweaks na sessão 2026-05-02:
 
 Próximas (ainda abertas):
 
-6. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
-7. **`build_html` extraction batch 4** (§1.5 continued) — ~476L restantes em build_html. Resíduo: variable unpacking from ReportData (~30L), section-list construction loops (~230L), orchestration glue. Diminishing returns — mostly per-fund glue without natural seams.
+6. **LLM briefings** — wrapper LLM-as-editor entregue 2026-05-02 (late+1) em `briefing_polish.py::polish_commentary`. Pattern: rule-based gera `commentary` (números + fatos = source of truth) → Haiku 4.5 só revisa o texto (fluidez/concisão/ordem). Opt-in via `USE_LLM_BRIEFING_POLISH=1` (+ `ANTHROPIC_API_KEY`). Guardrails: preserva tags HTML, rejeita output vazio / >1.2× length / com números novos não presentes no input. System prompt cacheado (`cache_control: ephemeral`) — abaixo de 4096 tokens cache não dispara, sem custo. Pendente: testar live com API key em produção, decidir se estender pra `headline` e `bullets`, monitorar custo (~13 fundos × ~500 tokens / report ≈ pennies).
+7. ~~**`build_html` extraction batch 4**~~ → **DONE 2026-05-02 (late+1)**. Section-list construction (~230L, MACRO+dist+vol+SN+PA+expo+credit+RF+FRONTIER+análise) extraída pra novo módulo `section_assembly.py::build_secondary_sections`. build_html: 475 → 232L (-51%). Cumulative since session 6: 1214 → 232L (-81%). Self-vs-self drift idêntico ao baseline (apenas -0.0/0.0 float-zero noise em PA payload).
 8. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
-9. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
+9. ~~**Unit tests para `svg_renderers` + `metrics`**~~ → **DONE 2026-05-02 (late+1)**. `tests/test_svg_renderers.py` (28 testes — sparkline, range_bar, stop_bar, range_line, evo_spark, multi_line) + `tests/test_metrics.py` (26 testes — pm_hs_var, vol_regime, top_windows, distribution_stats, pa_outliers). 54 testes, todos green em pytest 9.0.3 / Python 3.12.13. DB-touching helpers (`compute_frontier_bvar_hs`, `compute_idka_bvar_hs`) intencionalmente fora de escopo.
 10. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
 11. **Aesthetic carryovers ainda abertos**: §3.6 (convention footnote dedup 9× → 1 + tooltips), §3.8 (meeting-port hardcoded hex sweep + extend `_BG_HEX_MAP`).
 12. **Credit PA do zero** (parking lot) — Sea Lion / Iguana / Nazca / Pelican / Dragon / Barbacena não estão em REPORT_ALPHA_ATRIBUTION. Custom: carry indexer + spread accrual + spread Δ via curva ANBIMA por rating.
