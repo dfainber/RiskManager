@@ -168,17 +168,32 @@ Fila priorizada (fazer nesta ordem):
 4. ~~**Skill-refresh sprint**~~ → **DONE 2026-05-01 session 3** (commit 9c886f5). 5 SKILL.md refreshed + 14 `glpg-data-fetch` references corrected.
 5. ~~**Day-3 hygiene** (vacuous comments, unused imports, NaN/zero edges, m12 boundary, docstrings, small renames)~~ → **DONE 2026-05-01 session 3** (commits 4fee511 + 84f465d + 777dc94).
 
+Closed na sessão 2026-05-02 (commits 0cd1674 + bb14a7a + dcac9de):
+
+- ~~**§4.3 glpg_fetch.py env-only (security)**~~ — env-only com fail-fast no import; sem fallback de host/user/dbname.
+- ~~**§2.13h desk-name centralization**~~ — `_MACRO_DESK` / `_FRONTIER_DESK` / etc. em `risk_config.py`; sweep em `data_fetch.py`, `db_helpers.py`, `pm_vol_card.py`, `generate_risk_report.py`.
+- ~~**§3.3c issuer override**~~ — Cruz hardcode → `credit/issuer_overrides.json` com loader genérico.
+- ~~**§2.11 iloc cast hardening**~~ — `pd.to_numeric(...).fillna(0.0).iloc[0]` em vez de `float(iloc[0])`.
+- ~~**§2.13a VaR DoD nav_d1 (RPM)**~~ — `_var_dod_rpm` divide D-1 contributions por D-1 NAV.
+- ~~**§1.6 main() split**~~ — 540 → 8 linhas. Helpers `_fetch_all_data` / `_build_report_data` / `_write_output`.
+- ~~**§2.13f nav_d1 propagation**~~ — Plumbed end-to-end: ReportData (novos `quant_expo_nav_d1`/`evo_expo_nav_d1`), `build_quant_exposure_section` + `build_evolution_exposure_section`, `_build_expo_unified_table`.
+- ~~**§1.5 build_html extraction batch 1**~~ — 1214 → 690 linhas (-43%). 5 helpers: `_build_pa_alerts_html`, `_build_summary_rows_html`+`_build_bench_rows_html`, `_build_factor_matrix`, `_build_agg_rows`, `_build_house_rows`.
+
+UI tweaks na sessão 2026-05-02:
+- Removida footer row "Total NAV-pond. (não-div.)" do "Risco VaR e BVaR por fundo".
+- Vol Regime card pula linhas vazias (não renderiza row de "—").
+
 Próximas (ainda abertas):
 
 6. **Briefing Executivo headline priority** (§1.2) — `max(margem_inverse, util_VaR, |Δ VaR|)`; reordenar "Atenção" ABOVE "o que mudou".
 7. **Status DIA fallback when PA on D-1** (§1.3) — render "+0.04% (D-1)" instead of silent "—".
 8. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
-9. **`build_html` mega-function** (`generate_risk_report.py` ~2k linhas restantes) — extract tab-switching + fund section builders. Em progresso (commits c8a93a6 / 7bb06fe / d98dae1 já extraíram CSS/JS + per-fund + pnl/peers section shells). Sessão dedicada para o restante.
-10. **`main()` 540 linhas** (§1.6) — split em `_fetch_all_data` / `_build_report_data` / `_write_output`.
-11. **VaR DoD NAV-axis** (§2.13a / §2.13b / §2.13f) — D-1 contributions divided by D-0 NAV; precisa propagação de `nav_d1` parameter.
-12. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
-13. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
-14. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
+9. **`build_html` extraction batch 2** (§1.5 continued) — ~690L restantes em build_html: tab-section assembly loop (~250L), executive briefing composition, peers/pnl/market tab blocks, master HTML template f-string.
+10. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
+11. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
+12. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
+13. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
+14. **Holiday-aware default date** — bare `python generate_risk_report.py` em pós-feriado roda silenciosamente em D-1 quebrado. Fix de longo prazo: walk back from today usando holidays-aware calendar.
 
 **Backlog primário agora**: `docs/CODE_REVIEW_2026-05-01_session2.md` (com STATUS atualizado no topo na sessão 3). A `docs/CODE_REVIEW_2026-05-01.md` original tem todos itens fechados (PA-FX-split + §2d) ou cross-listados na nova review. Roadmap analítico continua em `memory/project_todo_risk_analytics_roadmap.md`.
 
