@@ -170,7 +170,7 @@ def _build_tree_table(df: pd.DataFrame) -> str:
                           .groupby("LIVRO", as_index=False)[cols].sum()
                           .sort_values("ytd_bps", key=lambda s: s.abs(), ascending=False))
                 for _, lv in lv_tot.iterrows():
-                    liv = lv["LIVRO"] or "—"
+                    liv = "—" if pd.isna(lv["LIVRO"]) else (lv["LIVRO"] or "—")
                     liv_id = f"{grp_id}__L_{(liv).replace(' ', '_')}"
                     rows_html.append(
                         f'<tr class="lvl3" data-row-parent="{grp_id}" data-row-id="{liv_id}" '

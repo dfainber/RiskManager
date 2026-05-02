@@ -103,7 +103,7 @@ def _build_default_tree(df: pd.DataFrame, table_id: str) -> str:
     lv_tot = lv_tot.sort_values(["_pin", "_abs12m"], ascending=[True, False])
 
     for _, lr in lv_tot.iterrows():
-        liv = lr["LIVRO"] or "—"
+        liv = "—" if pd.isna(lr["LIVRO"]) else (lr["LIVRO"] or "—")
         lv_id = "L_" + str(liv).replace(" ", "_").replace("/", "_").replace("&", "and")
         rows.append(_lvl0_row(lv_id, _esc(liv), lr, "#e6e6e6"))
 
@@ -197,7 +197,7 @@ def _render_livro_subtree(df_asset: pd.DataFrame, lr: pd.Series,
                           cols: list[str]) -> list[str]:
     """Render LIVRO → CLASSE_NEW → GRUPO_NEW → PRODUCT, asset-only."""
     out: list[str] = []
-    liv = lr["LIVRO"] or "—"
+    liv = "—" if pd.isna(lr["LIVRO"]) else (lr["LIVRO"] or "—")
     lv_id = "AL_" + str(liv).replace(" ", "_").replace("/", "_").replace("&", "and")
     out.append(_lvl0_row(lv_id, _esc(liv), lr, "#e6e6e6"))
 

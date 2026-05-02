@@ -1156,7 +1156,8 @@ def build_html(
         tab_btns += f'<button class="tab-btn" onclick="showTab(\'{tab_id}\')">{lbl}</button>'
         tab_divs += f'<div id="tab-{tab_id}" class="tab-content">{content}</div>'
 
-    js = """
+    # raw string: avoids SyntaxWarning for the JS regex `\s` at line ~1171.
+    js = r"""
     function showTab(id) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));

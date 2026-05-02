@@ -13,25 +13,25 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from glpg_fetch import read_sql
-from risk_runtime import DATA_STR, DATA, DATE_1Y, DATE_60D
+from risk_runtime import DATA_STR, DATE_1Y
 from risk_config import (
     ALL_FUNDS, FUNDS, RAW_FUNDS, IDKA_FUNDS, RF_BENCH_FUNDS,
     _PM_LIVRO, _ETF_TO_LIST,
-    _EXCL_PRIM, _RATE_PRIM,
-    _QUANT_BOOK_FACTOR, _QUANT_VAR_BOOK_FACTOR,
+    _EXCL_PRIM,
+    _QUANT_BOOK_FACTOR,
     _RF_FACTOR_MAP, _RF_BUCKETS,
     _EVO_LIVRO_EXTRA_STRATEGY,
     _FUND_DESK_FOR_EXPO,
     _PRODCLASS_TO_FACTOR,
 )
-from db_helpers import _parse_rf, _parse_pm, _prev_bday, _NAV_CACHE, _latest_nav, _require_nav
+from db_helpers import _parse_rf, _parse_pm, _prev_bday, _latest_nav, _require_nav
 
 
 def fetch_pm_pnl_history() -> pd.DataFrame:

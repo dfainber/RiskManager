@@ -1,4 +1,4 @@
-"""Standalone card: realized vol per PM + utilização do orçamento de risco.
+r"""Standalone card: realized vol per PM + utilização do orçamento de risco.
 
 Replica a lógica da aba VOl_PM de F:\Bloomberg\Pot\Relatorio_Performance_Atr.xlsb.xlsx
 e extende para todos os PMs MACRO (CI, LF, JD, RJ).

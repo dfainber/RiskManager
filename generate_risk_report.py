@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import date
 from typing import Optional
@@ -37,7 +37,6 @@ from metrics import (
     compute_pm_hs_var,
     compute_frontier_bvar_hs,
     compute_portfolio_vol_regime,
-    compute_pa_outliers,
 )
 from pa_renderers import _pa_render_name, _pa_filter_alpha, build_pa_section_hier
 from evo_renderers import build_evolution_diversification_section
@@ -4949,7 +4948,6 @@ window.refreshRptPnl = function() {{
 def main():  # noqa: C901
     import time
     from concurrent.futures import ThreadPoolExecutor
-    from glpg_fetch import read_sql
 
     t0 = time.time()
     print(f"Fetching data for {DATA_STR}...")

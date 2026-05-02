@@ -23,23 +23,18 @@ from data_fetch.
 """
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pandas as pd
 
-from risk_runtime import DATA_STR, fmt_br_num as _fmt_br_num
+from risk_runtime import fmt_br_num as _fmt_br_num
 from risk_config import (
     _RF_ORDER, _RF_BUCKETS,
     _PM_LIVRO,
     _QUANT_FACTOR_ORDER, _QUANT_VAR_BOOK_FACTOR,
     _EVO_STRATEGY_ORDER,
-    FUND_LABELS,
 )
 from html_assets import UEXPO_JS as _UEXPO_JS
-from svg_renderers import make_sparkline, range_line_svg, stop_bar_svg
-from metrics import compute_distribution_stats
-from data_fetch import fetch_rf_exposure_map, _compute_idka_bench_replication
+from data_fetch import _compute_idka_bench_replication
 from vardod_renderers import build_vardod_trigger
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 # Galápagos logo as base64 — extracted from generate_risk_report.py so the
 # credit report uses the exact same brand mark in the "Powered by" footer.
 _LOGO_B64_PATH = Path(__file__).resolve().parent / "_galapagos_logo_b64.txt"
-GALAPAGOS_LOGO_B64 = _LOGO_B64_PATH.read_text().strip() if _LOGO_B64_PATH.exists() else ""
+GALAPAGOS_LOGO_B64 = _LOGO_B64_PATH.read_text(encoding="ascii").strip() if _LOGO_B64_PATH.exists() else ""
 
 # Inline SVG for the Risk Monitor brand mark (used at the top of every report).
 # Same chart-icon used in generate_risk_report.py for visual consistency.

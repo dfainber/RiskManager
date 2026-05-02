@@ -97,7 +97,7 @@ def _build_tree_table(df: pd.DataFrame) -> str:
     lv_tot = lv_tot.sort_values(["_pin", "_abs12m"], ascending=[True, False])
 
     for _, lr in lv_tot.iterrows():
-        liv = lr["LIVRO"] or "—"
+        liv = "—" if pd.isna(lr["LIVRO"]) else (lr["LIVRO"] or "—")
         lv_id = "L_" + str(liv).replace(" ", "_").replace("/", "_").replace("&", "and")
         rows_html.append(
             f'<tr class="lvl0" data-row-id="{lv_id}" onclick="paToggle(this)" '
