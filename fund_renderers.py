@@ -2327,15 +2327,25 @@ def _build_fund_mini_briefing(
         headline_parts.append(
             f'🚨 <b>VaR {_mx:.0f} bps</b> > 1,5× budget MTD ({_rem:.0f} bps)'
         )
-    if util is not None and util >= 85:
-        headline_parts.append(f'🔴 <b>{util:.0f}% do soft limit</b>')
-    elif dvar_bps is not None and abs(dvar_bps) >= 10:
+    # Thresholds tightened 2026-05-01 session 2 per review §1.1: prior gates
+    # (util≥85, |Δ VaR|≥10, |dia|≥5) let "tranquilo" boilerplate render on funds
+    # that materially moved (8 of 19 cards). New gates: util≥70 (= UTIL_WARN),
+    # |Δ VaR|≥5, |dia|≥3, plus MTD≥25 bps fallback so a chronically drifting
+    # fund (FRONTIER YTD −10.83%) doesn't read as "tranquilo" on a small-DIA day.
+    if util is not None and util >= 70:
+        sev_icon = "🔴" if util >= 85 else "🟡"
+        headline_parts.append(f'{sev_icon} <b>{util:.0f}% do soft limit</b>')
+    elif dvar_bps is not None and abs(dvar_bps) >= 5:
         direction = "subiu" if dvar_bps > 0 else "caiu"
         headline_parts.append(f'VaR {direction} <b>{abs(dvar_bps):.0f} bps</b> vs D-1')
-    if dia_bps is not None and abs(dia_bps) >= 5:
+    if dia_bps is not None and abs(dia_bps) >= 3:
         sign = "+" if dia_bps > 0 else ""
         col = "var(--up)" if dia_bps > 0 else "var(--down)"
         headline_parts.append(f'alpha do dia <b style="color:{col}">{sign}{dia_bps/100:.2f}%</b>')
+    if not headline_parts and mtd_bps is not None and abs(mtd_bps) >= 25:
+        sign = "+" if mtd_bps > 0 else ""
+        col = "var(--up)" if mtd_bps > 0 else "var(--down)"
+        headline_parts.append(f'MTD <b style="color:{col}">{sign}{mtd_bps/100:.2f}%</b>')
     if not headline_parts:
         headline_parts.append("dia tranquilo — sem eventos materiais")
     headline = " · ".join(headline_parts)
