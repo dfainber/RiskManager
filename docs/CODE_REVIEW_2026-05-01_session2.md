@@ -11,6 +11,21 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 8 — briefing headline + holiday-aware default)
+
+Closes §1.2 (Briefing Executivo headline priority) and the parking-lot
+"Holiday-aware default date" item from CLAUDE.md fila #14. Both shipped in a
+single commit; smoke test passes on auto-picked default-date run (Labor Day
+correctly skipped — Sat 2026-05-02 → Thu 2026-04-30).
+
+### Session 8 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 1.2 | Briefing headline now uses `max(margem_inverse, util_VaR, \|Δ VaR\|)` priority. PA hit ≥1% NAV stays as override. Triggers per-kind: util≥85% / \|ΔVaR\|≥10 bps / margem<25 bps. | ✅ DONE | [`fund_renderers.py`](../fund_renderers.py#L2637) |
+| 1.2 | "Atenção" relocated above the `brief-grid` (full-width strip when items exist; hidden when empty). | ✅ DONE | [`fund_renderers.py`](../fund_renderers.py#L2876) |
+| fila-14 | `risk_runtime._resolve_default_data_date` walks back from today's calendar skipping weekends + `_BR_HOLIDAYS` (hardcoded 2024-2027 set; risk_runtime stays DB-free). | ✅ DONE | [`risk_runtime.py`](../risk_runtime.py#L26) |
+
 ## STATUS (2026-05-02, session 7 — build_html extraction batch 2)
 
 Closes §1.5 further. build_html went from **690 → 540 lines** (additional
@@ -114,7 +129,6 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 | 4.6 | PA-FX-split docstring slim-down (4 scripts) | ✅ DONE | `4fee511` |
 
 ### Still open (deferred — bigger sessions)
-- §1.2 Briefing Executivo headline priority (UX — needs design call)
 - §1.3 Status DIA fallback when PA on D-1 (UX)
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
 - §1.5 `build_html` extraction — **in progress**, 524L extracted in session 6 + 180L extracted in session 7; ~540L remaining (master HTML template f-string, body composition, orchestration glue)

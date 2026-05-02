@@ -2659,15 +2659,37 @@ def _build_executive_briefing(
                 f'{_icon} <b>{_r0["PRODUCT"]}</b> ({_fund_lbl}) contribuiu '
                 f'<span class="mono" style="color:{_col}">{_bps0/100:+.2f}%</span> do NAV hoje{_extra}.'
             )
-    # Rule 1: any fund ≥85% util VaR → flag
-    if not headline and utils and utils[0][2] >= 85:
-        s, lbl, u, v, soft = utils[0]
-        headline = f'🔴 <b>{lbl}</b> em <span class="mono">{u:.0f}%</span> do soft limit VaR (<span class="mono">{v:.2f}%</span> vs soft {soft:.2f}%).'
-    # Rule 2: Δ VaR material
-    if not headline and dvar_list and abs(dvar_list[0][1]) >= 10:
-        s, dv, lbl, v_today = dvar_list[0]
-        direction = "subiu" if dv > 0 else "caiu"
-        headline = f'<b>{lbl}</b> VaR {direction} <span class="mono">{abs(dv):.0f} bps</span> vs D-1 (agora <span class="mono">{v_today:.2f}%</span>).'
+    # Rule 1: pick the most urgent of (margem_inverse, util_VaR, |Δ VaR|).
+    # Each kind has its own trigger; if multiple trigger, the highest-urgency
+    # score wins. Per §1.2 of the code review: a 9 bps margem on an active PM
+    # outranks a 14 bps Δ VaR on a comfortable-util IDKA.
+    if not headline:
+        _STOP_BASE_BPS  = 63.0   # MACRO monthly base
+        _MARGEM_TRIGGER = 25.0   # < 25 bps margem → headline-worthy (one-bad-day risk)
+        _UTIL_TRIGGER   = 85.0   # ≥ 85% util VaR → headline
+        _DVAR_TRIGGER   = 10.0   # ≥ 10 bps Δ VaR vs D-1 → headline
+        _candidates = []  # (score, kind, payload)
+        if utils and utils[0][2] >= _UTIL_TRIGGER:
+            _candidates.append((utils[0][2], "util", utils[0]))
+        if dvar_list and abs(dvar_list[0][1]) >= _DVAR_TRIGGER:
+            _candidates.append((abs(dvar_list[0][1]), "dvar", dvar_list[0]))
+        if pm_margem:
+            _pm_low, _m_val = min(pm_margem.items(), key=lambda x: x[1])
+            if _m_val < _MARGEM_TRIGGER:
+                _candidates.append((_STOP_BASE_BPS - _m_val, "marg", (_pm_low, _m_val)))
+        if _candidates:
+            _candidates.sort(key=lambda x: x[0], reverse=True)
+            _, _kind, _payload = _candidates[0]
+            if _kind == "util":
+                s, lbl, u, v, soft = _payload
+                headline = f'🔴 <b>{lbl}</b> em <span class="mono">{u:.0f}%</span> do soft limit VaR (<span class="mono">{v:.2f}%</span> vs soft {soft:.2f}%).'
+            elif _kind == "dvar":
+                s, dv, lbl, v_today = _payload
+                direction = "subiu" if dv > 0 else "caiu"
+                headline = f'<b>{lbl}</b> VaR {direction} <span class="mono">{abs(dv):.0f} bps</span> vs D-1 (agora <span class="mono">{v_today:.2f}%</span>).'
+            elif _kind == "marg":
+                _pm_name, _m_val = _payload
+                headline = f'🟠 <b>MACRO · {_pm_name}</b> margem em <span class="mono">{_m_val:.0f} bps</span> — risco de breach intramês.'
     # Rule 3: concentration — top fund absorbs >40% of house BVaR
     if not headline and house_rows and house_bvar_total > 0:
         house_rows_sorted = sorted(house_rows, key=lambda r: r["bvar_brl"], reverse=True)
@@ -2874,6 +2896,7 @@ def _build_executive_briefing(
       </div>
       <div class="brief-headline">{headline}</div>
       {bench_line}
+      {_section("Atenção", parts_watch) if parts_watch else ""}
       <div class="brief-grid">
         <div class="brief-col">
           {_section("Risco · o que mudou", parts_risk, "— VaR estável em todos os fundos vs D-1")}
@@ -2881,7 +2904,6 @@ def _build_executive_briefing(
         </div>
         <div class="brief-col">
           {_section("Leitura do dia", parts_insight)}
-          {_section("Atenção", parts_watch, "— sem red flags; nenhuma util ≥ 70%")}
         </div>
       </div>
       <div class="brief-annex">
