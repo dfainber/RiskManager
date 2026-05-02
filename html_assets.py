@@ -2937,6 +2937,20 @@ window.refreshRptPnl = function() {{
   window.rptSetPeersAnchor = function(anchor) {{
     var src = (anchor === 'eopm') ? window._RPT_PEERS_EOPM : window._RPT_PEERS_CURRENT;
     if (!src) return;  // snapshot indisponível
+    // EOPM unavailable: no archive ≤ end-of-prev-month found, backend fell
+    // back to current network. Surface the situation in the subtitles
+    // instead of silently rendering identical data on toggle.
+    if (anchor === 'eopm' && src._eopm_unavailable) {{
+      document.querySelectorAll('[data-peers-sub="1"]').forEach(function(el) {{
+        var grp = (el.textContent.match(/grupo\\s+\\S+/) || [''])[0];
+        el.textContent = '— Snapshot fim do mês anterior ainda não foi arquivado'
+          + (grp ? ' · ' + grp : '');
+      }});
+      document.querySelectorAll('.rpt-peers-anchor').forEach(function(b) {{
+        b.classList.toggle('active', b.dataset.anchor === 'current');
+      }});
+      return;
+    }}
     window._RPT_PEERS = src;
     _RPT_PEERS = src;  // local var no closure (mesma referência)
     // Atualiza estado visual dos botões + subtitle de cada card
@@ -3022,6 +3036,15 @@ window.refreshRptPnl = function() {{
 
   window.initRptPeers = function() {{
     _ensureRptTip();
+    // Dim/annotate the EOPM toggle when no archive is available for the
+    // end-of-previous-month anchor (backend signals via _eopm_unavailable).
+    if (window._RPT_PEERS_EOPM && window._RPT_PEERS_EOPM._eopm_unavailable) {{
+      document.querySelectorAll('.rpt-peers-anchor[data-anchor="eopm"]').forEach(function(b) {{
+        b.style.opacity = '0.5';
+        b.style.cursor = 'not-allowed';
+        b.title = 'Snapshot fim do mês anterior ainda não foi arquivado';
+      }});
+    }}
     if (!_RPT_PEERS || !_RPT_PEERS.groups) return;
     var GROUPS_ORDER = ['EVOLUTION','ALBATROZ','FRONTIER','NAZCA','IGUANA','DRAGON','SEA LION','MACRO','GLOBAL','PELICAN'];
     var available = Object.keys(_RPT_PEERS.groups);

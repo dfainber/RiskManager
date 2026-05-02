@@ -989,6 +989,7 @@ def _build_summary_rows_html(*, td_by_short: dict, df_pa, df_frontier,
             f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
             + _sum_bp_cell(a_dia, dia_lag_tag) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
             + _sum_var_cell(var_today) + _sum_util_cell(var_util)
+            + _sum_util_cell(stop_util)
             + _sum_dvar_cell(dvar)
             + "</tr>"
         )
@@ -1006,7 +1007,7 @@ def _build_bench_rows_html(ibov, cdi, idka_idx_ret: dict | None) -> str:
                 '<td class="sum-status"></td>'
                 f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
                 + empty * 4
-                + empty * 3
+                + empty * 4
                 + '</tr>'
             )
         return (
@@ -1015,7 +1016,7 @@ def _build_bench_rows_html(ibov, cdi, idka_idx_ret: dict | None) -> str:
             f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
             + _sum_bp_cell(returns["dia"]) + _sum_bp_cell(returns["mtd"])
             + _sum_bp_cell(returns["ytd"]) + _sum_bp_cell(returns["m12"])
-            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 3
+            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 4
             + '</tr>'
         )
     idka3  = (idka_idx_ret or {}).get("IDKA_3Y")
@@ -2441,6 +2442,9 @@ def _build_report_data(date_str: str, d1_str: str, fd) -> "ReportData":
         "evo_expo_rows":  len(fd.df_evo_expo) if fd.df_evo_expo is not None and not fd.df_evo_expo.empty else 0,
         "stop_pms":       sorted(fd.pm_margem.keys()) if fd.pm_margem else [],
         "stop_pms_pnl":   [pm for pm, v in (fd.pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
+        "peers_val_date": (fd.peers_data or {}).get("val_date"),
+        "peers_eopm_val_date": (fd.peers_data_eopm or {}).get("val_date"),
+        "peers_eopm_unavailable": bool((fd.peers_data_eopm or {}).get("_eopm_unavailable")),
     }
 
     return ReportData(

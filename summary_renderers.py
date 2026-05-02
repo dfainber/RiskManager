@@ -745,6 +745,7 @@ def build_status_grid(summary_rows_html: str, bench_rows_html: str) -> str:
           <th style="text-align:right">12M</th>
           <th style="text-align:right"><span class="kc">VaR</span></th>
           <th style="text-align:right">Util <span class="kc">VaR</span></th>
+          <th style="text-align:right" title="Worst-PM stop utilization for funds with a stop mandate (MACRO, ALBATROZ, BALTRA). Funds without a stop show —.">Util Stop</th>
           <th style="text-align:right">Δ <span class="kc">VaR</span> D-1</th>
         </tr></thead>
         <tbody>{summary_rows_html}{bench_rows_html}</tbody>

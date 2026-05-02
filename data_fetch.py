@@ -3430,11 +3430,20 @@ def fetch_market_snapshot(date_str: str) -> dict:
 _PEERS_ARCHIVE_DIR = Path(__file__).parent / "data" / "peers_archive"
 
 
-def _peers_unwrap(data: dict) -> dict:
-    """Strip legacy {latest: {...}} wrapper if present."""
+def _peers_unwrap(data: dict, key: str = "latest") -> dict:
+    """Strip the {latest, month_end} wrapper if present.
+
+    The upstream JSON now publishes BOTH snapshots side-by-side:
+      - ``latest``:    closest val_date ≤ generated_at (drives Atual)
+      - ``month_end``: end-of-previous-month snapshot (drives Fim Mês Ant.)
+
+    Pre-fix this helper only ever returned ``latest`` regardless of caller
+    mode, which made the EOPM toggle a no-op (returned the same data).
+    Pass ``key="month_end"`` for the EOPM path.
+    """
     if "val_date" in data:
-        return data
-    return data.get("latest", {})
+        return data  # legacy unwrapped form
+    return data.get(key, {})
 
 
 def _peers_auto_archive(snap: dict) -> None:
@@ -3489,29 +3498,48 @@ def fetch_peers_data(date_str: str = DATA_STR, mode: str = "current") -> dict:
     """
     network_snap: dict = {}
     try:
-        network_snap = _peers_unwrap(json.loads(_PEERS_FILE.read_text(encoding="utf-8")))
+        raw = json.loads(_PEERS_FILE.read_text(encoding="utf-8"))
+        # Pick the right snapshot for this mode (eopm → month_end, else latest).
+        # Auto-archive BOTH snapshots so future runs can find them on disk
+        # even when the upstream file rolls forward to a newer month.
+        network_snap = _peers_unwrap(raw, key=("month_end" if mode == "eopm" else "latest"))
         _peers_auto_archive(network_snap)
+        if "val_date" not in raw:
+            _peers_auto_archive(_peers_unwrap(raw, key="month_end"))
+            _peers_auto_archive(_peers_unwrap(raw, key="latest"))
     except (OSError, json.JSONDecodeError):
         pass
 
     anchor = _end_of_prev_month(date_str) if mode == "eopm" else date_str
 
-    best: tuple[str, dict] | None = None
+    # Pick the archive with the BEST fund coverage among those ≤ anchor.
+    # CVM quota reporting is staggered (2-trading-day delay), so the latest
+    # archived val_date can be sparse — biased toward early reporters.
+    # Selection rule: max(total peers across all groups), tie-break by
+    # latest val_date.
+    best: tuple[int, str, dict] | None = None  # (n_peers, val_date, snap)
     if _PEERS_ARCHIVE_DIR.exists():
         for f in sorted(_PEERS_ARCHIVE_DIR.glob("peers_data_*.json")):
             vd = f.stem.replace("peers_data_", "")
-            if vd <= anchor and (best is None or vd > best[0]):
-                try:
-                    best = (vd, json.loads(f.read_text(encoding="utf-8")))
-                except (OSError, json.JSONDecodeError):
-                    continue
+            if vd > anchor:
+                continue
+            try:
+                snap = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            n_peers = sum(
+                len(g.get("peers", []) or [])
+                for g in (snap.get("groups", {}) or {}).values()
+            )
+            if best is None or (n_peers, vd) > (best[0], best[1]):
+                best = (n_peers, vd, snap)
 
     if best is not None:
-        snap = dict(best[1])
+        snap = dict(best[2])
         snap["_target_date"] = date_str
         snap["_anchor_date"] = anchor
         snap["_mode"] = mode
-        snap["_is_stale"] = (best[0] != anchor)
+        snap["_is_stale"] = (best[1] != anchor)
         return snap
 
     if network_snap:
@@ -3520,6 +3548,12 @@ def fetch_peers_data(date_str: str = DATA_STR, mode: str = "current") -> dict:
         snap["_anchor_date"] = anchor
         snap["_mode"] = mode
         snap["_is_stale"] = (snap.get("val_date") != anchor)
+        # When mode=eopm and we fall back to a network snap whose val_date is
+        # newer than the EOPM anchor, the snapshot is effectively the same
+        # data the CURRENT view shows — flag it so the UI can disable the
+        # button or surface a notice instead of silently rendering a no-op.
+        if mode == "eopm" and snap.get("val_date", "") > anchor:
+            snap["_eopm_unavailable"] = True
         return snap
 
     return {}

@@ -1958,6 +1958,51 @@ def build_data_quality_section(manifest: dict, series_map: dict, df_pa, df_pa_da
                 "problem": problem,
             })
 
+    # ── House-level: peers data freshness ─────────────────────────────────────
+    # Peers data lands with ~2 trading-day delay (CVM quota reporting). Flag as
+    # stale when the snapshot is more than 2 calendar days behind report date.
+    peers_vd = manifest.get("peers_val_date")
+    if peers_vd:
+        try:
+            lag_days = (DATA_ - pd.Timestamp(peers_vd)).days
+        except Exception:
+            lag_days = None
+        if lag_days is None:
+            peers_status, peers_detail = "missing", "val_date inválido"
+        elif lag_days > 2:
+            peers_status = "stale"
+            peers_detail = (f"Snapshot de {peers_vd} · {lag_days}d atrás · "
+                            f"upstream pode estar com pipeline parado")
+        else:
+            peers_status = "ok"
+            peers_detail = f"Snapshot de {peers_vd} · {lag_days}d atrás"
+        eopm_vd = manifest.get("peers_eopm_val_date")
+        eopm_unav = manifest.get("peers_eopm_unavailable")
+        if eopm_unav:
+            peers_detail += " · ⚠ EOPM ainda não arquivado"
+        elif eopm_vd:
+            peers_detail += f" · EOPM {eopm_vd}"
+        items.append({
+            "fund": "—",
+            "source": "Peers",
+            "status": peers_status,
+            "date": peers_vd,
+            "detail": peers_detail,
+            "problem": peers_status in ("missing", "stale"),
+        })
+        if peers_status in ("missing", "stale"):
+            all_issues.append(("HOUSE", "Peers", peers_status == "stale"))
+    else:
+        items.append({
+            "fund": "—",
+            "source": "Peers",
+            "status": "missing",
+            "date": "—",
+            "detail": "Peers data ausente",
+            "problem": True,
+        })
+        all_issues.append(("HOUSE", "Peers", False))
+
     # ── Render detail table ───────────────────────────────────────────────────
     _ST_COLOR = {"ok": "#4ade80", "stale": "#facc15", "missing": "#f87171", "na": "#94a3b8"}
     _ST_LABEL = {"ok": "TODAY", "stale": "D-1", "missing": "MISSING", "na": "N/A"}
