@@ -368,11 +368,13 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
 
     keys = ["FUNDO", "LIVRO", "PRODUCT"]
 
-    # Implied daily return = dia_bps / position_brl (asset return, position-neutral)
+    # Implied daily return = dia_bps / |position_brl| (asset return, position-neutral).
+    # Use abs() so short books (negative position_brl) also enter σ-stats and z-scoring;
+    # the prior `> 0` filter silently dropped Bracco / Quant_PA / IBOV-future shorts.
     pos_col = "position_brl" if "position_brl" in past.columns else None
-    if pos_col and (past[pos_col] > 0).any():
-        valid_pos = past[past[pos_col] > 0].copy()
-        valid_pos["implied_return"] = valid_pos["dia_bps"] / valid_pos[pos_col]
+    if pos_col and (past[pos_col].abs() > 1e-9).any():
+        valid_pos = past[past[pos_col].abs() > 1e-9].copy()
+        valid_pos["implied_return"] = valid_pos["dia_bps"] / valid_pos[pos_col].abs()
         stats = valid_pos.groupby(keys)["implied_return"].agg(sigma="std", n_obs="count").reset_index()
     else:
         stats = past.groupby(keys)["dia_bps"].agg(sigma="std", n_obs="count").reset_index()
@@ -389,9 +391,9 @@ def compute_pa_outliers(df_daily: pd.DataFrame, date_str: str,
     # Z = today's implied return / σ_implied_return (asset vol, position-neutral)
     merged["z"] = 0.0
     if pos_col:
-        valid = (merged["sigma"] > 1e-9) & (merged["today_pos"] > 0)
+        valid = (merged["sigma"] > 1e-9) & (merged["today_pos"].abs() > 1e-9)
         merged.loc[valid, "z"] = (
-            (merged.loc[valid, "today_bps"] / merged.loc[valid, "today_pos"])
+            (merged.loc[valid, "today_bps"] / merged.loc[valid, "today_pos"].abs())
             / merged.loc[valid, "sigma"]
         )
     else:

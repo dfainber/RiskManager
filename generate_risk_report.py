@@ -32,7 +32,7 @@ from risk_config import (
     _FUND_PEERS_GROUP,
 )
 from svg_renderers import make_sparkline, range_bar_svg, multi_line_chart_svg
-from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav
+from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav, _require_nav
 from metrics import (
     compute_pm_hs_var,
     compute_frontier_bvar_hs,
@@ -5110,7 +5110,10 @@ def main():  # noqa: C901
     if _expo_raw.empty and not _expo_d1_raw.empty:
         print(f"  Exposure missing for {DATA_STR} — using {d1_str}")
         expo_date_label = d1_str
-        df_expo, df_var, macro_aum = _expo_d1_raw, _var_d1_raw, (_aum_raw or _latest_nav("Galapagos Macro FIM", d1_str) or 1.0)
+        # NAV must come from a real source; the historical `or 1.0` fallback could
+        # mis-scale every %NAV / bps in this branch by ~10⁵× if both lookups fail.
+        macro_aum = _aum_raw or _require_nav("Galapagos Macro FIM", d1_str)
+        df_expo, df_var = _expo_d1_raw, _var_d1_raw
         # D-1 becomes the new D-0; D-2 becomes the delta reference
         try:
             df_expo_d1, df_var_d1, _ = fut_expo_d2.result()

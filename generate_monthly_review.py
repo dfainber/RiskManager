@@ -369,7 +369,10 @@ def _fetch_var_period(start: str, end: str, nav_df: pd.DataFrame) -> dict[str, d
                 sub = df_idka[df_idka["TRADING_DESK"] == td].set_index("VAL_DATE").sort_index()
                 if sub.empty:
                     continue
-                sub["var_pct"] = -sub["bvar_raw"] * 100
+                # abs() to mirror the RPM/RAW path convention (line 311, 344). The prior
+                # `-bvar_raw` relied on RELATIVE_VAR_PCT always being negative-signed —
+                # any positive entry would silently flip max() to under-report risk.
+                sub["var_pct"] = sub["bvar_raw"].abs() * 100
                 out[short] = {"avg": float(sub["var_pct"].mean()),
                               "max": float(sub["var_pct"].max()),
                               "last": float(sub["var_pct"].iloc[-1])}

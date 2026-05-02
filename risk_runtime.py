@@ -24,7 +24,12 @@ def _parse_date_arg(s: str) -> str:
     return s
 
 
-DATA_STR = _parse_date_arg(sys.argv[1]) if len(sys.argv) > 1 else (
+# sys.argv[1] is consumed only when it looks like YYYY-MM-DD. Without this guard,
+# any consumer that imports risk_runtime transitively (~all modules via data_fetch)
+# crashes via sys.exit when its own argparse uses a non-date positional/flag —
+# e.g. `pnl_server.py --port 5050` or `generate_credit_report.py --fund SEA_LION`.
+_argv1 = sys.argv[1] if len(sys.argv) > 1 else None
+DATA_STR = _parse_date_arg(_argv1) if (_argv1 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", _argv1)) else (
     (pd.Timestamp("today") - pd.tseries.offsets.BusinessDay(1)).strftime("%Y-%m-%d")
 )
 DATA     = pd.Timestamp(DATA_STR)
