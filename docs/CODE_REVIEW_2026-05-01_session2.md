@@ -11,6 +11,24 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 11 — Util Stop column + peers EOPM fix + DQ staleness)
+
+Closes §3.9 (Util Stop column) plus three peers-related fixes (button bug,
+selection rule, staleness DQ alert) that surfaced from a user-reported bug
+during the session.
+
+### Session 11 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 3.9 | Util Stop column added to Status consolidado between Util VaR and Δ VaR D-1; worst-PM utilization for MACRO/ALBATROZ/BALTRA, `—` for funds without a stop mandate. Header tooltip explains the convention. | ✅ DONE | [`summary_renderers.py`](../summary_renderers.py#L744) + [`generate_risk_report.py`](../generate_risk_report.py#L992) |
+| user-reported | Peers "Fim Mês Ant." button was a no-op — `_peers_unwrap` always returned `data["latest"]` ignoring `data["month_end"]`. Now mode-aware (key arg). Auto-archive persists both snapshots independently. | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L3433) |
+| user-reported | Archive selection rule changed from "latest val_date ≤ anchor" to "max fund coverage among archives ≤ anchor" (CVM quota staggered reporting biases earlier days toward early reporters). | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L3505) |
+| user-reported | When EOPM falls back to a network snap newer than the EOPM anchor, sets `_eopm_unavailable=True`. JS handler dims the button + shows a notice on click instead of silently rendering identical data. | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L3520) + [`html_assets.py`](../html_assets.py#L2937) |
+| user-reported | Peers staleness alert in Data Quality: flags `stale` when val_date is more than 2 calendar days behind report date (CVM quota delay = 2 trading days; longer = upstream pipeline stalled). | ✅ DONE | [`fund_renderers.py`](../fund_renderers.py#L1962) |
+
+Real upstream pipeline issue surfaced: `peers_data.json` last modified 2026-04-24, val_date 2026-04-20 (12 days stale today). Escalation point.
+
 ## STATUS (2026-05-02, session 10 — iterrows vectorization + build_html batch 3)
 
 Closes §2.9/§2.10 (iterrows vectorization) and continues §1.5 with batch 3.
@@ -170,7 +188,7 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 - §2.6 Frontier perpetual "—" (TE-based metric needed)
 - §2.9 / §2.10 carryover iterrows vectorization
 - §2.13b IDKA SHARE flow PnL (cotização axis mismatch)
-- §3.4–§3.9 aesthetic carryovers (hex codes, dado/tomado convention, `data-no-sort`, meeting-port hardcodes, Util Stop column)
+- §3.5 dado/tomado wording (deferred — design call), §3.6 convention footnote dedup (9×→1), §3.7 `data-no-sort` audit (tedious), §3.8 meeting-port hardcoded hex sweep
 - §4.1 Python venv discipline (`from __future__ import annotations`)
 - §4.2 CLI entry-point convention
 

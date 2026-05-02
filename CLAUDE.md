@@ -184,6 +184,9 @@ Closed na sessão 2026-05-02 (commits 0cd1674 + bb14a7a + dcac9de):
 - ~~**§1.3 Status DIA fallback when PA on D-1**~~ — Quando `pa_has_today` é False, a coluna DIA do Status consolidado renderiza o valor do D-1 com tag `(D-1)` em texto pequeno mudo (antes mostrava `—` silente). Backed by `df_pa_daily` (estendido pra incluir BALTRA + IDKAs em `fetch_pa_daily_per_product`). Tooltip "PA pendente para hoje — última obs D-1" no caso flat.
 - ~~**§2.9/§2.10 Iterrows vectorization**~~ — 4 sites convertidos: nested iterrows em `_regroup_lookthrough` (data_fetch) → `to_dict('records')` com NaN→None vetorizado; `df.apply(axis=1)` em `fetch_evolution_exposure` → list comprehension com `zip`; `iterrows` em Frontier stocks (generate_risk_report) → vectorized `astype × fr_nav` + boolean mask; `iterrows` em `single_names_section.side_table` (fund_renderers) → `to_dict('records')`.
 - ~~**§1.5 build_html extraction batch 3**~~ — 540 → 476 linhas (-12%). Master HTML template f-string (~85 linhas) extraído pra novo helper `_render_master_html(...)` com 16 kwargs explícitos. Cumulative since session 6: 1214 → 476L (-61%).
+- ~~**§3.9 Util Stop column no Status consolidado**~~ — Coluna nova entre "Util VaR" e "Δ VaR D-1". Worst-PM utilization para fundos com mandato de stop (MACRO/ALBATROZ/BALTRA); demais fundos mostram `—`. Header com tooltip explicativo.
+- ~~**Peers EOPM toggle (multi-fix)**~~ — `_peers_unwrap` agora aceita `key` arg (`"month_end"` vs `"latest"` — antes sempre retornava `latest` ignorando o `month_end`). Auto-archive persiste os 2 snapshots independentes. Selection rule no archive lookup mudou: max fund coverage (com tie-break por latest val_date), não mais latest val_date só (CVM quotas chegam staggered, late reporters podem inflar coverage no dia D+2 vs D+1). Quando EOPM cai no fallback de network newer-than-anchor, marca `_eopm_unavailable=True` e a JS dim/notice o botão.
+- ~~**Peers staleness alert na Data Quality**~~ — `build_data_quality_section` agora flag `stale` se peers val_date > 2 dias atrás (CVM quota delay típico = 2 trading days). Surface explícito de upstream pipeline parado (caso real: pipeline da `peers_data.json` parou em 2026-04-24).
 
 UI tweaks na sessão 2026-05-02:
 - Removida footer row "Total NAV-pond. (não-div.)" do "Risco VaR e BVaR por fundo".
@@ -196,6 +199,9 @@ Próximas (ainda abertas):
 8. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
 9. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
 10. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
+11. **Aesthetic carryovers ainda abertos**: §3.6 (convention footnote dedup 9× → 1 + tooltips), §3.8 (meeting-port hardcoded hex sweep + extend `_BG_HEX_MAP`).
+12. **Credit PA do zero** (parking lot) — Sea Lion / Iguana / Nazca / Pelican / Dragon / Barbacena não estão em REPORT_ALPHA_ATRIBUTION. Custom: carry indexer + spread accrual + spread Δ via curva ANBIMA por rating.
+13. **Upstream peers pipeline parado** (não é código) — `\\fs02\FS_GALAPAGOS\Bloomberg\Quant\Claude_GLPG_Fetch\peers_data.json` mtime 2026-04-24, val_date 2026-04-20. Escalation only.
 
 **Backlog primário agora**: `docs/CODE_REVIEW_2026-05-01_session2.md` (com STATUS atualizado no topo na sessão 3). A `docs/CODE_REVIEW_2026-05-01.md` original tem todos itens fechados (PA-FX-split + §2d) ou cross-listados na nova review. Roadmap analítico continua em `memory/project_todo_risk_analytics_roadmap.md`.
 
