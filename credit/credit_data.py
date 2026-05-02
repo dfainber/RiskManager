@@ -166,8 +166,10 @@ WHERE t.product_class NOT IN ('Funds BR','Cash','Margin','Provisions and Costs')
     df = read_sql(sql)
     if df.empty:
         return df
-    df["missing_today"] = df["price_today"].isna() | (df["price_today"] == 0)
-    df["missing_prev"]  = df["price_prev"].isna()  | (df["price_prev"] == 0)
+    # Post-NULLIF, both 0 and NULL prices are NaN — `== 0` would never fire.
+    # A legitimately defaulted bond (price = ε > 0) is NOT treated as missing.
+    df["missing_today"] = df["price_today"].isna()
+    df["missing_prev"]  = df["price_prev"].isna()
     df["flagged"] = df["missing_today"] | df["missing_prev"]
     return df[df["flagged"]].drop(columns=["flagged"]).reset_index(drop=True)
 

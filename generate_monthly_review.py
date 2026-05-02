@@ -1665,7 +1665,6 @@ def main() -> None:
         ym_input   = input(f"Mês (YYYY-MM) [{default_ym}]: ").strip()
         ym         = ym_input if ym_input else default_ym
 
-    # Validate format
     import re
     if not re.fullmatch(r"\d{4}-\d{2}", ym):
         sys.exit(f"Formato inválido: '{ym}'. Use YYYY-MM.")

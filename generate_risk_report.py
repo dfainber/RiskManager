@@ -546,7 +546,6 @@ def _wrap_tpl(f: str, r: str, body: str) -> str:
 
 
 def build_html(d: ReportData) -> str:
-    # Unpack for readability inside this function — no logic changes below this block.
     (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
      df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
      df_quant_sn, quant_nav, quant_legs,
@@ -823,7 +822,6 @@ def build_html(d: ReportData) -> str:
     pmovers_data_script, _pmovers_funds = build_pmovers_data_payload(df_pa)
     pmovers_modal_html = build_pmovers_modal_scaffold()
 
-    # Performance Attribution — one card per fund (MACRO, QUANT, EVOLUTION, MACRO_Q, ALBATROZ)
     if df_pa is not None and not df_pa.empty:
         cdi_row = cdi or {"dia": 0.0, "mtd": 0.0, "ytd": 0.0, "m12": 0.0}
         # Albatroz PA sum per window (for the IDKA bench decomposition)
@@ -974,7 +972,6 @@ def build_html(d: ReportData) -> str:
 
     sections += build_analise_sections(d, df_pa_daily)
 
-    # Which fund×report combinations exist — used to enable/disable tabs and handle empty states
     available_pairs = {(f, r) for f, r, _ in sections}
     funds_with_data = sorted({f for f, _ in available_pairs}, key=FUND_ORDER.index)
     reports_with_data = [rid for rid, _ in REPORTS if any(rid == r for _, r in available_pairs)]
@@ -1635,9 +1632,6 @@ def build_html(d: ReportData) -> str:
     # ── Peers tab section (house-level, group selector) ───────────────────────
     peers_section_html = peers_tab_section_html(_peers_val_date=_peers_val_date)
 
-    # (Análise helpers and per-fund loop were relocated above `sections_html`; see earlier block.)
-
-    # Mode switcher + sub-tabs
     mode_tabs_html = (
         '<button class="mode-tab" data-mode="summary" onclick="selectMode(\'summary\')">Summary</button>'
         '<button class="mode-tab" data-mode="fund"    onclick="selectMode(\'fund\')">Por Fundo</button>'
@@ -1655,7 +1649,6 @@ def build_html(d: ReportData) -> str:
         f'<button class="tab" data-target="{s}" onclick="selectFund(\'{s}\')">{s}</button>'
         for s in funds_with_data
     )
-    # JS constant: which reports exist per fund (for the jump bar)
     fund_reports_js = json.dumps({
         f: [rid for rid, _ in REPORTS if (f, rid) in available_pairs]
         for f in FUND_ORDER
@@ -1673,8 +1666,6 @@ def build_html(d: ReportData) -> str:
     fund_shorts_js   = json.dumps(_highlight_terms)
     fund_labels_js   = json.dumps(FUND_LABELS)
     fund_order_js    = json.dumps(list(FUND_ORDER))
-
-    # Por Report mode removed — no per-report fund switcher needed
 
     # VaR DoD attribution payload (single fetch for all supported funds)
     vardod_data_script, _vardod_funds = build_vardod_data_payload(DATA_STR, prefetched_dfs=_dod_dfs)
@@ -1993,8 +1984,6 @@ def main():  # noqa: C901
     except Exception as e:
         print(f"  Distribution fetch failed ({e})")
         dist_map, dist_map_prev, dist_actuals = None, None, None
-
-    # df_pa already resolved above (used to build df_today)
 
     try:
         df_pa_daily = fut_pa_daily.result()

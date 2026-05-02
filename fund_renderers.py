@@ -1129,6 +1129,20 @@ def build_stop_section(stop_history: dict[str, pd.DataFrame], df_pnl_today: pd.D
         if pm != "CI" and not has_pos and status_label == "🔴 STOP":
             status_label, status_color = "⚪ FLAT", "#94a3b8"
 
+        # Absolute-margem secondary gate. The percent-consumption rule above
+        # can show 🟢 OK when budget is small (post-carry penalty) even with
+        # tiny absolute room — e.g. budget 10 bps / pnl −1 bps = 10% consumed.
+        # A single bad day in a high-vol PM blows through that. Escalate
+        # status by absolute remaining margem in bps.
+        _margem_now = budget + pnl_mtd
+        if pm != "CI" and budget > 0 and status_label not in ("🔴 STOP", "⚪ FLAT"):
+            if _margem_now <= 0:
+                status_label, status_color = "🔴 STOP", "#f87171"
+            elif _margem_now < 10:
+                status_label, status_color = "🟠 NEAR-BREACH", "#fb923c"
+            elif _margem_now < 25 and status_label == "🟢 OK":
+                status_label, status_color = "🟡 ATENÇÃO", "#facc15"
+
         bar = stop_bar_svg(budget, pnl_mtd, bmax, soft_mark=soft_mark if pd.notna(soft_mark) else None)
         spark = make_sparkline(hist.set_index("mes")["budget_abs"], "#60a5fa", width=140)
 

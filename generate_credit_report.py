@@ -206,7 +206,7 @@ def compute_monthly_returns_grid(nav_share: pd.Series, cdi_idx: pd.Series) -> pd
     df = pd.DataFrame({"fund": nav_ret, "cdi": cdi_ret})
     df["year"] = df.index.year
     df["month"] = df.index.month
-    df["pct_cdi"] = df["fund"] / df["cdi"].where(df["cdi"] != 0, np.nan)
+    df["pct_cdi"] = df["fund"] / df["cdi"].where(df["cdi"].abs() > 1e-9, np.nan)
 
     # Months
     monthly_rows = [{
@@ -1120,7 +1120,6 @@ def _svg_curves(curves: dict[str, pd.DataFrame], width: int = 520, height: int =
     pad_l, pad_r, pad_t, pad_b = 44, 16, 14, 30
     plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
 
-    # Combine all tenors + rates to set axis bounds
     all_tenors = []
     all_rates = []
     for r, df in curves.items():
@@ -2063,7 +2062,12 @@ def _build_fund_body(fund_key: str, ref_dt: date) -> tuple[str, dict]:
     nav_share_series = nav_h["SHARE"].astype(float)
     nav_at = float(nav_h.loc[pd.Timestamp(ref_dt), "NAV"]) if pd.Timestamp(ref_dt) in nav_h.index else None
     if nav_at is None:
-        nav_at = fetch_nav_at(trading_desk, ref_dt.isoformat()) or 0.0
+        # Don't fall back to 0.0 — every downstream pos/nav division becomes
+        # inf/NaN and propagates through .sum() into "inf%" cells. Raise so
+        # the caller surfaces the missing-NAV condition explicitly.
+        nav_at = fetch_nav_at(trading_desk, ref_dt.isoformat())
+        if not nav_at:
+            raise RuntimeError(f"NAV unavailable for {trading_desk} on {ref_dt} — cannot render credit report")
 
     # Positions
     pos = fetch_positions_snapshot(trading_desk, ref_dt.isoformat(),

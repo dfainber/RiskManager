@@ -1206,7 +1206,7 @@ def build_idka_exposure_section(short: str, df: pd.DataFrame, nav: float,
     def _disp(view_tag):
         return "" if view_tag == _DEFAULT_VIEW else "display:none;"
 
-    swap_row = ""  # removido: swap plug não faz sentido ao comparar tudo vs IDKA
+    swap_row = ""
 
     # Benchmark point row (liq-benchmark mode only; default → visible)
     bench_point_row = (
@@ -1390,7 +1390,6 @@ def build_rf_exposure_map_section(short: str, df: pd.DataFrame, nav: float,
     rel_cum_real   = cumsum(rel_real_b)
     rel_cum_nom    = cumsum(rel_nom_b)
 
-    # Legacy names kept for the stat-row / legend blocks below
     bench_real = bench_cum_real
     bench_nom  = bench_cum_nom
 
@@ -1974,7 +1973,7 @@ def build_exposure_section(df_expo: pd.DataFrame, df_var: pd.DataFrame, aum: flo
                                    .agg(delta=("delta","sum")).reset_index())
             _rfvar_d1 = df_var_d1.groupby("rf").agg(var_pct=("var_pct","sum")).reset_index()
             _pmrf_d1  = _pmrf_d1.merge(_rfd_d1, on="rf").merge(_rfvar_d1, on="rf", how="left")
-            _pmrf_d1["pv"] = np.where(_pmrf_d1["rf_delta"] != 0,
+            _pmrf_d1["pv"] = np.where(_pmrf_d1["rf_delta"].abs() > 1e-9,
                                       _pmrf_d1["delta"] / _pmrf_d1["rf_delta"] * _pmrf_d1["var_pct"], 0.0)
             # PM total VaR D-1
             _pm_var_d1 = _pmrf_d1.groupby("pm").agg(pv=("pv","sum")).reset_index()

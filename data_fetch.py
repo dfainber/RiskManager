@@ -2388,7 +2388,6 @@ def fetch_evolution_exposure(date_str: str = DATA_STR) -> tuple:
     df["strategy"] = df["livro"].map(livro_to_strat).fillna("OUTROS")
     df["factor"]   = df.apply(lambda r: _evo_classify_factor(r["BOOK"], r["PRIMITIVE_CLASS"]),
                               axis=1)
-    # Drop excluded rows (Cash/Margin/Provisions) before computing pct_nav
     df = df[df["factor"].notna()].copy()
     df["pct_nav"] = df["delta"] * 100 / nav
 
