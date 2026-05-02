@@ -11,6 +11,25 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 6 — build_html extraction batch 1)
+
+Closes §1.5 (partial — biggest open audit item). build_html went from
+**1214 → 690 lines** (43% reduction) by extracting 5 self-contained
+data-assembly + render blocks to module-level helpers. No behavior change:
+smoke_test passes, dark + meeting reports regenerate clean.
+
+### Session 6 additions
+
+| § | Item | Lines extracted | Helper |
+|----|------|----------------|--------|
+| 1.5 | Cross-fund VaR/BVaR rows for "Risco VaR e BVaR por fundo" card | 52 | `_build_house_rows` |
+| 1.5 | Factor × fund risk matrix (10 factors × N funds) + bench matrix | 150 | `_build_factor_matrix` |
+| 1.5 | Cross-fund top positions list (Top Posições card source) | 60 | `_build_agg_rows` |
+| 1.5 | Status consolidado per-fund row HTML + bench rows | 145 | `_build_summary_rows_html` + `_build_bench_rows_html` |
+| 1.5 | PA contribution alerts card (size + fund sort, ≥1% NAV flag) | 135 | `_build_pa_alerts_html` |
+
+§1.5 is now reclassified from "huge — half-day session" to "in progress — ~700 lines remaining". Build_html is dominated now by tab-section assembly (~250L), the master HTML template f-string (~85L) and the executive briefing / market / pnl / peers tab compositions.
+
 ## STATUS (2026-05-02, session 5 — main() split + nav_d1 propagation)
 
 Session 5 closes 2 more open items: §1.6 (main() split into 3 helpers) and §2.13f (full nav_d1 call-site propagation through QUANT/EVOLUTION exposure renderers). Plus 2 ad-hoc UI tweaks: removed "Total NAV-pond. (não-div.)" footer row from "Risco VaR e BVaR por fundo" card; Vol Regime card now skips empty rows instead of rendering `—` placeholders. Both dark + meeting reports regenerate clean; smoke test passes.
@@ -80,7 +99,7 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 - §1.2 Briefing Executivo headline priority (UX — needs design call)
 - §1.3 Status DIA fallback when PA on D-1 (UX)
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
-- §1.5 `build_html` extraction (half-day session — partly in progress per `c8a93a6` / `7bb06fe` / `d98dae1`)
+- §1.5 `build_html` extraction — **in progress**, 524L extracted in session 6; ~690L remaining (tab-section assembly, exec briefing, peers/pnl/market tabs, master template f-string)
 - §2.3 Breakdown por Fator unit-mixing
 - §2.5 Risk Budget thresholding by margem (bps) — full re-thresh + "days to soft breach" projection
 - §2.6 Frontier perpetual "—" (TE-based metric needed)

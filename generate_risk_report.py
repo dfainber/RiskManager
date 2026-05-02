@@ -30,7 +30,7 @@ from risk_config import (
     _PM_LIVRO,
     ALERT_COMMENTS,
     _FUND_PEERS_GROUP,
-    _MACRO_DESK, _ALBATROZ_DESK, _EVOLUTION_DESK, _BALTRA_DESK,
+    _MACRO_DESK, _ALBATROZ_DESK, _EVOLUTION_DESK, _BALTRA_DESK, _FRONTIER_DESK,
 )
 from svg_renderers import make_sparkline, range_bar_svg, multi_line_chart_svg
 from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav, _require_nav
@@ -548,88 +548,174 @@ def _wrap_tpl(f: str, r: str, body: str) -> str:
     )
 
 
-def build_html(d: ReportData) -> str:
-    (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
-     df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
-     df_quant_sn, quant_nav, quant_legs,
-     df_evo_sn, evo_nav, evo_legs, df_evo_direct,
-     df_alb_expo, alb_nav,
-     df_baltra_expo, baltra_nav,
-     df_frontier, frontier_bvar, frontier_bvar_d1, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
-     df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
-     position_changes, dist_map, dist_map_prev, dist_actuals,
-     vol_regime_map, pm_book_var, expo_date_label, data_manifest,
-     df_quant_expo, quant_expo_nav, df_quant_expo_d1, quant_expo_nav_d1, df_quant_var, df_quant_var_d1,
-     df_evo_expo, evo_expo_nav, df_evo_expo_d1, evo_expo_nav_d1, df_evo_var, df_evo_var_d1,
-     df_evo_pnl_prod) = (
-        d.series_map, d.stop_hist, d.df_today, d.df_expo, d.df_var, d.macro_aum,
-        d.df_expo_d1, d.df_var_d1, d.df_pnl_prod, d.pm_margem,
-        d.df_quant_sn, d.quant_nav, d.quant_legs,
-        d.df_evo_sn, d.evo_nav, d.evo_legs, d.df_evo_direct,
-        d.df_alb_expo, d.alb_nav,
-        d.df_baltra_expo, d.baltra_nav,
-        d.df_frontier, d.frontier_bvar, d.frontier_bvar_d1, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
-        d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
-        d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
-        d.vol_regime_map, d.pm_book_var, d.expo_date_label, d.data_manifest,
-        d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.quant_expo_nav_d1, d.df_quant_var, d.df_quant_var_d1,
-        d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.evo_expo_nav_d1, d.df_evo_var, d.df_evo_var_d1,
-        d.df_evo_pnl_prod)
-    market_snap = d.market_snap or {}
-    alerts = []
-    td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
-    sections = []  # list of (fund_short, report_id, html)
-    evolution_c4_state = {}  # Camada 4 state — populated when EVOLUTION diversificação renders
+# ── Factor × fund risk matrix builder ────────────────────────────────────────
+# Sources for each factor:
+#   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
+#   Equity BR (IBOV)                        → Frontier NAV (100% long); QUANT/EVO single-names
+#   Equity DM/EM, FX, Commodities (MACRO)   → df_expo
+#   Juros Nominais / FX / Commodities (QUANT) → df_quant_expo
+def _build_factor_matrix(
+    *, rf_expo_maps: dict | None, df_frontier, df_quant_sn, df_evo_direct,
+    df_expo, df_quant_expo, macro_aum, td_by_short: dict,
+) -> tuple[dict, dict, dict]:
+    """Build (factor_matrix, bench_matrix, nav_by_short) from already-fetched
+    exposure data. factor_matrix and bench_matrix are factor → {fund_short → BRL}
+    dicts; nav_by_short is fund_short → NAV. Convention: DV01 sign (long bond =
+    negative) for rate factors; raw notional for IPCA Idx / Equity / FX /
+    Commodities. Suppression threshold |v| < 1_000 BRL."""
+    factor_matrix: dict[str, dict] = {
+        "Juros Reais (IPCA)": {},
+        "Juros Reais (IGPM)": {},
+        "Juros Nominais":     {},
+        "IPCA Idx":           {},
+        "IGPM Idx":           {},
+        "Equity BR":          {},
+        "Equity DM":          {},
+        "Equity EM":          {},
+        "FX":                 {},
+        "Commodities":        {},
+    }
+    if rf_expo_maps:
+        # rf_expo_maps.ano_eq_brl tem sign flip p/ chart (long duration = positivo).
+        # factor_matrix usa convenção DV01 (tomado=positivo, dado=negativo).
+        # → negar apenas "real" e "nominal" (fatores de taxa); "ipca_idx" é carry,
+        # sem flip no rf_expo_maps, não precisa negar.
+        _DV01_SIGN_FLIP = {"real": True, "real_igpm": True, "nominal": True,
+                           "ipca_idx": False, "igpm_idx": False}
+        for short_k, df_k in rf_expo_maps.items():
+            if df_k is None or df_k.empty:
+                continue
+            # EVOLUTION (lookthrough_only=True) tem via='lookthrough' para TUDO
+            # (inclui Macro/Quant/Frontier slices que já estão em outras linhas)
+            # → pular por inteiro para rate factors (sua exposição de juros é
+            # indireta via filhos).
+            if short_k == "EVOLUTION":
+                continue
+            df_direct = df_k[df_k["via"] == "direct"]
+            if df_direct.empty:
+                continue
+            for factor_key, factor_col in [
+                ("Juros Reais (IPCA)", "real"),
+                ("Juros Reais (IGPM)", "real_igpm"),
+                ("Juros Nominais",     "nominal"),
+                ("IPCA Idx",           "ipca_idx"),
+                ("IGPM Idx",           "igpm_idx"),
+            ]:
+                v = float(df_direct[df_direct["factor"] == factor_col]["ano_eq_brl"].sum())
+                if _DV01_SIGN_FLIP.get(factor_col, False):
+                    v = -v
+                if abs(v) >= 1_000:
+                    factor_matrix[factor_key][short_k] = v
+    # Frontier = 100% equity BR long (NAV in R$)
+    if df_frontier is not None and not df_frontier.empty:
+        fr_tot = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+        if not fr_tot.empty:
+            gross_pct = float(fr_tot["% Cash"].iloc[0])
+            fr_nav = _latest_nav(_FRONTIER_DESK, DATA_STR) or 0
+            if gross_pct and fr_nav:
+                factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
+    # QUANT + EVOLUTION equity BR — Evolution-direct only (avoid double-count).
+    if df_quant_sn is not None and not df_quant_sn.empty:
+        q_equity = float(df_quant_sn["net"].sum())
+        if abs(q_equity) >= 1_000:
+            factor_matrix["Equity BR"]["QUANT"] = q_equity
+    if df_evo_direct is not None and not df_evo_direct.empty:
+        e_equity = float(df_evo_direct["net"].sum())
+        if abs(e_equity) >= 1_000:
+            factor_matrix["Equity BR"]["EVOLUTION"] = e_equity
 
+    # MACRO from df_expo (rf column = RV-BZ / RV-DM / RV-EM / FX-* / RF-BZ / COMMODITIES / P-Metals)
+    if df_expo is not None and not df_expo.empty and macro_aum:
+        rf_to_factor = {
+            "RV-BZ":       "Equity BR",
+            "RV-DM":       "Equity DM",
+            "RV-EM":       "Equity EM",
+            "COMMODITIES": "Commodities",
+            "P-Metals":    "Commodities",
+        }
+        for rf_val, factor_key in rf_to_factor.items():
+            v = float(df_expo[df_expo["rf"] == rf_val]["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix[factor_key]["MACRO"] = factor_matrix[factor_key].get("MACRO", 0.0) + v
+        fx_delta = float(df_expo[df_expo["rf"].str.startswith("FX-", na=False)]["delta"].sum())
+        if abs(fx_delta) >= 1_000:
+            factor_matrix["FX"]["MACRO"] = fx_delta
+        # MACRO nominal-rate duration: DELTA on RF-BZ / BRL Rate Curve primitive.
+        # DELTA in LOTE_PRODUCT_EXPO is already duration-weighted (= POSITION × MOD_DURATION);
+        # filtering to BRL Rate Curve avoids double-counting primitives on hybrid rows.
+        rf_bz_nom = df_expo[(df_expo["rf"] == "RF-BZ")
+                            & (df_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")]
+        if not rf_bz_nom.empty:
+            nominal_brl_yr = float(rf_bz_nom["delta"].sum())
+            if abs(nominal_brl_yr) >= 1_000:
+                factor_matrix["Juros Nominais"]["MACRO"] = nominal_brl_yr
 
-    def _latest_hs_var_bps(short: str) -> float | None:
-        """Latest fund-level HS VaR (bps) — same source as the Risk Monitor card."""
+    # QUANT non-equity factors from df_quant_expo. Equity BR populated earlier via single-name.
+    if df_quant_expo is not None and not df_quant_expo.empty:
+        # Nominal rates: filter to BRL Rate Curve primitive to avoid double-count.
+        quant_nominal = df_quant_expo[
+            (df_quant_expo["factor"] == "Juros Nominais")
+            & (df_quant_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")
+        ]
+        if not quant_nominal.empty:
+            v = float(quant_nominal["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix["Juros Nominais"]["QUANT"] = (
+                    factor_matrix["Juros Nominais"].get("QUANT", 0.0) + v
+                )
+        for q_fac in ("FX", "Commodities"):
+            sub = df_quant_expo[df_quant_expo["factor"] == q_fac]
+            if sub.empty:
+                continue
+            v = float(sub["delta"].sum())
+            if abs(v) >= 1_000:
+                factor_matrix[q_fac]["QUANT"] = (
+                    factor_matrix[q_fac].get("QUANT", 0.0) + v
+                )
+
+    # Benchmark allocations per fund, per factor (for net-of-bench view).
+    # Real rates: IDKAs have duration-concentrated real-rate bench (3y × NAV, 10y × NAV).
+    # IPCA Idx:   IDKAs bench = 100% NAV of inflation carry.
+    # Equity BR:  Frontier bench is IBOV = 100% NAV long equity.
+    nav_by_short: dict[str, float] = {}
+    for short in FUND_ORDER:
         td = td_by_short.get(short)
-        if td is None:
-            return None
-        s = series_map.get(td)
-        if s is None or s.empty:
-            return None
-        s_avail = s[s["VAL_DATE"] <= DATA]
-        if s_avail.empty:
-            return None
-        return abs(float(s_avail.iloc[-1]["var_pct"])) * 100.0
+        if td:
+            nav_by_short[short] = _latest_nav(td, DATA_STR) or 0.0
+    bench_matrix: dict[str, dict] = {k: {} for k in factor_matrix}
+    # Convenção DV01: long bond = negativo (factor_matrix + bench).
+    # Só setar bench quando o fundo tem gross data — evita "-100%" fantasma
+    # em Líquido se o fetch do gross falhar.
+    if nav_by_short.get("IDKA_3Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_3Y"):
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_3Y"] = -3.0 * nav_by_short["IDKA_3Y"]
+    if nav_by_short.get("IDKA_3Y") and factor_matrix["IPCA Idx"].get("IDKA_3Y"):
+        bench_matrix["IPCA Idx"]["IDKA_3Y"]           =  1.0 * nav_by_short["IDKA_3Y"]
+    if nav_by_short.get("IDKA_10Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_10Y"):
+        bench_matrix["Juros Reais (IPCA)"]["IDKA_10Y"] = -10.0 * nav_by_short["IDKA_10Y"]
+    if nav_by_short.get("IDKA_10Y") and factor_matrix["IPCA Idx"].get("IDKA_10Y"):
+        bench_matrix["IPCA Idx"]["IDKA_10Y"]           =   1.0 * nav_by_short["IDKA_10Y"]
+    if nav_by_short.get("FRONTIER") and factor_matrix["Equity BR"].get("FRONTIER"):
+        bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
 
-    def _prev_hs_var_bps(short: str) -> float | None:
-        """D-1 fund-level HS VaR (bps) — for delta vs today."""
-        td = td_by_short.get(short)
-        if td is None:
-            return None
-        s = series_map.get(td)
-        if s is None or s.empty:
-            return None
-        s_avail = s[s["VAL_DATE"] <= DATA]
-        if len(s_avail) < 2:
-            return None
-        return abs(float(s_avail.iloc[-2]["var_pct"])) * 100.0
+    return factor_matrix, bench_matrix, nav_by_short
 
 
-    # Per-fund Risk Monitor sections (extracted to fund_renderers.py)
-    _new_secs, _new_alerts, evolution_c4_state = (
-        build_per_fund_risk_monitor_sections(d, td_by_short=td_by_short, series_map=series_map)
-    )
-    sections.extend(_new_secs)
-    alerts.extend(_new_alerts)
-
-    # Build alerts section
-    # ── PA contribution alerts — filter by |dia_bps|, sorted by contribution ──
-    PA_ALERT_MIN_BPS   = 5.0   # minimum absolute contribution to show
-    PA_ALERT_HIGH_BPS  = 15.0  # threshold for red (large) vs yellow (medium)
-    _PA_EXCL_LIVROS    = {"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}
-    _PA_EXCL_CLASSES   = {"Caixa", "Custos"}
+# ── PA contribution alerts builder ───────────────────────────────────────────
+def _build_pa_alerts_html(alerts: list, df_pa, df_pa_daily) -> str:
+    """Combined Análise card: VaR/Stress percentile alerts (top) + PA daily
+    contribution cards (bottom) with size/fund sort toggle. Returns "" if
+    neither has anything to show."""
+    PA_ALERT_MIN_BPS = 5.0   # minimum absolute contribution to show
+    _PA_EXCL_LIVROS  = {"Caixa", "Caixa USD", "Taxas e Custos", "Prev"}
+    _PA_EXCL_CLASSES = {"Caixa", "Custos"}
+    # Drop benchmark-replication livros and IDKA funds entirely —
+    # IDKA contributions are driven by the index, not active bets.
+    _EXCL_FUNDOS_PA  = {"IDKAIPCAY3", "IDKAIPCAY10"}
 
     pa_alert_items_size = ""
     pa_alert_items_fund = ""
     if df_pa is not None and not df_pa.empty:
         try:
-            # Drop benchmark-replication livros and IDKA funds entirely —
-            # IDKA contributions are driven by the index, not active bets.
-            _EXCL_FUNDOS_PA = {"IDKAIPCAY3", "IDKAIPCAY10"}
             _df_alpha = _pa_filter_alpha(df_pa)
             _pa_filt = _df_alpha[
                 ~_df_alpha["FUNDO"].isin(_EXCL_FUNDOS_PA) &
@@ -712,9 +798,8 @@ def build_html(d: ReportData) -> str:
         except Exception as e:
             print(f"  PA alerts failed ({e})")
 
-    pa_alert_items = pa_alert_items_size  # keep existing consumers happy
+    pa_alert_items = pa_alert_items_size
 
-    alerts_html = ""
     risk_items = ""
     if alerts:
         for fundo, metric, pct, val, util, comment in alerts:
@@ -727,15 +812,14 @@ def build_html(d: ReportData) -> str:
               </div>
               <div class="alert-body">{comment}</div>
             </div>"""
-    if risk_items or pa_alert_items:
-        if pa_alert_items:
-            _top_margin = "4px" if risk_items else "0"
-            pa_grid = (
-                f'<div class="pa-alert-view" data-pa-sort="size" style="margin-top:{_top_margin}">{pa_alert_items_size}</div>'
-                f'<div class="pa-alert-view pa-alert-view-hidden" data-pa-sort="fund" style="margin-top:{_top_margin}">{pa_alert_items_fund}</div>'
-            )
-        else:
-            pa_grid = ""
+    if not (risk_items or pa_alert_items):
+        return ""
+    if pa_alert_items:
+        _top_margin = "4px" if risk_items else "0"
+        pa_grid = (
+            f'<div class="pa-alert-view" data-pa-sort="size" style="margin-top:{_top_margin}">{pa_alert_items_size}</div>'
+            f'<div class="pa-alert-view pa-alert-view-hidden" data-pa-sort="fund" style="margin-top:{_top_margin}">{pa_alert_items_fund}</div>'
+        )
         pa_header = (
             f'<div style="display:flex;align-items:center;gap:12px;margin-top:{"16px" if risk_items else "0"};margin-bottom:8px">'
             f'<span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">PA — Contribuições do dia (|contrib| ≥ {PA_ALERT_MIN_BPS:.0f} bps)</span>'
@@ -743,14 +827,371 @@ def build_html(d: ReportData) -> str:
             f'<button class="pa-tgl active" data-pa-sort="size" onclick="selectPaAlertSort(this,\'size\')">Por Tamanho</button>'
             f'<button class="pa-tgl"        data-pa-sort="fund" onclick="selectPaAlertSort(this,\'fund\')">Por Fundo</button>'
             f'</div></div>'
-        ) if pa_alert_items else ""
-        alerts_html = f"""
+        )
+    else:
+        pa_grid = ""
+        pa_header = ""
+    return f"""
         <div class="alerts-section">
           <div class="alerts-header">Análise{' — Métricas acima do 80° percentil histórico' if risk_items else ''}</div>
           {risk_items}
           {pa_header}
           {pa_grid}
         </div>"""
+
+
+# ── Status consolidado (cross-fund landing card) builders ───────────────────
+def _sum_bp_cell(bps: float) -> str:
+    pct = bps / 100.0
+    if abs(pct) < 0.005:
+        return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+    color = "var(--up)" if bps >= 0 else "var(--down)"
+    return f'<td class="mono" style="color:{color}; text-align:right">{pct:+.2f}%</td>'
+
+
+def _sum_util_cell(util):
+    if util is None:
+        return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+    color = "var(--up)" if util < UTIL_WARN else "var(--warn)" if util < UTIL_HARD else "var(--down)"
+    return f'<td class="mono" style="color:{color}; text-align:right; font-weight:600">{util:.0f}%</td>'
+
+
+def _sum_var_cell(v):
+    if v is None:
+        return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+    return f'<td class="mono" style="color:var(--text); text-align:right">{v:.2f}%</td>'
+
+
+def _sum_dvar_cell(dvar):
+    if dvar is None:
+        return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+    dv_bps = dvar * 100  # pp → bps
+    if abs(dv_bps) < 0.5:
+        return '<td class="mono" style="color:var(--muted); text-align:right">flat</td>'
+    color = "var(--down)" if dv_bps > 0 else "var(--up)"  # VaR up = more risk
+    sign = "+" if dv_bps > 0 else ""
+    return f'<td class="mono" style="color:{color}; text-align:right">{sign}{dv_bps:.0f} bps</td>'
+
+
+def _build_summary_rows_html(*, td_by_short: dict, df_pa, df_frontier,
+                             frontier_bvar: dict | None, series_map: dict,
+                             pm_margem: dict | None, stop_hist: dict | None) -> str:
+    """Per-fund row HTML for the Status consolidado card (Summary view).
+    Columns: status emoji, fund label, dia/mtd/ytd/m12 alpha bps cells, VaR %,
+    Util % vs soft, Δ VaR D-1 bps. MACRO/ALBATROZ also surface stop-utilization
+    via the worst-PM (MACRO) or absolute MTD vs 150 bps (ALBATROZ); the worst
+    of (var_util, stop_util) drives the green/yellow/red dot."""
+    rows = ""
+    for short in FUND_ORDER:
+        td      = td_by_short.get(short)
+        pa_key  = _FUND_PA_KEY.get(short)
+
+        if pa_key and df_pa is not None and not df_pa.empty:
+            sub = df_pa[df_pa["FUNDO"] == pa_key]
+            a_dia = float(sub["dia_bps"].sum()) if not sub.empty else 0.0
+            a_mtd = float(sub["mtd_bps"].sum()) if not sub.empty else 0.0
+            a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
+            a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
+        elif short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
+            # Frontier has no PA in REPORT_ALPHA_ATRIBUTION. Use excess return vs IBOV
+            # (TOTAL_IBVSP_*) to stay apples-to-apples with the other funds' alpha vs CDI.
+            # Aggregate from the TOTAL row only (per-stock rows sum ER differently vs benchmark weights).
+            tot_row = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
+            if not tot_row.empty:
+                a_dia = float(tot_row["TOTAL_IBVSP_DAY"].iloc[0])   * 10000
+                a_mtd = float(tot_row["TOTAL_IBVSP_MONTH"].iloc[0]) * 10000
+                a_ytd = float(tot_row["TOTAL_IBVSP_YEAR"].iloc[0])  * 10000
+            else:
+                a_dia = a_mtd = a_ytd = 0.0
+            a_m12 = 0.0  # no 12M column in mainboard
+        else:
+            a_dia = a_mtd = a_ytd = a_m12 = 0.0
+
+        var_today = var_util = dvar = None
+        if td and td in ALL_FUNDS and series_map and td in series_map:
+            s = series_map[td]
+            s_avail = s[s["VAL_DATE"] <= DATA]
+            if not s_avail.empty:
+                var_today = abs(s_avail.iloc[-1]["var_pct"])
+                cfg = ALL_FUNDS[td]
+                # Informative funds (e.g., Frontier LO) show VaR but without util/limit check
+                if not cfg.get("informative"):
+                    var_util = var_today / cfg["var_soft"] * 100
+                prev = s_avail.iloc[:-1]
+                if not prev.empty:
+                    dvar = var_today - abs(prev.iloc[-1]["var_pct"])
+
+        # Frontier: replace absolute VaR with 3y HS BVaR vs IBOV (current weights)
+        if short == "FRONTIER" and frontier_bvar:
+            var_today = float(frontier_bvar["bvar_pct"])
+            dvar = None  # no D-1 series for HS BVaR yet
+
+        stop_util = None
+        _stop_tip = ""
+        if short == "MACRO" and pm_margem and stop_hist:
+            pm_utils: dict[str, float] = {}
+            cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
+            for pm, margem in pm_margem.items():
+                hist = stop_hist.get(pm)
+                if hist is None: continue
+                cur_row = hist[hist["mes"] == cur_mes]
+                if cur_row.empty: continue
+                budget = float(cur_row["budget_abs"].iloc[0])
+                if budget <= 0: continue
+                consumed = budget - margem
+                pm_utils[pm] = max(consumed, 0) / budget * 100
+            if pm_utils:
+                stop_util  = max(pm_utils.values())
+                _worst_pm  = max(pm_utils, key=pm_utils.get)
+                _stop_tip  = f"Stop: {_worst_pm} {pm_utils[_worst_pm]:.0f}% consumido"
+        elif short == "ALBATROZ":
+            stop_util = (abs(a_mtd) / ALBATROZ_STOP_BPS * 100) if a_mtd < 0 else 0.0
+            if stop_util:
+                _stop_tip = f"Stop budget: {stop_util:.0f}% consumido"
+
+        worst = max(x for x in (var_util, stop_util, 0) if x is not None)
+        if worst >= 100:   status = "🔴"
+        elif worst >= 70:  status = "🟡"
+        else:              status = "🟢"
+
+        _title_attr = f' title="{_stop_tip}"' if _stop_tip else ""
+        rows += (
+            f'<tr onclick="selectFund(\'{short}\')" style="cursor:pointer">'
+            f'<td class="sum-status"{_title_attr}>{status}</td>'
+            f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
+            + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
+            + _sum_var_cell(var_today) + _sum_util_cell(var_util)
+            + _sum_dvar_cell(dvar)
+            + "</tr>"
+        )
+    return rows
+
+
+def _build_bench_rows_html(ibov, cdi, idka_idx_ret: dict | None) -> str:
+    """Pinned bench rows (IBOV, CDI, IDKA 3A, IDKA 10A) for Status consolidado."""
+    def _row(label: str, returns: dict | None) -> str:
+        # data-pinned="1" → sortTableByCol keeps this row at the bottom of tbody.
+        if not returns:
+            empty = '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
+            return (
+                '<tr class="bench-row" data-pinned="1">'
+                '<td class="sum-status"></td>'
+                f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
+                + empty * 4
+                + empty * 3
+                + '</tr>'
+            )
+        return (
+            '<tr class="bench-row" data-pinned="1">'
+            '<td class="sum-status"></td>'
+            f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
+            + _sum_bp_cell(returns["dia"]) + _sum_bp_cell(returns["mtd"])
+            + _sum_bp_cell(returns["ytd"]) + _sum_bp_cell(returns["m12"])
+            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 3
+            + '</tr>'
+        )
+    idka3  = (idka_idx_ret or {}).get("IDKA_3Y")
+    idka10 = (idka_idx_ret or {}).get("IDKA_10Y")
+    return _row("IBOV", ibov) + _row("CDI", cdi) + _row("IDKA 3A", idka3) + _row("IDKA 10A", idka10)
+
+
+# ── Cross-fund top positions builder ─────────────────────────────────────────
+def _build_agg_rows(rf_expo_maps: dict | None, df_frontier, df_quant_sn,
+                    df_evo_direct, df_expo) -> list[dict]:
+    """One row per (fund, factor, product) for the Top Positions card.
+    Excludes via_albatroz (already captured under ALBATROZ direct).
+    Suppression: |brl| < 1_000 for rate factors, < 10_000 for equity/commodity."""
+    agg_rows: list[dict] = []
+    if rf_expo_maps:
+        for short_k, df_k in rf_expo_maps.items():
+            if df_k is None or df_k.empty:
+                continue
+            df_direct = df_k[(df_k["via"] == "direct") & (df_k["factor"].isin(["real", "nominal"]))].copy()
+            if df_direct.empty:
+                continue
+            # ano_eq_brl is already signed BRL-years
+            for r in df_direct.itertuples(index=False):
+                brl = float(r.ano_eq_brl)
+                if abs(brl) < 1_000: continue
+                agg_rows.append({
+                    "fund":    FUND_LABELS.get(short_k, short_k),
+                    "factor":  "Juros Reais (IPCA)" if r.factor == "real" else "Juros Nominais",
+                    "product": r.PRODUCT,
+                    "brl":     brl,
+                    "unit":    "BRL-yr",
+                })
+    # Frontier stocks
+    if df_frontier is not None and not df_frontier.empty:
+        fr_nav = _latest_nav(_FRONTIER_DESK, DATA_STR) or 0
+        stocks = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])]
+        stocks = stocks[stocks["% Cash"].notna()]
+        for _, r in stocks.iterrows():
+            brl = float(r["% Cash"]) * fr_nav
+            if abs(brl) < 1_000: continue
+            agg_rows.append({
+                "fund": "Frontier", "factor": "Equity BR",
+                "product": r["PRODUCT"], "brl": brl, "unit": "BRL",
+            })
+    # QUANT + EVOLUTION single-names (net delta per ticker) — Evolution-direct
+    for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_direct)]:
+        if df_sn is None or df_sn.empty:
+            continue
+        for r in df_sn.itertuples(index=False):
+            brl = float(r.net)
+            if abs(brl) < 10_000: continue
+            agg_rows.append({
+                "fund": FUND_LABELS.get(short_k, short_k), "factor": "Equity BR",
+                "product": r.ticker, "brl": brl, "unit": "BRL",
+            })
+    # MACRO equity (RV-DM / RV-EM) and commodities, aggregated by PRODUCT
+    if df_expo is not None and not df_expo.empty:
+        macro_focus = df_expo[df_expo["rf"].isin(["RV-BZ", "RV-DM", "RV-EM", "COMMODITIES", "P-Metals"])]
+        grp = macro_focus.groupby(["rf", "PRODUCT"], as_index=False).agg(delta=("delta", "sum"))
+        for r in grp.itertuples(index=False):
+            brl = float(r.delta)
+            if abs(brl) < 10_000: continue
+            factor_label = {"RV-BZ": "Equity BR", "RV-DM": "Equity DM", "RV-EM": "Equity EM",
+                            "COMMODITIES": "Commodities", "P-Metals": "Commodities"}[r.rf]
+            agg_rows.append({
+                "fund": "Macro", "factor": factor_label, "product": r.PRODUCT,
+                "brl": brl, "unit": "BRL",
+            })
+    return agg_rows
+
+
+# ── House-wide risk consolidated builder ─────────────────────────────────────
+# Absolute VaR (% NAV) comes from series_map. BVaR (benchmark-relative) from:
+#   IDKAs   → series_map[td]["var_pct"] (engine BVaR; stress_pct holds abs VaR)
+#   Frontier→ frontier_bvar["bvar_pct"] (3y HS vs IBOV)
+#   Others  → BVaR vs CDI ≈ abs VaR (CDI has effectively zero daily vol)
+_BENCH_BY_FUND = {
+    "MACRO": "CDI", "QUANT": "CDI", "EVOLUTION": "CDI", "MACRO_Q": "CDI", "ALBATROZ": "CDI",
+    "BALTRA": "IPCA+",  # benchmark provisório — fundo prev real rates ~3-4Y duration
+    "FRONTIER": "IBOV", "IDKA_3Y": "IDKA 3A", "IDKA_10Y": "IDKA 10A",
+}
+
+
+def _build_house_rows(series_map: dict, td_by_short: dict,
+                      frontier_bvar: dict | None,
+                      frontier_bvar_d1: dict | None) -> list[dict]:
+    """Cross-fund VaR / BVaR snapshot used by the "Risco VaR e BVaR por fundo"
+    card and the per-fund mini briefings. One row per fund in FUND_ORDER that
+    has a series + NAV. BVaR for non-IDKA, non-FRONTIER funds equals abs VaR
+    (CDI bench → near-zero daily vol)."""
+    house_rows: list[dict] = []
+    for short in FUND_ORDER:
+        td = td_by_short.get(short)
+        if td is None:
+            continue
+        s = series_map.get(td)
+        if s is None or s.empty:
+            continue
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if s_avail.empty:
+            continue
+        cfg_ = ALL_FUNDS[td]
+        nav_k = _latest_nav(td, DATA_STR)
+        if not nav_k:
+            continue
+        last = s_avail.iloc[-1]
+        prev = s_avail.iloc[-2] if len(s_avail) >= 2 else None
+        if cfg_.get("primary") == "bvar":          # IDKAs
+            abs_var_pct    = abs(float(last.get("stress_pct", 0.0)))
+            rel_var_pct    = abs(float(last.get("var_pct",    0.0)))
+            abs_var_pct_d1 = abs(float(prev.get("stress_pct", 0.0))) if prev is not None else None
+            bvar_pct_d1    = abs(float(prev.get("var_pct",    0.0))) if prev is not None else None
+        else:
+            abs_var_pct    = abs(float(last.get("var_pct", 0.0)))
+            abs_var_pct_d1 = abs(float(prev.get("var_pct", 0.0))) if prev is not None else None
+            if short == "FRONTIER" and frontier_bvar:
+                rel_var_pct = float(frontier_bvar["bvar_pct"])
+                bvar_pct_d1 = float(frontier_bvar_d1["bvar_pct"]) if frontier_bvar_d1 else None
+            else:
+                rel_var_pct = abs_var_pct
+                bvar_pct_d1 = abs_var_pct_d1
+        var_brl  = abs_var_pct / 100.0 * nav_k
+        bvar_brl = rel_var_pct / 100.0 * nav_k
+        house_rows.append({
+            "short":       short, "label": FUND_LABELS.get(short, short),
+            "bench":       _BENCH_BY_FUND.get(short, "—"),
+            "nav":         nav_k,
+            "var_pct":     abs_var_pct,  "var_brl":   var_brl,
+            "bvar_pct":    rel_var_pct,  "bvar_brl":  bvar_brl,
+            "var_pct_d1":  abs_var_pct_d1,
+            "bvar_pct_d1": bvar_pct_d1,
+        })
+    return house_rows
+
+
+def build_html(d: ReportData) -> str:
+    (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
+     df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
+     df_quant_sn, quant_nav, quant_legs,
+     df_evo_sn, evo_nav, evo_legs, df_evo_direct,
+     df_alb_expo, alb_nav,
+     df_baltra_expo, baltra_nav,
+     df_frontier, frontier_bvar, frontier_bvar_d1, df_frontier_ibov, df_frontier_smll, df_frontier_sectors,
+     df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
+     position_changes, dist_map, dist_map_prev, dist_actuals,
+     vol_regime_map, pm_book_var, expo_date_label, data_manifest,
+     df_quant_expo, quant_expo_nav, df_quant_expo_d1, quant_expo_nav_d1, df_quant_var, df_quant_var_d1,
+     df_evo_expo, evo_expo_nav, df_evo_expo_d1, evo_expo_nav_d1, df_evo_var, df_evo_var_d1,
+     df_evo_pnl_prod) = (
+        d.series_map, d.stop_hist, d.df_today, d.df_expo, d.df_var, d.macro_aum,
+        d.df_expo_d1, d.df_var_d1, d.df_pnl_prod, d.pm_margem,
+        d.df_quant_sn, d.quant_nav, d.quant_legs,
+        d.df_evo_sn, d.evo_nav, d.evo_legs, d.df_evo_direct,
+        d.df_alb_expo, d.alb_nav,
+        d.df_baltra_expo, d.baltra_nav,
+        d.df_frontier, d.frontier_bvar, d.frontier_bvar_d1, d.df_frontier_ibov, d.df_frontier_smll, d.df_frontier_sectors,
+        d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
+        d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
+        d.vol_regime_map, d.pm_book_var, d.expo_date_label, d.data_manifest,
+        d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.quant_expo_nav_d1, d.df_quant_var, d.df_quant_var_d1,
+        d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.evo_expo_nav_d1, d.df_evo_var, d.df_evo_var_d1,
+        d.df_evo_pnl_prod)
+    market_snap = d.market_snap or {}
+    alerts = []
+    td_by_short = {cfg["short"]: td for td, cfg in ALL_FUNDS.items()}
+    sections = []  # list of (fund_short, report_id, html)
+    evolution_c4_state = {}  # Camada 4 state — populated when EVOLUTION diversificação renders
+
+
+    def _latest_hs_var_bps(short: str) -> float | None:
+        """Latest fund-level HS VaR (bps) — same source as the Risk Monitor card."""
+        td = td_by_short.get(short)
+        if td is None:
+            return None
+        s = series_map.get(td)
+        if s is None or s.empty:
+            return None
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if s_avail.empty:
+            return None
+        return abs(float(s_avail.iloc[-1]["var_pct"])) * 100.0
+
+    def _prev_hs_var_bps(short: str) -> float | None:
+        """D-1 fund-level HS VaR (bps) — for delta vs today."""
+        td = td_by_short.get(short)
+        if td is None:
+            return None
+        s = series_map.get(td)
+        if s is None or s.empty:
+            return None
+        s_avail = s[s["VAL_DATE"] <= DATA]
+        if len(s_avail) < 2:
+            return None
+        return abs(float(s_avail.iloc[-2]["var_pct"])) * 100.0
+
+
+    # Per-fund Risk Monitor sections (extracted to fund_renderers.py)
+    _new_secs, _new_alerts, evolution_c4_state = (
+        build_per_fund_risk_monitor_sections(d, td_by_short=td_by_short, series_map=series_map)
+    )
+    sections.extend(_new_secs)
+    alerts.extend(_new_alerts)
+
+    alerts_html = _build_pa_alerts_html(alerts, df_pa, df_pa_daily)
 
     # MACRO-specific sections
     # Risk Budget tab = stop monitor (PnL × carry) + Budget vs VaR card combined
@@ -995,358 +1436,25 @@ def build_html(d: ReportData) -> str:
     # or Per-Report mode.
     sections_html = "".join(_wrap_tpl(f, r, h) for f, r, h in sections)
 
-    # ── Summary (cross-fund landing) ──────────────────────────────────────
-    def _sum_bp_cell(bps: float) -> str:
-        pct = bps / 100.0
-        if abs(pct) < 0.005:
-            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-        color = "var(--up)" if bps >= 0 else "var(--down)"
-        return f'<td class="mono" style="color:{color}; text-align:right">{pct:+.2f}%</td>'
-
-    def _sum_util_cell(util):
-        if util is None:
-            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-        color = "var(--up)" if util < UTIL_WARN else "var(--warn)" if util < UTIL_HARD else "var(--down)"
-        return f'<td class="mono" style="color:{color}; text-align:right; font-weight:600">{util:.0f}%</td>'
-
-    def _sum_var_cell(v):
-        if v is None:
-            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-        return f'<td class="mono" style="color:var(--text); text-align:right">{v:.2f}%</td>'
-
-    def _sum_dvar_cell(dvar):
-        if dvar is None:
-            return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-        dv_bps = dvar * 100  # pp → bps
-        if abs(dv_bps) < 0.5:
-            return '<td class="mono" style="color:var(--muted); text-align:right">flat</td>'
-        color = "var(--down)" if dv_bps > 0 else "var(--up)"  # VaR up = more risk
-        sign = "+" if dv_bps > 0 else ""
-        return f'<td class="mono" style="color:{color}; text-align:right">{sign}{dv_bps:.0f} bps</td>'
-
-    # Gather per-fund summary data
-    summary_rows_html = ""
-    for short in FUND_ORDER:
-        td      = td_by_short.get(short)
-        pa_key  = _FUND_PA_KEY.get(short)
-
-        if pa_key and df_pa is not None and not df_pa.empty:
-            sub = df_pa[df_pa["FUNDO"] == pa_key]
-            a_dia = float(sub["dia_bps"].sum()) if not sub.empty else 0.0
-            a_mtd = float(sub["mtd_bps"].sum()) if not sub.empty else 0.0
-            a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
-            a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
-        elif short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
-            # Frontier has no PA in REPORT_ALPHA_ATRIBUTION. Use excess return vs IBOV
-            # (TOTAL_IBVSP_*) to stay apples-to-apples with the other funds' alpha vs CDI.
-            # Aggregate from the TOTAL row only (per-stock rows sum ER differently vs benchmark weights).
-            tot_row = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
-            if not tot_row.empty:
-                a_dia = float(tot_row["TOTAL_IBVSP_DAY"].iloc[0])   * 10000
-                a_mtd = float(tot_row["TOTAL_IBVSP_MONTH"].iloc[0]) * 10000
-                a_ytd = float(tot_row["TOTAL_IBVSP_YEAR"].iloc[0])  * 10000
-            else:
-                a_dia = a_mtd = a_ytd = 0.0
-            a_m12 = 0.0  # no 12M column in mainboard
-        else:
-            a_dia = a_mtd = a_ytd = a_m12 = 0.0
-
-        var_today = var_util = dvar = None
-        if td and td in ALL_FUNDS and series_map and td in series_map:
-            s = series_map[td]
-            s_avail = s[s["VAL_DATE"] <= DATA]
-            if not s_avail.empty:
-                var_today = abs(s_avail.iloc[-1]["var_pct"])
-                cfg = ALL_FUNDS[td]
-                # Informative funds (e.g., Frontier LO) show VaR but without util/limit check
-                if not cfg.get("informative"):
-                    var_util = var_today / cfg["var_soft"] * 100
-                prev = s_avail.iloc[:-1]
-                if not prev.empty:
-                    dvar = var_today - abs(prev.iloc[-1]["var_pct"])
-
-        # Frontier: replace absolute VaR with 3y HS BVaR vs IBOV (current weights)
-        if short == "FRONTIER" and frontier_bvar:
-            var_today = float(frontier_bvar["bvar_pct"])
-            dvar = None  # no D-1 series for HS BVaR yet
-
-        stop_util = None
-        _stop_tip = ""
-        if short == "MACRO" and pm_margem and stop_hist:
-            pm_utils: dict[str, float] = {}
-            cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
-            for pm, margem in pm_margem.items():
-                hist = stop_hist.get(pm)
-                if hist is None: continue
-                cur_row = hist[hist["mes"] == cur_mes]
-                if cur_row.empty: continue
-                budget = float(cur_row["budget_abs"].iloc[0])
-                if budget <= 0: continue
-                consumed = budget - margem
-                pm_utils[pm] = max(consumed, 0) / budget * 100
-            if pm_utils:
-                stop_util  = max(pm_utils.values())
-                _worst_pm  = max(pm_utils, key=pm_utils.get)
-                _stop_tip  = f"Stop: {_worst_pm} {pm_utils[_worst_pm]:.0f}% consumido"
-        elif short == "ALBATROZ":
-            stop_util = (abs(a_mtd) / ALBATROZ_STOP_BPS * 100) if a_mtd < 0 else 0.0
-            if stop_util:
-                _stop_tip = f"Stop budget: {stop_util:.0f}% consumido"
-
-        worst = max(x for x in (var_util, stop_util, 0) if x is not None)
-        if worst >= 100:   status = "🔴"
-        elif worst >= 70:  status = "🟡"
-        else:              status = "🟢"
-
-        _title_attr = f' title="{_stop_tip}"' if _stop_tip else ""
-        summary_rows_html += (
-            f'<tr onclick="selectFund(\'{short}\')" style="cursor:pointer">'
-            f'<td class="sum-status"{_title_attr}>{status}</td>'
-            f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
-            + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
-            + _sum_var_cell(var_today) + _sum_util_cell(var_util)
-            + _sum_dvar_cell(dvar)
-            + "</tr>"
-        )
-
-    # ── Benchmark reference rows (IBOV, CDI) ───────────────────────────────────
-    def _bench_row(label: str, returns: dict | None) -> str:
-        # data-pinned="1" → sortTableByCol keeps this row at the bottom of tbody.
-        if not returns:
-            empty = '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
-            return (
-                '<tr class="bench-row" data-pinned="1">'
-                '<td class="sum-status"></td>'
-                f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
-                + empty * 4
-                + empty * 3
-                + '</tr>'
-            )
-        return (
-            '<tr class="bench-row" data-pinned="1">'
-            '<td class="sum-status"></td>'
-            f'<td class="sum-fund" style="font-style:italic; color:var(--muted)">{label}</td>'
-            + _sum_bp_cell(returns["dia"]) + _sum_bp_cell(returns["mtd"])
-            + _sum_bp_cell(returns["ytd"]) + _sum_bp_cell(returns["m12"])
-            + '<td class="mono" style="color:var(--muted); text-align:right">—</td>' * 3
-            + '</tr>'
-        )
-
-    idka3  = (idka_idx_ret or {}).get("IDKA_3Y")
-    idka10 = (idka_idx_ret or {}).get("IDKA_10Y")
-    bench_rows_html = (
-        _bench_row("IBOV",     ibov)
-      + _bench_row("CDI",      cdi)
-      + _bench_row("IDKA 3A",  idka3)
-      + _bench_row("IDKA 10A", idka10)
+    summary_rows_html = _build_summary_rows_html(
+        td_by_short=td_by_short, df_pa=df_pa, df_frontier=df_frontier,
+        frontier_bvar=frontier_bvar, series_map=series_map,
+        pm_margem=pm_margem, stop_hist=stop_hist,
     )
+    bench_rows_html = _build_bench_rows_html(ibov, cdi, idka_idx_ret)
 
     # ── House-wide risk consolidated ───────────────────────────────────────────
-    # Absolute VaR (% NAV) comes from series_map. BVaR (benchmark-relative) from:
-    #   IDKAs   → series_map[td]["var_pct"] (engine BVaR; stress_pct holds abs VaR)
-    #   Frontier→ frontier_bvar["bvar_pct"] (3y HS vs IBOV)
-    #   Others  → BVaR vs CDI ≈ abs VaR (CDI has effectively zero daily vol)
-    _BENCH_BY_FUND = {
-        "MACRO": "CDI", "QUANT": "CDI", "EVOLUTION": "CDI", "MACRO_Q": "CDI", "ALBATROZ": "CDI",
-        "BALTRA": "IPCA+",  # benchmark provisório — fundo prev real rates ~3-4Y duration
-        "FRONTIER": "IBOV", "IDKA_3Y": "IDKA 3A", "IDKA_10Y": "IDKA 10A",
-    }
-    house_rows = []
-    for short in FUND_ORDER:
-        td = td_by_short.get(short)
-        if td is None:
-            continue
-        s = series_map.get(td)
-        if s is None or s.empty:
-            continue
-        s_avail = s[s["VAL_DATE"] <= DATA]
-        if s_avail.empty:
-            continue
-        cfg_ = ALL_FUNDS[td]
-        nav_k = _latest_nav(td, DATA_STR)
-        if not nav_k:
-            continue
-        last = s_avail.iloc[-1]
-        prev = s_avail.iloc[-2] if len(s_avail) >= 2 else None
-        if cfg_.get("primary") == "bvar":          # IDKAs
-            abs_var_pct    = abs(float(last.get("stress_pct", 0.0)))
-            rel_var_pct    = abs(float(last.get("var_pct",    0.0)))
-            abs_var_pct_d1 = abs(float(prev.get("stress_pct", 0.0))) if prev is not None else None
-            bvar_pct_d1    = abs(float(prev.get("var_pct",    0.0))) if prev is not None else None
-        else:
-            abs_var_pct    = abs(float(last.get("var_pct", 0.0)))
-            abs_var_pct_d1 = abs(float(prev.get("var_pct", 0.0))) if prev is not None else None
-            if short == "FRONTIER" and frontier_bvar:
-                rel_var_pct = float(frontier_bvar["bvar_pct"])
-                bvar_pct_d1 = float(frontier_bvar_d1["bvar_pct"]) if frontier_bvar_d1 else None
-            else:
-                rel_var_pct = abs_var_pct
-                bvar_pct_d1 = abs_var_pct_d1
-        var_brl  = abs_var_pct / 100.0 * nav_k
-        bvar_brl = rel_var_pct / 100.0 * nav_k
-        house_rows.append({
-            "short":       short, "label": FUND_LABELS.get(short, short),
-            "bench":       _BENCH_BY_FUND.get(short, "—"),
-            "nav":         nav_k,
-            "var_pct":     abs_var_pct,  "var_brl":   var_brl,
-            "bvar_pct":    rel_var_pct,  "bvar_brl":  bvar_brl,
-            "var_pct_d1":  abs_var_pct_d1,
-            "bvar_pct_d1": bvar_pct_d1,
-        })
+    house_rows = _build_house_rows(series_map, td_by_short, frontier_bvar, frontier_bvar_d1)
 
     # Per-fund mini briefing — registered as "briefing" report (first tab)
     _house_by_short = {r["short"]: r for r in house_rows}
-    # ── Breakdown by risk factor — rows = factors, columns = funds (R$ exposure) ──
-    # Factor sources:
-    #   Real rates / Nominal rates / IPCA Index → rf_expo_maps (IDKAs + Albatroz)
-    #   Equity BR (IBOV)                        → Frontier NAV (100% long); others pending
-    factor_matrix = {  # factor_key -> {short: brl, ...}
-        "Juros Reais (IPCA)": {},
-        "Juros Reais (IGPM)": {},
-        "Juros Nominais":     {},
-        "IPCA Idx":           {},
-        "IGPM Idx":           {},
-        "Equity BR":          {},
-        "Equity DM":          {},
-        "Equity EM":          {},
-        "FX":                 {},
-        "Commodities":        {},
-    }
-    if rf_expo_maps:
-        # rf_expo_maps.ano_eq_brl tem sign flip p/ chart (long duration = positivo).
-        # factor_matrix usa convenção DV01 (tomado=positivo, dado=negativo).
-        # → negar apenas "real" e "nominal" (fatores de taxa); "ipca_idx" é carry,
-        # sem flip no rf_expo_maps, não precisa negar.
-        _DV01_SIGN_FLIP = {"real": True, "real_igpm": True, "nominal": True,
-                           "ipca_idx": False, "igpm_idx": False}
-        for short_k, df_k in rf_expo_maps.items():
-            if df_k is None or df_k.empty:
-                continue
-            # Evita double-counting de Albatroz: cada fundo (IDKA, MACRO, etc.)
-            # tem via='via_albatroz' capturando sua fatia de Albatroz; ALBATROZ
-            # row já tem Albatroz inteiro via 'direct'. Filtrar via=='direct'
-            # garante que cada bond aparece em apenas uma linha.
-            # EVOLUTION (lookthrough_only=True) tem via='lookthrough' para TUDO
-            # (inclui Macro/Quant/Frontier slices que já estão em outras linhas)
-            # → pular por inteiro para rate factors (sua exposição de juros é
-            # indireta via filhos).
-            if short_k == "EVOLUTION":
-                continue
-            df_direct = df_k[df_k["via"] == "direct"]
-            if df_direct.empty:
-                continue
-            for factor_key, factor_col in [
-                ("Juros Reais (IPCA)", "real"),
-                ("Juros Reais (IGPM)", "real_igpm"),
-                ("Juros Nominais",     "nominal"),
-                ("IPCA Idx",           "ipca_idx"),
-                ("IGPM Idx",           "igpm_idx"),
-            ]:
-                v = float(df_direct[df_direct["factor"] == factor_col]["ano_eq_brl"].sum())
-                if _DV01_SIGN_FLIP.get(factor_col, False):
-                    v = -v
-                if abs(v) >= 1_000:
-                    factor_matrix[factor_key][short_k] = v
-    # Frontier = 100% equity BR long (NAV in R$)
-    if df_frontier is not None and not df_frontier.empty:
-        fr_tot = df_frontier[df_frontier["PRODUCT"] == "TOTAL"]
-        if not fr_tot.empty:
-            gross_pct = float(fr_tot["% Cash"].iloc[0])
-            fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
-            if gross_pct and fr_nav:
-                factor_matrix["Equity BR"]["FRONTIER"] = gross_pct * fr_nav
-    # QUANT + EVOLUTION equity BR — use Evolution-direct only (not look-through)
-    # to avoid double-counting positions already held via QUANT / Frontier.
-    if df_quant_sn is not None and not df_quant_sn.empty:
-        q_equity = float(df_quant_sn["net"].sum())
-        if abs(q_equity) >= 1_000:
-            factor_matrix["Equity BR"]["QUANT"] = q_equity
-    _evo_sn_for_agg = df_evo_direct if df_evo_direct is not None and not df_evo_direct.empty else None
-    if _evo_sn_for_agg is not None:
-        e_equity = float(_evo_sn_for_agg["net"].sum())
-        if abs(e_equity) >= 1_000:
-            factor_matrix["Equity BR"]["EVOLUTION"] = e_equity
 
-    # MACRO from df_expo (rf column = RV-BZ / RV-DM / RV-EM / FX-* / RF-BZ / COMMODITIES / P-Metals)
-    if df_expo is not None and not df_expo.empty and macro_aum:
-        rf_to_factor = {
-            "RV-BZ":       "Equity BR",
-            "RV-DM":       "Equity DM",
-            "RV-EM":       "Equity EM",
-            "COMMODITIES": "Commodities",
-            "P-Metals":    "Commodities",
-        }
-        for rf_val, factor_key in rf_to_factor.items():
-            v = float(df_expo[df_expo["rf"] == rf_val]["delta"].sum())
-            if abs(v) >= 1_000:
-                factor_matrix[factor_key]["MACRO"] = factor_matrix[factor_key].get("MACRO", 0.0) + v
-        fx_delta = float(df_expo[df_expo["rf"].str.startswith("FX-", na=False)]["delta"].sum())
-        if abs(fx_delta) >= 1_000:
-            factor_matrix["FX"]["MACRO"] = fx_delta
-        # MACRO nominal-rate duration: sum DELTA on RF-BZ / BRL Rate Curve primitive.
-        # IMPORTANT: DELTA in LOTE_PRODUCT_EXPO is already duration-weighted
-        # (= POSITION × MOD_DURATION). Do NOT multiply by MOD_DURATION again —
-        # the prior `delta_dur` column squared it. Filtering to BRL Rate Curve
-        # avoids double-counting primitives (IPCA Coupon, etc.) on hybrid rows.
-        rf_bz_nom = df_expo[(df_expo["rf"] == "RF-BZ")
-                            & (df_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")]
-        if not rf_bz_nom.empty:
-            nominal_brl_yr = float(rf_bz_nom["delta"].sum())
-            if abs(nominal_brl_yr) >= 1_000:
-                factor_matrix["Juros Nominais"]["MACRO"] = nominal_brl_yr
-
-    # QUANT non-equity factors from df_quant_expo (has `factor` col already classified
-    # by `_quant_classify_factor`). Equity BR was populated earlier via single-name.
-    # Here: Juros Nominais (SIST_RF), FX (SIST_FX + SIST_GLOBAL), Commodities (SIST_COMMO).
-    if df_quant_expo is not None and not df_quant_expo.empty:
-        # For nominal rates, filter to BRL Rate Curve primitive to avoid double-count.
-        quant_nominal = df_quant_expo[
-            (df_quant_expo["factor"] == "Juros Nominais")
-            & (df_quant_expo["PRIMITIVE_CLASS"] == "BRL Rate Curve")
-        ]
-        if not quant_nominal.empty:
-            v = float(quant_nominal["delta"].sum())
-            if abs(v) >= 1_000:
-                factor_matrix["Juros Nominais"]["QUANT"] = (
-                    factor_matrix["Juros Nominais"].get("QUANT", 0.0) + v
-                )
-        for q_fac in ("FX", "Commodities"):
-            sub = df_quant_expo[df_quant_expo["factor"] == q_fac]
-            if sub.empty:
-                continue
-            v = float(sub["delta"].sum())
-            if abs(v) >= 1_000:
-                factor_matrix[q_fac]["QUANT"] = (
-                    factor_matrix[q_fac].get("QUANT", 0.0) + v
-                )
-
-    # Benchmark allocations per fund, per factor (for net-of-bench view).
-    # Real rates: IDKAs have duration-concentrated real-rate bench (3y × NAV, 10y × NAV).
-    # IPCA Idx:   IDKAs bench = 100% NAV of inflation carry.
-    # Equity BR:  Frontier bench is IBOV = 100% NAV long equity.
-    # All other factor×fund cells: bench = 0 (CDI-benchmarked funds or factor not in bench).
-    nav_by_short = {}
-    for short in FUND_ORDER:
-        td = td_by_short.get(short)
-        if td:
-            nav_by_short[short] = _latest_nav(td, DATA_STR) or 0.0
-    bench_matrix = {k: {} for k in factor_matrix}
-    # Juros Reais/Nominais: factor_matrix está em convenção DV01 (long bond = negativo).
-    # Bench long IPCA duration do IDKA também é "long bond" → DV01 negativo.
-    # IPCA Idx / Equity: sem sign flip (face-value / notional raw), bench positivo.
-    # Só setar bench quando o fundo tem gross data — evita "-100%" fantasma
-    # em Líquido se o fetch do gross falhar.
-    if nav_by_short.get("IDKA_3Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_3Y"):
-        bench_matrix["Juros Reais (IPCA)"]["IDKA_3Y"] = -3.0 * nav_by_short["IDKA_3Y"]
-    if nav_by_short.get("IDKA_3Y") and factor_matrix["IPCA Idx"].get("IDKA_3Y"):
-        bench_matrix["IPCA Idx"]["IDKA_3Y"]           =  1.0 * nav_by_short["IDKA_3Y"]
-    if nav_by_short.get("IDKA_10Y") and factor_matrix["Juros Reais (IPCA)"].get("IDKA_10Y"):
-        bench_matrix["Juros Reais (IPCA)"]["IDKA_10Y"] = -10.0 * nav_by_short["IDKA_10Y"]
-    if nav_by_short.get("IDKA_10Y") and factor_matrix["IPCA Idx"].get("IDKA_10Y"):
-        bench_matrix["IPCA Idx"]["IDKA_10Y"]           =   1.0 * nav_by_short["IDKA_10Y"]
-    if nav_by_short.get("FRONTIER") and factor_matrix["Equity BR"].get("FRONTIER"):
-        bench_matrix["Equity BR"]["FRONTIER"] = 1.0 * nav_by_short["FRONTIER"]
-
+    factor_matrix, bench_matrix, nav_by_short = _build_factor_matrix(
+        rf_expo_maps=rf_expo_maps, df_frontier=df_frontier,
+        df_quant_sn=df_quant_sn, df_evo_direct=df_evo_direct,
+        df_expo=df_expo, df_quant_expo=df_quant_expo,
+        macro_aum=macro_aum, td_by_short=td_by_short,
+    )
 
     # Per-fund mini briefings. Rebuild sections_html so briefings come FIRST
     # within each fund's block (DOM order = tab order: briefing → ... → others).
@@ -1425,64 +1533,7 @@ def build_html(d: ReportData) -> str:
             _reordered_html += _wrap_tpl(f, "peers", _peers_body)
     sections_html = _reordered_html
 
-    # ── Cross-fund top positions — consolidated list ──────────────────────────
-    # One row per (fund, factor, product); exclude via_albatroz to avoid double-counting
-    # (those positions are already captured under ALBATROZ direct).
-    agg_rows = []
-    if rf_expo_maps:
-        for short_k, df_k in rf_expo_maps.items():
-            if df_k is None or df_k.empty:
-                continue
-            df_direct = df_k[(df_k["via"] == "direct") & (df_k["factor"].isin(["real", "nominal"]))].copy()
-            if df_direct.empty:
-                continue
-            # ANO_EQ ×  NAV not needed — ano_eq_brl is already signed BRL-years
-            for r in df_direct.itertuples(index=False):
-                brl = float(r.ano_eq_brl)
-                if abs(brl) < 1_000: continue
-                agg_rows.append({
-                    "fund":    FUND_LABELS.get(short_k, short_k),
-                    "factor":  "Juros Reais (IPCA)" if r.factor == "real" else "Juros Nominais",
-                    "product": r.PRODUCT,
-                    "brl":     brl,
-                    "unit":    "BRL-yr",
-                })
-    # Frontier stocks
-    if df_frontier is not None and not df_frontier.empty:
-        fr_nav = _latest_nav("Frontier A\u00e7\u00f5es FIC FI", DATA_STR) or 0
-        stocks = df_frontier[~df_frontier["PRODUCT"].isin(["TOTAL", "SUBTOTAL"])]
-        stocks = stocks[stocks["% Cash"].notna()]
-        for _, r in stocks.iterrows():
-            brl = float(r["% Cash"]) * fr_nav
-            if abs(brl) < 1_000: continue
-            agg_rows.append({
-                "fund": "Frontier", "factor": "Equity BR",
-                "product": r["PRODUCT"], "brl": brl, "unit": "BRL",
-            })
-    # QUANT + EVOLUTION single-names (net delta per ticker) — Evolution-direct
-    for short_k, df_sn in [("QUANT", df_quant_sn), ("EVOLUTION", df_evo_direct)]:
-        if df_sn is None or df_sn.empty:
-            continue
-        for r in df_sn.itertuples(index=False):
-            brl = float(r.net)
-            if abs(brl) < 10_000: continue
-            agg_rows.append({
-                "fund": FUND_LABELS.get(short_k, short_k), "factor": "Equity BR",
-                "product": r.ticker, "brl": brl, "unit": "BRL",
-            })
-    # MACRO equity (RV-DM / RV-EM) and commodities, aggregated by PRODUCT
-    if df_expo is not None and not df_expo.empty:
-        macro_focus = df_expo[df_expo["rf"].isin(["RV-BZ", "RV-DM", "RV-EM", "COMMODITIES", "P-Metals"])]
-        grp = macro_focus.groupby(["rf", "PRODUCT"], as_index=False).agg(delta=("delta", "sum"))
-        for r in grp.itertuples(index=False):
-            brl = float(r.delta)
-            if abs(brl) < 10_000: continue
-            factor_label = {"RV-BZ": "Equity BR", "RV-DM": "Equity DM", "RV-EM": "Equity EM",
-                            "COMMODITIES": "Commodities", "P-Metals": "Commodities"}[r.rf]
-            agg_rows.append({
-                "fund": "Macro", "factor": factor_label, "product": r.PRODUCT,
-                "brl": brl, "unit": "BRL",
-            })
+    agg_rows = _build_agg_rows(rf_expo_maps, df_frontier, df_quant_sn, df_evo_direct, df_expo)
 
     top_positions_html = build_top_positions_card(agg_rows, bench_matrix)
 
