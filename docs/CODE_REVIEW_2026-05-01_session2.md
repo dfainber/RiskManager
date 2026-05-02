@@ -11,6 +11,61 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-01, session 3 — quantity-over-quality pass)
+
+All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 hygiene shipped across **9 commits** since this doc was written. Both dark + meeting reports regenerate clean.
+
+| § | Item | Status | Commit |
+|----|------|--------|--------|
+| 1.0 | `risk_runtime.py` argv-as-date crash | ✅ DONE | `b925bb4` |
+| 1.0b | `generate_risk_report.py:5113` `or 1.0` regression | ✅ DONE | `b925bb4` |
+| 1.0c | `metrics.py:392` shorts dropped from PA outliers | ✅ DONE | `b925bb4` |
+| 1.0d | `expo_renderers.py:1707/1717` Dur double-MD | ✅ DONE | `42ca65f` |
+| 1.0e | `credit/credit_data.py:140` multi-book join | ✅ DONE | `c594e77` |
+| 1.0f | `generate_monthly_review.py:372` IDKA BVaR sign-flip | ✅ DONE | `b925bb4` |
+| 1.1 | Briefing "tranquilo" gate tightening | ✅ DONE | `d78992a` |
+| 2.1 | Skill-refresh sprint (5 SKILL.md + 14 `glpg-data-fetch` refs) | ✅ DONE | `9c886f5` |
+| 2.2 | Status table "Total (soma)" rename | ✅ DONE | `4fee511` |
+| 2.4 | Mudanças Significativas D-1 null guard | ✅ DONE | `4fee511` |
+| 2.5 | Risk Budget absolute-margem secondary gate | ✅ DONE | `84f465d` |
+| 2.7 | Top Posições "% da posição" rename | ✅ DONE | `4fee511` |
+| 2.8 | `Commodities ` trailing-space CLASSE strip | ✅ DONE | `4fee511` |
+| 2.13c | `_prev_bday(DATA_STR)` not `str(_prev_bday(DATA))` | ✅ DONE | `4fee511` |
+| 2.13d | `generate_credit_report` `nav_at or 0.0` cascading | ✅ DONE | `84f465d` |
+| 2.13e | `data_fetch.fetch_book_pnl` `abs(...) or None` guard | ✅ DONE | `4fee511` |
+| 2.13g | float-zero anti-pattern (3 sites) | ✅ DONE | `84f465d` |
+| 2.13i | PA-FX-split sort_key consistency (abs YTD) | ✅ DONE | `4fee511` |
+| 2.13j | m12 SQL window `>` → `>=` (5 files) | ✅ DONE | `4fee511` |
+| 2.13k | 2 SyntaxWarnings (Python 3.12-readiness) | ✅ DONE | `777dc94` |
+| 3.1 | unused imports cleanup (19 names total) | ✅ DONE | `777dc94` + `4fee511` |
+| 3.2 | vacuous comments cleanup (~12 sites) | ✅ DONE | `84f465d` |
+| 3.3 | misleading docstrings (compute_pm_hs_var, compute_distribution_stats, REP_RET_CLEAN_BPS, ret_window) | ✅ DONE | `4fee511` |
+| 3.3a | NaN-fragile `or "—"` (4 sites) | ✅ DONE | `777dc94` |
+| 3.3b | Q1/Q3 quartile bucket drift | ✅ DONE | `4fee511` |
+| 3.3d | `read_text()` explicit `encoding="ascii"` | ✅ DONE | `777dc94` |
+| 3.3f | `ret_window` None-semantics docstring | ✅ DONE | `4fee511` |
+| 4.4 | Dead `DATE_60D` removed | ✅ DONE | `4fee511` |
+| 4.5 | svg_renderers `#fb923c` alert color invariant comment | ✅ DONE | `4fee511` |
+| 4.6 | PA-FX-split docstring slim-down (4 scripts) | ✅ DONE | `4fee511` |
+
+### Still open (deferred — bigger sessions)
+- §1.2 Briefing Executivo headline priority (UX — needs design call)
+- §1.3 Status DIA fallback when PA on D-1 (UX)
+- §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
+- §1.5 / §1.6 `build_html` / `main()` extraction (half-day each — partly in progress per `c8a93a6` / `7bb06fe` / `d98dae1`)
+- §2.3 Breakdown por Fator unit-mixing
+- §2.6 Frontier perpetual "—" (TE-based metric needed)
+- §2.9 / §2.10 / §2.11 carryover iterrows + iloc guards
+- §2.13a / §2.13b / §2.13f VaR-DoD NAV axis + IDKA SHARE flow PnL (need careful NAV-axis review)
+- §2.13h Desk-name centralization (many call sites)
+- §3.3c Issuer "Cruz" hardcode → JSON
+- §3.4–§3.9 aesthetic carryovers (hex codes, dado/tomado convention, `data-no-sort`, meeting-port hardcodes, Util Stop column)
+- §4.1 Python venv discipline (`from __future__ import annotations`)
+- §4.2 CLI entry-point convention
+- §4.3 `glpg_fetch.py` hardcoded host/user fallbacks (security)
+
+---
+
 ## TL;DR — top 5 things to fix
 
 1. **`pnl_server.py --port 5050` crashes immediately** — `risk_runtime` imports `_parse_date_arg(sys.argv[1])` greedily, which reads `'--port'` as a date and exits via `sys.exit(...)`. Verified at [`risk_runtime.py:27`](../risk_runtime.py#L27). Same crash for `generate_credit_report.py --fund SEA_LION` and any future entry-point with non-date argv[1]. *True HIGH — unrelated tools currently broken.*

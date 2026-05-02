@@ -162,31 +162,25 @@ e fixes (entradas anteriores migradas pra fora do CLAUDE.md em 2026-05-01).
 
 Fila priorizada (fazer nesta ordem):
 
-1. ~~**PA-FX-split dedup**~~ → **DONE 2026-05-01 session 2** (commits 16319e2 +
-   9cfc673). `fx_split_classify` + helpers + CSS/JS centralizados em
-   `pa_renderers.py`; net −167 LOC; HTMLs byte-identical.
-2. **6 NEW HIGH correctness fixes** — ver `docs/CODE_REVIEW_2026-05-01_session2.md`
-   §1.0 a–f. Inclui: argv crash em `risk_runtime.py:27` (quebra `pnl_server.py`),
-   `or 1.0` regression em `generate_risk_report.py:5113`, shorts dropped em
-   `metrics.py:392`, double-MD em `expo_renderers.py:1707`, multi-book join em
-   `credit/credit_data.py:140`, IDKA BVaR sign-flip em `generate_monthly_review.py:372`.
-3. **Briefing tightening** — rule-based "tranquilo" gate e priority de headline
-   (review §1.1, §1.2). Stopgap até LLM substitution.
-4. **LLM briefings** — substituir rule-based por Haiku 4.5 em
-   `fund_renderers._build_fund_mini_briefing` (continua aberto).
-5. **Skill-refresh sprint** — 5 SKILL.md desatualizados + 8 references a um
-   `glpg-data-fetch` inexistente. Review §2.1.
-6. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia)
-7. **`build_html` mega-function** (4,419 linhas) — extract tab-switching +
-   fund section builders pra `_build_tab_*` helpers; mover CSS/JS blob pra
-   `html_assets.py`. Maior impacto, mais risco — sessão dedicada.
+1. ~~**PA-FX-split dedup**~~ → **DONE 2026-05-01 session 2** (commits 16319e2 + 9cfc673).
+2. ~~**6 NEW HIGH correctness fixes**~~ → **DONE 2026-05-01 session 3** (commits b925bb4 + 42ca65f + c594e77).
+3. ~~**Briefing tightening (rule-based)**~~ → **DONE 2026-05-01 session 3** (commit d78992a). "tranquilo" gate now util≥70 / |Δ VaR|≥5 / |alpha|≥3 / |MTD|≥25 — count dropped 8→1 of 19 cards.
+4. ~~**Skill-refresh sprint**~~ → **DONE 2026-05-01 session 3** (commit 9c886f5). 5 SKILL.md refreshed + 14 `glpg-data-fetch` references corrected.
+5. ~~**Day-3 hygiene** (vacuous comments, unused imports, NaN/zero edges, m12 boundary, docstrings, small renames)~~ → **DONE 2026-05-01 session 3** (commits 4fee511 + 84f465d + 777dc94).
 
-**Backlog primário agora**: `docs/CODE_REVIEW_2026-05-01_session2.md` (composta
-em 2026-05-01 sessão 2 a partir de 3 review-agents paralelos cobrindo
-correctness, content/UX do HTML renderizado, e qualidade de comentários).
-A `docs/CODE_REVIEW_2026-05-01.md` original tem 3 itens fechados nesta sessão
-(PA-FX-split + §2d) e 9 carryover ainda abertos cross-listados na nova review.
-Roadmap analítico continua em `memory/project_todo_risk_analytics_roadmap.md`.
+Próximas (ainda abertas):
+
+6. **Briefing Executivo headline priority** (§1.2) — `max(margem_inverse, util_VaR, |Δ VaR|)`; reordenar "Atenção" ABOVE "o que mudou".
+7. **Status DIA fallback when PA on D-1** (§1.3) — render "+0.04% (D-1)" instead of silent "—".
+8. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
+9. **`build_html` mega-function** (`generate_risk_report.py` ~2k linhas restantes) — extract tab-switching + fund section builders. Em progresso (commits c8a93a6 / 7bb06fe / d98dae1 já extraíram CSS/JS + per-fund + pnl/peers section shells). Sessão dedicada para o restante.
+10. **`main()` 540 linhas** (§1.6) — split em `_fetch_all_data` / `_build_report_data` / `_write_output`.
+11. **VaR DoD NAV-axis** (§2.13a / §2.13b / §2.13f) — D-1 contributions divided by D-0 NAV; precisa propagação de `nav_d1` parameter.
+12. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
+13. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
+14. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
+
+**Backlog primário agora**: `docs/CODE_REVIEW_2026-05-01_session2.md` (com STATUS atualizado no topo na sessão 3). A `docs/CODE_REVIEW_2026-05-01.md` original tem todos itens fechados (PA-FX-split + §2d) ou cross-listados na nova review. Roadmap analítico continua em `memory/project_todo_risk_analytics_roadmap.md`.
 
 ---
 

@@ -7,6 +7,96 @@ the latest session.
 
 ---
 
+## 2026-05-01 (sessão 3, late) — Quantity-over-quality pass on session-2 review
+
+User-directed bulk closure of `docs/CODE_REVIEW_2026-05-01_session2.md` open items.
+Two parallel sub-sessions cooperated; this is the consolidated history.
+
+### HIGH correctness (commits b925bb4 + 42ca65f + c594e77)
+- **§1.0** `risk_runtime.py` argv-as-date crash — `sys.argv[1]` now regex-gated
+  to `YYYY-MM-DD`; `pnl_server.py --port 5050` no longer crashes at import.
+- **§1.0b** `generate_risk_report.py:5113` `or 1.0` regression — replaced with
+  `_require_nav` so missing NAV in D-1 fallback raises instead of silently
+  rendering MACRO %NAV/bps at ~10⁵× actual.
+- **§1.0c** `metrics.py:373/392` shorts dropped from PA outliers — `> 0` filter
+  replaced with `.abs() > 1e-9` + `today_pos.abs()` denominator. Restores
+  z-scoring for Bracco / Quant_PA / IBOV-future shorts.
+- **§1.0d** `expo_renderers.py:1707/1717` Dur double-MD — `delta_brl` is
+  already POS×MD; old formula was Σ(|POS|×MD²)/Σ(|POS|×MD), biased toward
+  longest-MD. Now `Σ|delta| / Σ(|delta|/MD)` = position-weighted MD.
+- **§1.0e** `credit/credit_data.py:140` price-quality multi-book join —
+  CTEs now `GROUP BY PRODUCT` to prevent N×M explosion. Removes spurious
+  flags in 6 emailed credit PDFs.
+- **§1.0f** `generate_monthly_review.py:372` IDKA BVaR sign-flip — `bvar_raw.abs()
+  * 100` mirrors RPM/RAW path. Prior `-bvar_raw` would silently under-report
+  if engine flipped sign.
+
+### Briefing & docs (commits d78992a + 9c886f5)
+- **§1.1** `fund_renderers._build_fund_mini_briefing` "tranquilo" gate
+  tightened (util≥70 / |Δ VaR|≥5 / |alpha|≥3 / |MTD|≥25 escalation; new MTD
+  fallback). "tranquilo" count dropped from 8 to 1 of 19 fund cards.
+- **§2.1** Skill-refresh sprint — 5 SKILL.md files updated, 14 references to
+  non-existent `glpg-data-fetch` replaced with `glpg_fetch.py`. Includes
+  `risk-data-collector` 149-line spec replaced with 12-line tombstone.
+
+### Trivial cleanup (commit 777dc94)
+- **§3.1** 16 unused imports across 6 files (AST-verified).
+- **§2.13k** 2 SyntaxWarnings on compile (Python 3.12-readiness): JS-in-Python
+  f-string `\s` → `\\s`; `pm_vol_card.py` docstring `\B...` → raw string.
+- **§3.3a** NaN-fragile `lv["LIVRO"] or "—"` (4 sites) → `pd.isna()`-guarded.
+- **§3.3d** `credit/credit_config.py:13` explicit `encoding="ascii"` on
+  `read_text()`.
+
+### Bulk cleanup batch 1 (commit 4fee511, 15 files)
+- **§2.2 / §2.7** Status table & Top Posições label fixes — "Total NAV-pond.
+  (não-div.)" replaces lying "Total (soma)"; "% do instrumento" replaces
+  ambiguous "% da posição".
+- **§2.8** Strip CLASSE in `pa_renderers.fx_split_classify` + `_apply_fx_split_remap`
+  — `Commodities ` (trailing space) was rendering as duplicate top-level.
+- **§2.13c** `generate_risk_report` `_prev_bday(DATA_STR)` not `str(_prev_bday(DATA))`.
+- **§2.13e** `data_fetch.fetch_book_pnl` fund_nav fallback — if Σ|AMOUNT|=0,
+  log WARN instead of silent 0-bps.
+- **§2.13j** m12 SQL window `>` → `>=` (`data_fetch.py` ×2 + 4 PA-FX-split
+  scripts) — matches MTD/YTD `>=` convention.
+- **§3.3b** `generate_market_review` Q1/Q3 use `np.percentile` — was biased
+  low for small n.
+- **§2.13i** PA-FX-split sort_key consistency — macro/evolution top-CLASSE
+  sort now uses `abs(ytd)` (matches quant/macroq).
+- **§3.3** Misleading docstrings: `compute_pm_hs_var` clarifies parametric-on-HS
+  vs empirical quantile (cross-link to `compute_pa_outliers`); `compute_distribution_stats`
+  drops "forward-looking"; `REP_RET_CLEAN_BPS` warns of NTN-B coupon artifact.
+- **§3.3f** `ret_window` None-semantics docstring (window-too-young vs missing-data).
+- **§4.4** Dead `DATE_60D` constant removed (last consumer dropped in 777dc94).
+- **§4.5** `svg_renderers.py` alert color `#fb923c` invariant comment +
+  meeting-port mirror reminder.
+- **§4.6** PA-FX-split docstring slim-down (4 scripts) — point to
+  `pa_renderers.fx_split_classify` instead of duplicating the rule.
+- **§3.1** 3 more unused imports (`mpatches`, `MSO_SHAPE_TYPE`, `math`).
+- **§2.4** `data_fetch.fetch_fund_position_changes` + `*_by_product` D-1 null
+  guard — return None when D-1 side entirely missing, prevents phantom Δ
+  rows passing the `|Δ| ≥ 0.30%` gate (Frontier mainboard case).
+
+### Bulk cleanup batch 2 (commit 84f465d, 7 files)
+- **§2.5** Risk Budget Monitor — absolute-margem secondary gate. New
+  thresholds: margem ≤ 0 → 🔴 STOP; <10 → 🟠 NEAR-BREACH; <25 → 🟡 ATENÇÃO.
+  Surfaces the LF=9bps near-breach state previously rendering as 🟢 OK.
+- **§2.13d** `generate_credit_report` `nav_at or 0.0` cascade — replaced with
+  `RuntimeError` so the bad-NAV branch surfaces instead of producing inf%.
+- **§2.13g** Float-zero anti-pattern (3 sites): `expo_renderers _pmrf_d1["pv"]`
+  rf_delta exact-zero comparison; `generate_credit_report pct_cdi` cdi
+  exact-zero; `credit/credit_data fetch_price_quality_flags` drop dead `== 0`
+  test (NULLIF in SQL already converts 0 → NULL; legitimate defaulted bond
+  at price=ε no longer flagged as missing).
+- **§3.2** ~12 vacuous/stale comments deleted across `generate_risk_report.py`,
+  `expo_renderers.py`, `data_fetch.py`, `generate_credit_report.py`,
+  `generate_monthly_review.py`.
+
+### Smoke-test
+Both dark + meeting reports regenerate cleanly after each commit. All 16
+modified modules import without error.
+
+---
+
 ## 2026-05-01 (sessão 3) — Audit follow-ups + safe-refactor Phase 1+2 + housekeeping
 
 Continuation of the audit-driven cleanup. All `STILL OPEN` items in

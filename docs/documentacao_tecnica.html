@@ -173,9 +173,14 @@
 <section id="contexto">
   <h2>1. Contexto e objetivo</h2>
   <p class="lede">
-    O kit monitora diariamente o risco dos fundos multimercados da Galapagos
-    (MACRO, QUANTITATIVO, EVOLUTION) para alimentar o Morning Call. O produto
-    final é um HTML interativo gerado por <code>generate_risk_report.py</code>.
+    O kit monitora diariamente o risco de todos os fundos da casa Galapagos
+    para alimentar o Morning Call. Cobertura atual:
+    <b>9 fundos no relatório principal</b>
+    (MACRO, QUANT, EVOLUTION, ALBATROZ, BALTRA, MACRO_Q, FRONTIER, IDKA 3Y, IDKA 10Y)
+    + <b>6 fundos de crédito</b>
+    (Sea Lion, Iguana, Pelican, Dragon, Barbacena, Nazca) num sub-projeto standalone.
+    Saída final: HTML interativo gerado por <code>generate_risk_report.py</code>
+    (versão dark) e <code>generate_risk_report_meeting.py</code> (versão light pra telona).
   </p>
   <p>
     Métrica de sucesso: <b>número de vezes por semana que o briefing leva a
@@ -184,7 +189,15 @@
   <p>
     Arquitetura: Python puro → PostgreSQL (GLPG-DB01) → HTML self-contained.
     Sem servidor, sem JavaScript framework — o HTML vive em disco local
-    (<code>data/morning-calls/</code>) e é aberto no browser.
+    (<code>data/morning-calls/</code>) e é aberto no browser. O <code>_meeting</code>
+    é pós-processador do dark (mesmas queries; só paleta + fontes ampliadas).
+  </p>
+  <p>
+    Pipelines auxiliares (mesmo padrão arquitetural):
+    <code>generate_credit_report.py</code> (sub-projeto crédito, 6 fundos),
+    <code>generate_monthly_review.py</code> (review mensal),
+    <code>generate_market_review.py</code> (panorama macro cross-asset),
+    e os 4 <code>generate_*_pa_fx_split.py</code> (PA com FX segregado).
   </p>
 </section>
 
@@ -192,10 +205,14 @@
 <section id="arquitetura">
   <h2>2. Arquitetura modular</h2>
   <p class="lede">
-    O kit é 12 módulos Python especializados. Refactorado em 2026-04-22/23
-    (Fase 3) a partir de um monolito de 13k linhas. O orquestrador hoje
-    registra deps, dispara os fetches em paralelo e concatena os HTML
-    fragments produzidos pelos renderers — tudo o mais foi extraído.
+    O kit é 15 módulos Python especializados. Refactorado em 2026-04-22/23
+    (Fase 3) a partir de um monolito de 13k linhas. Em 2026-05-01 (Fase 4),
+    o blob CSS/JS do <code>build_html</code> foi extraído para
+    <code>html_assets.py</code> (commit <code>c8a93a6</code>) e os shells
+    de tab/section foram extraídos em <code>7bb06fe</code> + <code>d98dae1</code>,
+    reduzindo <code>generate_risk_report.py</code> de ~4400 → ~2300 linhas.
+    O orquestrador hoje registra deps, dispara fetches em paralelo e concatena
+    os HTML fragments produzidos pelos renderers.
   </p>
 
   <h3>Grafo de dependências</h3>
@@ -216,12 +233,18 @@
                     ▼               ▼
               metrics.py ──► pa_renderers ──► evo_renderers
                     │               │               │
-                    └──────┬────────┴───────┬───────┘
-                           ▼                ▼
-                    expo_renderers   fund_renderers
-                           │                │
-                           └────────┬───────┘
-                                    ▼
+                    │               ├──► vardod_renderers
+                    │               └──► pmovers_renderers
+                    │                              │
+                    └──────┬───────────────────────┤
+                           ▼                       ▼
+                    expo_renderers          fund_renderers
+                           │                       │
+                           └─────┬─────────────────┘
+                                 ▼
+                         summary_renderers
+                                 │
+                                 ▼
                         generate_risk_report.py
                           (build_html + main)</pre>
 
@@ -229,18 +252,22 @@
   <table>
     <thead><tr><th>Módulo</th><th>Linhas</th><th>Papel</th></tr></thead>
     <tbody>
-      <tr><td><code>risk_runtime.py</code></td><td>40</td><td>Valores computados de CLI args (<code>DATA_STR</code>, <code>DATA</code>, <code>DATE_1Y</code>, <code>OUT_DIR</code>) + <code>fmt_br_num</code>. Leaf — todos importam daqui</td></tr>
-      <tr><td><code>risk_config.py</code></td><td>391</td><td>Pure data: mandatos (<code>FUNDS</code>, <code>RAW_FUNDS</code>, <code>IDKA_FUNDS</code>), thresholds, dicts de domínio (<code>_RF_*</code>, <code>_PM_LIVRO</code>, <code>_EVO_*</code>, <code>_QUANT_*</code>, <code>_PA_ORDER_*</code>, <code>_FUND_DESK_FOR_EXPO</code>)</td></tr>
-      <tr><td><code>html_assets.py</code></td><td>110</td><td>Blob inline <code>UEXPO_JS</code> (sort+toggle da tabela de exposure)</td></tr>
-      <tr><td><code>svg_renderers.py</code></td><td>256</td><td><code>make_sparkline</code> (matplotlib PNG), <code>range_bar_svg</code>, <code>stop_bar_svg</code>, <code>range_line_svg</code>, <code>evo_spark_svg</code></td></tr>
-      <tr><td><code>db_helpers.py</code></td><td>96</td><td>Utils compartilhados: <code>_parse_rf</code>, <code>_parse_pm</code>, <code>_prev_bday</code>, <code>_NAV_CACHE</code>, <code>fetch_all_latest_navs</code>, <code>_latest_nav</code></td></tr>
-      <tr><td><code>data_fetch.py</code></td><td>1602</td><td>36 <code>fetch_*</code> públicos + 8 helpers privados. Toda a camada de SQL, zero HTML</td></tr>
-      <tr><td><code>metrics.py</code></td><td>363</td><td>6 <code>compute_*</code>: PM HS VaR, Frontier BVaR, IDKA BVaR, vol regime, distribution stats, PA outliers</td></tr>
-      <tr><td><code>pa_renderers.py</code></td><td>499</td><td>12 helpers de Performance Attribution — tree builder, lazy-render JSON, bench decomposition, section assembler</td></tr>
-      <tr><td><code>evo_renderers.py</code></td><td>654</td><td>8 helpers das 4 camadas do EVOLUTION diversification + matriz direcional + alerta C4</td></tr>
-      <tr><td><code>expo_renderers.py</code></td><td>2424</td><td>9 builders de exposure: MACRO, QUANT, EVOLUTION, IDKA, ALBATROZ, FRONTIER + RF exposure map. <code>_build_expo_unified_table</code> é o core</td></tr>
-      <tr><td><code>fund_renderers.py</code></td><td>2726</td><td>18 itens: stop monitor, Budget vs VaR, single-names, vol regime, distribution, Frontier LO, data quality, briefings, stop-history cluster (<code>carry_step</code> + overrides)</td></tr>
-      <tr><td><code>generate_risk_report.py</code></td><td>4359</td><td>Orquestrador: imports + <code>build_html</code> (section assembly) + <code>main</code> (fetch paralelo com <code>ThreadPoolExecutor(12)</code>)</td></tr>
+      <tr><td><code>risk_runtime.py</code></td><td>~45</td><td>Valores computados de CLI args (<code>DATA_STR</code>, <code>DATA</code>, <code>DATE_1Y</code>, <code>OUT_DIR</code>) + <code>fmt_br_num</code>. CLI argv parsing regex-gated em <code>YYYY-MM-DD</code> pra não quebrar consumers (pnl_server, credit_report). Leaf — todos importam daqui</td></tr>
+      <tr><td><code>risk_config.py</code></td><td>~430</td><td>Pure data: mandatos (<code>FUNDS</code>, <code>RAW_FUNDS</code>, <code>IDKA_FUNDS</code>), thresholds, dicts de domínio (<code>_RF_*</code>, <code>_PM_LIVRO</code>, <code>_EVO_*</code>, <code>_QUANT_*</code>, <code>_PA_ORDER_*</code>, <code>_FUND_DESK_FOR_EXPO</code>)</td></tr>
+      <tr><td><code>html_assets.py</code></td><td>~3100</td><td>CSS + JS blobs do shell HTML (<code>RM_CSS</code>, <code>RM_JS</code>, <code>UEXPO_JS</code>, <code>PMOVERS_*</code>, <code>VARDOD_*</code>, <code>PA_*</code>) extraídos do <code>build_html</code> em 2026-05-01</td></tr>
+      <tr><td><code>svg_renderers.py</code></td><td>~370</td><td><code>make_sparkline</code> (matplotlib PNG), <code>range_bar_svg</code>, <code>stop_bar_svg</code>, <code>range_line_svg</code>, <code>evo_spark_svg</code>. <code>#fb923c</code> = canonical alert hue (mirror em <code>_meeting._TEXT_COLOR_MAP</code>)</td></tr>
+      <tr><td><code>db_helpers.py</code></td><td>~125</td><td>Utils compartilhados: <code>_parse_rf</code>, <code>_parse_pm</code>, <code>_prev_bday</code>, <code>_NAV_CACHE</code>, <code>fetch_all_latest_navs</code>, <code>_latest_nav</code>, <code>_require_nav</code> (raise se NAV ausente — substitui <code>or 1.0</code> pattern)</td></tr>
+      <tr><td><code>data_fetch.py</code></td><td>~3600</td><td>~41 <code>fetch_*</code> públicos + ~10 helpers privados. Toda a camada de SQL, zero HTML. PA, NAV, exposições, distribuição HS, IDKA, Frontier, BALTRA, posições D-0/D-1, position changes (com guard pra D-1 missing)</td></tr>
+      <tr><td><code>metrics.py</code></td><td>~420</td><td><code>compute_*</code>: PM HS VaR (parametric-on-HS), Frontier BVaR, IDKA BVaR, vol regime, distribution stats, PA outliers (z-score com abs() pra cobrir shorts)</td></tr>
+      <tr><td><code>pa_renderers.py</code></td><td>~670</td><td>~12 helpers de Performance Attribution — tree builder, lazy-render JSON, bench decomposition, section assembler. <code>fx_split_classify</code> e <code>_apply_fx_split_remap</code> centralizam regra de FX-bucket (cobrem legacy <code>BRLUSD</code>/<code>FX</code> + DB-native <code>FX Carry &amp; Bases Risk</code> pós-2026-04-24, com strip de CLASSE)</td></tr>
+      <tr><td><code>evo_renderers.py</code></td><td>~660</td><td>4 camadas do EVOLUTION diversification: utilização histórica de VaR por estratégia + diversification benefit + correlação realizada + bull-market alignment</td></tr>
+      <tr><td><code>vardod_renderers.py</code></td><td>~570</td><td>VaR Day-over-Day attribution modal — per-fund payload + scaffold + JS</td></tr>
+      <tr><td><code>pmovers_renderers.py</code></td><td>~450</td><td>Top Movers Produto — modal scaffold + per-fund popup PA card</td></tr>
+      <tr><td><code>summary_renderers.py</code></td><td>~780</td><td>Cards do tab Summary: Briefing Executivo, Status Consolidado, Risco VaR e BVaR, Mudanças Significativas (com D-1 null guard), Top Posições, Breakdown por Fator, PA outlier comments</td></tr>
+      <tr><td><code>expo_renderers.py</code></td><td>~2600</td><td>Builders de exposure por fundo: MACRO, QUANT, EVOLUTION, IDKA, ALBATROZ (Dur position-weighted), BALTRA, FRONTIER + RF exposure map. <code>_build_expo_unified_table</code> é o core</td></tr>
+      <tr><td><code>fund_renderers.py</code></td><td>~3600</td><td>Stop monitor, Budget vs VaR (com gate por margem absoluta em bps), single-names, vol regime, distribution, Frontier LO, data quality, briefings (rule-based "tranquilo" gate tightened), stop-history cluster (<code>carry_step</code> + overrides)</td></tr>
+      <tr><td><code>generate_risk_report.py</code></td><td>~2300</td><td>Orquestrador: imports + <code>build_html</code> (section assembly) + <code>main</code> (fetch paralelo com <code>ThreadPoolExecutor</code>). Pós-extração 2026-05-01 — ainda com <code>build_html</code> mega-function pendente de fragmentação</td></tr>
+      <tr><td><code>generate_risk_report_meeting.py</code></td><td>~700</td><td>Pós-processador da versão dark — mesma fonte, paleta light + fontes ampliadas via <code>_BG_HEX_MAP</code> + <code>_TEXT_COLOR_MAP</code>. Pra telona da sala de reunião</td></tr>
     </tbody>
   </table>
 
@@ -284,14 +311,24 @@
   <table>
     <thead><tr><th>Tabela</th><th>Uso</th><th>Colunas-chave</th></tr></thead>
     <tbody>
-      <tr><td><code>LOTE45.LOTE_FUND_STRESS_RPM</code></td><td>VaR e Stress nível fundo</td><td>VAL_DATE, TRADING_DESK, LEVEL, PARAMETRIC_VAR, SPECIFIC_STRESS, MACRO_STRESS</td></tr>
-      <tr><td><code>LOTE45.LOTE_BOOK_STRESS_RPM</code></td><td>VaR por book (MACRO via Evolution)</td><td>BOOK, PARAMETRIC_VAR, PRODUCT_CLASS</td></tr>
-      <tr><td><code>LOTE45.LOTE_TRADING_DESKS_NAV_SHARE</code></td><td>NAV do fundo</td><td>TRADING_DESK, VAL_DATE, NAV</td></tr>
-      <tr><td><code>LOTE45.LOTE_PRODUCT_EXPO</code></td><td>Exposição e delta por produto</td><td>BOOK, PRODUCT, DELTA, POSITION, IS_STOCK, PRIMITIVE_CLASS, TRADING_DESK_SHARE_SOURCE</td></tr>
-      <tr><td><code>q_models.REPORT_ALPHA_ATRIBUTION</code></td><td>PnL realizado (DIA, MES, ANO) por LIVRO × PRODUCT</td><td>DATE, FUNDO, LIVRO, PRODUCT, DIA, MES, POSITION, POSITION_LAST, DELTA</td></tr>
-      <tr><td><code>q_models.STANDARD_DEVIATION_ASSETS</code></td><td>σ por instrumento (bps diários)</td><td>VAL_DATE, BOOK, INSTRUMENT, STANDARD_DEVIATION</td></tr>
-      <tr><td><code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code></td><td>Série de PnLs hipotéticos (carteira × retornos históricos)</td><td>PORTIFOLIO_DATE, PORTIFOLIO, W, DATE_SYNTHETIC_POSITION</td></tr>
-      <tr><td><code>public.EQUITIES_COMPOSITION</code></td><td>Composição de índices (IBOV)</td><td>LIST_NAME, DATE, INSTRUMENT, VALUE (peso)</td></tr>
+      <tr><td><code>LOTE45.LOTE_FUND_STRESS_RPM</code></td><td>VaR e Stress nível fundo (MACRO/QUANT/EVO LEVEL=2/3 + BALTRA LEVEL=10 com look-through nativo)</td><td>VAL_DATE, TRADING_DESK, LEVEL, PARAMETRIC_VAR, SPECIFIC_STRESS, MACRO_STRESS</td></tr>
+      <tr><td><code>LOTE45.LOTE_FUND_STRESS</code></td><td>VaR/Stress produto — ALBATROZ + MACRO_Q (SUM por TRADING_DESK + filtro <code>TREE='Main'</code>)</td><td>VAL_DATE, TRADING_DESK, TREE, VAR, STRESS</td></tr>
+      <tr><td><code>LOTE45.LOTE_BOOK_STRESS_RPM</code></td><td>VaR por book/RF (LEVEL=3) — usado pelo MACRO via Evolution e pelo PM-level drill</td><td>BOOK, PARAMETRIC_VAR, PRODUCT_CLASS</td></tr>
+      <tr><td><code>LOTE45.LOTE_TRADING_DESKS_NAV_SHARE</code></td><td>NAV + SHARE (cota) por mesa/fundo</td><td>TRADING_DESK, VAL_DATE, NAV, SHARE</td></tr>
+      <tr><td><code>LOTE45.LOTE_PARAMETRIC_VAR_TABLE</code></td><td>BVaR + VaR IDKAs (paramétrico, fração decimal) — sempre filtrar <code>BOOKS::text='{*}'</code> senão soma triplicada</td><td>VAL_DATE, TRADING_DESK, BOOKS, RELATIVE_VAR_PCT</td></tr>
+      <tr><td><code>LOTE45.LOTE_PRODUCT_EXPO</code></td><td>Exposição e delta por produto. <code>DELTA</code> já é POS×MD (não multiplicar de novo). <code>TRADING_DESK_SHARE_SOURCE</code> faz look-through nativo</td><td>BOOK, PRODUCT, DELTA, POSITION, IS_STOCK, PRIMITIVE_CLASS, TRADING_DESK_SHARE_SOURCE</td></tr>
+      <tr><td><code>LOTE45.LOTE_BOOK_OVERVIEW</code></td><td>Posições por book/produto — fonte do sub-projeto crédito</td><td>VAL_DATE, TRADING_DESK, BOOK, PRODUCT, POSITION, PRICE</td></tr>
+      <tr><td><code>q_models.REPORT_ALPHA_ATRIBUTION</code></td><td>PnL realizado (DIA, MES, ANO) por LIVRO × PRODUCT. <code>CLASSE='BRLUSD'</code> separa FX puro; <code>CLASSE='FX Carry &amp; Bases Risk'</code> é o bucket nativo pós-2026-04-24</td><td>DATE, FUNDO, LIVRO, CLASSE, GRUPO, SUBCLASSE, PRODUCT, DIA, MES, POSITION, DELTA</td></tr>
+      <tr><td><code>q_models.STANDARD_DEVIATION_ASSETS</code></td><td>σ por instrumento (bps diários), <code>BOOK='MACRO'</code></td><td>VAL_DATE, BOOK, INSTRUMENT, STANDARD_DEVIATION</td></tr>
+      <tr><td><code>q_models.PORTIFOLIO_DAILY_HISTORICAL_SIMULATION</code></td><td>Série de PnLs hipotéticos (carteira × retornos históricos). Keys: <code>MACRO</code>, <code>SIST</code> (=QUANT), <code>EVOLUTION</code>, <code>ALBATROZ</code>, <code>IDKA3Y</code>, <code>IDKA10Y</code></td><td>PORTIFOLIO_DATE, PORTIFOLIO, W, DATE_SYNTHETIC_POSITION</td></tr>
+      <tr><td><code>q_models.RISK_DIRECTION_REPORT</code></td><td>Matriz direcional EVOLUTION (DELTA_SIST × DELTA_DISCR) — Camada 4 (Bull Market Alignment)</td><td>DATE, DELTA_SIST, DELTA_DISCR</td></tr>
+      <tr><td><code>q_models.FRONTIER_TARGETS</code></td><td>Posições alvo Frontier (active weights vs IBOV)</td><td>DATE, INSTRUMENT, TARGET_WEIGHT</td></tr>
+      <tr><td><code>q_models.COMPANY_SECTORS</code></td><td>Setor por ação (mapeamento usado em Frontier + EVOLUTION equity)</td><td>INSTRUMENT, SECTOR</td></tr>
+      <tr><td><code>frontier.LONG_ONLY_DAILY_REPORT_MAINBOARD</code></td><td>Posições diárias Frontier Long Only (mainboard) — só 1 data populada hoje (D-1 falta)</td><td>DATE, INSTRUMENT, WEIGHT</td></tr>
+      <tr><td><code>public.EQUITIES_COMPOSITION</code></td><td>Composição de índices (IBOV, SMLLBV)</td><td>LIST_NAME, DATE, INSTRUMENT, VALUE (peso)</td></tr>
+      <tr><td><code>public.EQUITIES_PRICES</code></td><td>Preços históricos (IBOV, ações individuais, ETFs)</td><td>DATE, INSTRUMENT, FIELD, VALUE</td></tr>
+      <tr><td><code>public.ECO_INDEX</code></td><td>CDI, IDKA index returns. <code>UNIT_PRICE</code> ANBIMA é clean — usar <code>_ntnb_total_return_pct_change</code> com semi-coupon reinjetado</td><td>DATE, INSTRUMENT, FIELD, VALUE</td></tr>
+      <tr><td><code>credit.asset_master</code> + <code>credit.issuer_limits</code></td><td>Tabelas-schema do sub-projeto crédito (override de issuer, limites por fundo)</td><td>fund_name, emissor, limit_pct, ...</td></tr>
     </tbody>
   </table>
 
@@ -664,27 +701,46 @@
 <section id="roadmap">
   <h2>12. Roadmap / pendências</h2>
 
-  <h3>Fase 4 — em andamento</h3>
+  <h3>Concluído na Fase 4 (até 2026-05-01)</h3>
   <ul>
-    <li><b>Summary page</b> — conteúdo (hoje placeholder). Heatmap fundos × métricas, top alerts, deltas D/D, orçamentos. É o Morning Call numa tela.</li>
-    <li>Mandatos ALBATROZ, IDKA_3Y, IDKA_10Y (aguardam definição de BVaR)</li>
+    <li><b>BALTRA wired</b> — VaR/Stress via <code>LOTE_FUND_STRESS_RPM</code> LEVEL=10 (look-through nativo) + PA + Exposure RF + Map + Top Movers Produto + VaR DoD modal.</li>
+    <li><b>Sub-projeto crédito</b> — <code>generate_credit_report.py</code> standalone cobrindo 6 fundos (Sea Lion, Iguana, Pelican, Dragon, Barbacena, Nazca) com 4 modos de drill, sanity preços, AUM, retornos, mercado.</li>
+    <li><b>Tab crédito no main report</b> — cobre BALTRA + EVOLUTION via look-through <code>LOTE_PRODUCT_EXPO.TRADING_DESK_SHARE_SOURCE</code>.</li>
+    <li><b>Versão meeting</b> — <code>generate_risk_report_meeting.py</code> pós-processa o dark com paleta light + fontes ampliadas pra telona.</li>
+    <li><b>PA-FX-split dedup</b> — <code>fx_split_classify</code> + helpers + CSS/JS centralizados em <code>pa_renderers.py</code>; net −167 LOC; cobre legacy + DB-native FX bucket.</li>
+    <li><b>Refactor pesado de <code>build_html</code></b> — CSS/JS extraídos pra <code>html_assets.py</code>, per-fund section builder + tab/section shells extraídos. <code>generate_risk_report.py</code> reduzido de ~4400 → ~2300 linhas.</li>
+    <li><b>Audit-driven cleanup</b> — todos os 6 HIGH-correctness do code review session-2 fechados (argv crash, NAV regression, shorts dropped, Dur double-MD, multi-book join, IDKA sign-flip), briefing "tranquilo" gate tightened, skill-refresh sprint, ~30 itens de hygiene shipped em 2026-05-01.</li>
   </ul>
 
-  <h3>Fase 5 — analytics sugeridas (excluindo liquidez e crédito)</h3>
+  <h3>Aberto — próximas sessões (priorizado)</h3>
   <ol>
-    <li><b>Backtest de VaR</b> — quantas vezes PnL real excedeu VaR 95% em 252 dias? Esperado ≈ 5%. É a fundação da calibração.</li>
-    <li><b>Cross-fund / firm-level overlap</b> — consolidar mesma posição aparecendo em vários fundos (QUANT dentro de Evolution, MACRO dentro de Evolution).</li>
+    <li><b>Briefing Executivo headline priority</b> (review §1.2) — chave <code>max(margem_inverse, util_VaR, |Δ VaR|)</code>, reordenar "Atenção" acima de "o que mudou".</li>
+    <li><b>Status DIA fallback when PA on D-1</b> (§1.3) — render "+0.04% (D-1)" em vez de silent "—".</li>
+    <li><b>LLM briefings</b> — substituir rule-based por Haiku 4.5 em <code>fund_renderers._build_fund_mini_briefing</code>. Rule-tightening em produção é stopgap.</li>
+    <li><b>Fragmentação do <code>build_html</code></b> (§1.5) — extrair tab-switching + remaining per-fund builders pra <code>_build_tab_*</code> helpers.</li>
+    <li><b>Split do <code>main()</code></b> (§1.6) — em <code>_fetch_all_data</code> / <code>_build_report_data</code> / <code>_write_output</code>.</li>
+    <li><b>VaR DoD NAV-axis</b> (§2.13a/b/f) — D-1 contributions hoje divididas por D-0 NAV; precisa propagação de <code>nav_d1</code> param.</li>
+    <li><b>Iterrows vectorization</b> (§2.9/2.10) — sites em <code>data_fetch.py</code> e renderers; profile-driven.</li>
+    <li><b>EVOLUTION BRLUSD legacy</b> (§1.4) — escalação pra dono do PA engine; não é bug do kit.</li>
+    <li><b>Mandatos definitivos</b> — ALBATROZ, MACRO_Q, BALTRA, IDKA 3Y/10Y, NAZCA ainda com limites provisórios.</li>
+  </ol>
+
+  <h3>Backlog analítico (Fase 5+)</h3>
+  <ol>
+    <li><b>Backtest de VaR</b> — quantas vezes PnL real excedeu VaR 95% em 252 dias? Esperado ≈ 5%. Fundação da calibração.</li>
+    <li><b>Cross-fund / firm-level overlap</b> — consolidar mesma posição aparecendo em vários fundos.</li>
     <li><b>Scenario library</b> — shocks nomeados: "Fed +100bps", "BRL −5%", "S&P −3%", "Oil +20%".</li>
     <li><b>Drawdown trajectory</b> — current DD from peak, tempo underwater, velocidade.</li>
     <li><b>Correlation breakdown</b> — diversification benefit ao longo do tempo.</li>
-    <li><b>Style drift</b> — PM dentro do mandato (ex: RJ = Commodities; se aparece em RV-DM, alertar).</li>
+    <li><b>Style drift</b> — PM dentro do mandato.</li>
   </ol>
 </section>
 
 <footer>
-  Risk Monitor · Galapagos Capital · gerado em 2026-04-18<br/>
+  Risk Monitor · Galapagos Capital · atualizado em 2026-05-01 (sessão 3)<br/>
   Código: <code>f:/Bloomberg/Quant/MODELOS/DFF/Risk_Monitor/generate_risk_report.py</code><br/>
-  Repo: <code>github.com/dfainber/RiskManager</code>
+  Histórico de mudanças: <a href="CHANGELOG.md"><code>docs/CHANGELOG.md</code></a> ·
+  Backlog: <a href="CODE_REVIEW_2026-05-01_session2.md"><code>docs/CODE_REVIEW_2026-05-01_session2.md</code></a>
 </footer>
 </main>
 </body>
