@@ -1702,9 +1702,13 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
     if df.empty:
         return ""
 
-    # Duration-weighted aggregate (only rows with non-zero delta contribute)
+    # Position-weighted modified duration. delta_brl is already POSITION × MOD_DUR
+    # (CLAUDE.md §8: "DELTA já é duration-weighted"). The naive `Σ(|delta|×MD)/Σ|delta|`
+    # would be Σ(|POS|×MD²)/Σ(|POS|×MD) — biased toward longest-MD instruments.
+    # Recovered as `Σ|delta| / Σ(|delta|/MD) = Σ(|POS|×MD) / Σ|POS|`.
     abs_delta = df["delta_brl"].abs().sum()
-    dur_w = (df["delta_brl"].abs() * df["mod_dur"]).sum() / abs_delta if abs_delta else 0.0
+    abs_pos   = (df["delta_brl"].abs() / df["mod_dur"]).sum()
+    dur_w = abs_delta / abs_pos if abs_pos else 0.0
     total_dv01 = df["dv01_brl"].sum()
     total_delta = df["delta_brl"].sum()
 
@@ -1714,8 +1718,9 @@ def build_albatroz_exposure(df: pd.DataFrame, nav: float,
         delta_brl=("delta_brl", "sum"),
         dv01_brl=("dv01_brl", "sum"),
         gross_brl=("delta_brl", lambda s: s.abs().sum()),
-        dur_w=("delta_brl", lambda s: (s.abs() * df.loc[s.index, "mod_dur"]).sum() / s.abs().sum()
-                                     if s.abs().sum() else 0.0),
+        # Same fix as the aggregate dur_w above — position-weighted MD.
+        dur_w=("delta_brl", lambda s: (s.abs().sum() / (s.abs() / df.loc[s.index, "mod_dur"]).sum())
+                                     if (s.abs() / df.loc[s.index, "mod_dur"]).sum() else 0.0),
     ).reset_index()
     by_idx = by_idx.set_index("indexador").reindex(idx_order).reset_index().dropna(how="all", subset=["delta_brl"])
 
