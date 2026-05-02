@@ -1424,25 +1424,19 @@ def _regroup_lookthrough(out_df: pd.DataFrame, desk: str, date_d: str) -> pd.Dat
         return direct
 
     parent_records = []
+    _CHILD_COLS = [
+        "label", "group", "contrib_d1_bps", "contrib_d_bps", "delta_bps",
+        "pos_d1", "pos_d", "d_pos_pct", "vol_d1_bps", "vol_d_bps",
+        "d_vol_bps", "pos_effect_bps", "vol_effect_bps", "sign",
+    ]
     for src, sub in grouped.groupby("_src", sort=False):
-        children = []
-        for _, r in sub.iterrows():
-            children.append({
-                "label": r["label"], "group": r["group"],
-                "contrib_d1_bps": (None if pd.isna(r["contrib_d1_bps"]) else float(r["contrib_d1_bps"])),
-                "contrib_d_bps":  (None if pd.isna(r["contrib_d_bps"])  else float(r["contrib_d_bps"])),
-                "delta_bps":      (None if pd.isna(r["delta_bps"])      else float(r["delta_bps"])),
-                "pos_d1":         (None if pd.isna(r["pos_d1"])         else float(r["pos_d1"])),
-                "pos_d":          (None if pd.isna(r["pos_d"])          else float(r["pos_d"])),
-                "d_pos_pct":      (None if pd.isna(r["d_pos_pct"])      else float(r["d_pos_pct"])),
-                "vol_d1_bps":     (None if pd.isna(r["vol_d1_bps"])     else float(r["vol_d1_bps"])),
-                "vol_d_bps":      (None if pd.isna(r["vol_d_bps"])      else float(r["vol_d_bps"])),
-                "d_vol_bps":      (None if pd.isna(r["d_vol_bps"])      else float(r["d_vol_bps"])),
-                "pos_effect_bps": (None if pd.isna(r["pos_effect_bps"]) else float(r["pos_effect_bps"])),
-                "vol_effect_bps": (None if pd.isna(r["vol_effect_bps"]) else float(r["vol_effect_bps"])),
-                "sign":           str(r["sign"] or ""),
-                "override_note":  "",
-            })
+        sub_c = sub[_CHILD_COLS].copy()
+        sub_c["sign"] = sub_c["sign"].fillna("").astype(str)
+        # NaN → None across all numeric/object columns so the JSON payload
+        # downstream gets ``null`` instead of ``NaN`` (non-spec).
+        children = sub_c.where(pd.notna(sub_c), None).to_dict("records")
+        for c in children:
+            c["override_note"] = ""
         children.sort(key=lambda c: -abs(c.get("delta_bps") or 0))
 
         c_d1 = float(sub["contrib_d1_bps"].fillna(0).sum())
@@ -2397,10 +2391,11 @@ def fetch_evolution_exposure(date_str: str = DATA_STR) -> tuple:
         df[c] = df[c].astype(float).fillna(0.0)
 
     livro_to_strat = {**_load_evo_livros_map(), **_EVO_LIVRO_EXTRA_STRATEGY}
-    df["livro"]    = df.apply(lambda r: _evo_classify_livro(r["TRADING_DESK"], r["BOOK"]), axis=1)
+    df["livro"]    = [_evo_classify_livro(td, bk)
+                      for td, bk in zip(df["TRADING_DESK"], df["BOOK"])]
     df["strategy"] = df["livro"].map(livro_to_strat).fillna("OUTROS")
-    df["factor"]   = df.apply(lambda r: _evo_classify_factor(r["BOOK"], r["PRIMITIVE_CLASS"]),
-                              axis=1)
+    df["factor"]   = [_evo_classify_factor(bk, pc)
+                      for bk, pc in zip(df["BOOK"], df["PRIMITIVE_CLASS"])]
     df = df[df["factor"].notna()].copy()
     df["pct_nav"] = df["delta"] * 100 / nav
 

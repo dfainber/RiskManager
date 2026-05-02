@@ -11,6 +11,24 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 10 — iterrows vectorization + build_html batch 3)
+
+Closes §2.9/§2.10 (iterrows vectorization) and continues §1.5 with batch 3.
+Both pass smoke-test (post-#10 self-vs-self diff = 32 lines, post-#10+§1.5
+diff = 32 lines — same magnitude, behavior unchanged).
+
+### Session 10 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 2.9 | Nested iterrows in `_regroup_lookthrough` (children dict construction) → `to_dict('records')` with vectorized NaN→None | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L1426) |
+| 2.9 | `df.apply(axis=1)` for evo_classify_livro/factor → list comprehension with `zip` | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L2400) |
+| 2.10 | Frontier stocks iterrows in `_build_agg_rows` → vectorized arithmetic + boolean mask | ✅ DONE | [`generate_risk_report.py`](../generate_risk_report.py#L1056) |
+| 2.10 | Side-table iterrows in `build_single_names_section` → `to_dict('records')` | ✅ DONE | [`fund_renderers.py`](../fund_renderers.py#L162) |
+| 1.5 | Master HTML f-string (~85L) extracted to `_render_master_html(...)` with 16 kwargs | ✅ DONE | [`generate_risk_report.py`](../generate_risk_report.py#L1345) |
+
+§1.5 progress: 1214 → 476L (-61% cumulative across batches 1+2+3). Remaining ~476L is harder to extract cleanly — variable unpacking + section-list construction loops + orchestration glue.
+
 ## STATUS (2026-05-02, session 9 — Status DIA D-1 fallback)
 
 Closes §1.3 (Status consolidado DIA fallback). When PA hasn't landed for

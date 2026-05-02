@@ -159,7 +159,7 @@ def build_single_names_section(fund_short: str, sub_label: str,
         if rows_df.empty:
             body = '<tr><td colspan="4" class="t-empty">(sem posições)</td></tr>'
         else:
-            body = "".join(fmt_row(r) for _, r in rows_df.iterrows())
+            body = "".join(fmt_row(r) for r in rows_df.to_dict("records"))
         return f"""
         <div class="sn-side">
           <div class="sn-side-head" style="color:{color_var}">
