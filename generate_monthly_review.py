@@ -28,7 +28,6 @@ from typing import Optional
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 
@@ -1255,7 +1254,6 @@ def _pptx_add_rect(slide, left, top, width, height,
                     line_width_pt: float = 0.75):
     from pptx.util import Inches, Pt
     from pptx.dml.color import RGBColor
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
     shape = slide.shapes.add_shape(
         1, Inches(left), Inches(top), Inches(width), Inches(height)
     )

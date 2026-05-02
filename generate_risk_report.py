@@ -1629,7 +1629,7 @@ def build_html(d: ReportData) -> str:
     _peers_eopm      = d.peers_data_eopm or {}
     _peers_eopm_json = json.dumps(_peers_eopm,      separators=(",", ":"), ensure_ascii=False)
 
-    _pnl_baked_date = _book_pnl.get("val_date") or str(_prev_bday(DATA))
+    _pnl_baked_date = _book_pnl.get("val_date") or _prev_bday(DATA_STR)
     pnl_section_html = pnl_tab_section_html(_pnl_baked_date=_pnl_baked_date)
 
     # ── Peers tab section (house-level, group selector) ───────────────────────
@@ -1862,7 +1862,7 @@ def main():  # noqa: C901
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
         fut_macro_pm_hist = ex.submit(fetch_macro_pm_var_history, DATA_STR, 121)
-        _pnl_date      = str(_prev_bday(DATA))
+        _pnl_date      = _prev_bday(DATA_STR)
         fut_book_pnl    = ex.submit(fetch_book_pnl,        _pnl_date)
         fut_peers_data       = ex.submit(fetch_peers_data, DATA_STR, "current")
         fut_peers_data_eopm  = ex.submit(fetch_peers_data, DATA_STR, "eopm")

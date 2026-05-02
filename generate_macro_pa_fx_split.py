@@ -1,23 +1,11 @@
 """MACRO Performance Attribution — FX-segregated view.
 
-Pure re-ordering of the existing PA (q_models.REPORT_ALPHA_ATRIBUTION):
-the *total* PnL is identical to the canonical PA — only the categorization
-changes, separating asset effect from FX effect.
+Re-orders the canonical PA (q_models.REPORT_ALPHA_ATRIBUTION) so asset
+effect and FX effect render in separate buckets. Total PnL is preserved.
 
-Re-mapping (only CLASSE column changes). Recognizes both legacy CLASSE
-(emitted pre-2026-04-24) and the DB-native CLASSE='FX Carry & Bases Risk'
-(emitted from 2026-04-24 onward) — folds both into one bucket so the
-top-level does not show two near-identical FX rows.
+The FX-bucketing rule lives in `pa_renderers.fx_split_classify`.
 
-  CLASSE in ('BRLUSD', 'FX', 'FX Carry & Bases Risk'):
-    GRUPO='Commodities'      → "FX Basis Risk & Carry" / "FX em Commodities"
-    GRUPO='Precious Metals'  → "FX Basis Risk & Carry" / "FX em Precious Metals"
-    GRUPO='RV Intl'          → "FX Basis Risk & Carry" / "FX em RV Intl"
-    GRUPO='RF Intl'          → "FX Basis Risk & Carry" / "FX em RF Intl"
-    everything else          → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  Everything else            → unchanged
-
-Output: standalone HTML at data/morning-calls/<date>_macro_pa_fx_split.html
+Output: data/morning-calls/<date>_macro_pa_fx_split.html
 """
 from __future__ import annotations
 
@@ -56,12 +44,12 @@ def _fetch_macro_pa(date_str: str) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS m12_bps
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" = 'MACRO'
-      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "CLASSE", "GRUPO", "SUBCLASSE", "LIVRO", "BOOK", "PRODUCT"
     HAVING ABS(SUM(CASE WHEN "DATE" = DATE '{date_str}' THEN "DIA" ELSE 0 END)) > 1e-9
@@ -104,7 +92,9 @@ def _build_tree_table(df: pd.DataFrame) -> str:
     cl_tot["_ord"] = cl_tot["CLASSE_NEW"].apply(
         lambda c: classe_order_default.index(c) if c in classe_order_default else 99
     )
-    cl_tot = cl_tot.sort_values(["_ord", "ytd"], ascending=[True, False])
+    cl_tot = cl_tot.sort_values(["_ord", "ytd"],
+                                ascending=[True, False],
+                                key=lambda s: s.abs() if s.name == "ytd" else s)
 
     for _, cr in cl_tot.iterrows():
         cls = cr["CLASSE_NEW"]

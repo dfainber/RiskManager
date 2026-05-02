@@ -34,7 +34,6 @@ DATA_STR = _parse_date_arg(_argv1) if (_argv1 and re.fullmatch(r"\d{4}-\d{2}-\d{
 )
 DATA     = pd.Timestamp(DATA_STR)
 DATE_1Y  = DATA - pd.DateOffset(years=1)
-DATE_60D = DATA - pd.Timedelta(days=90)  # ~60 business days buffer
 
 OUT_DIR = Path(__file__).parent / "data" / "morning-calls"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

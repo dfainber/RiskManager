@@ -854,8 +854,8 @@ def _peer_stats(short: str, peers_data: dict, window: str) -> dict | None:
         "rank":     our_idx + 1,
         "n":        n,
         "quartile": q,
-        "q1":       asc[max(0, n // 4 - 1)],
-        "q3":       asc[min(n - 1, 3 * n // 4 - 1)],
+        "q1":       float(np.percentile(asc, 25)),
+        "q3":       float(np.percentile(asc, 75)),
         "lo":       asc[0],
         "hi":       asc[-1],
     }
@@ -922,6 +922,10 @@ def build_performance_card(end: str) -> str:
         if s.empty:
             continue
 
+        # Returns None when:
+        #   (a) NAV series doesn't reach `begin` (fund younger than the window), OR
+        #   (b) data is genuinely missing.
+        # Caller can disambiguate via `s.index.min() > begin` if needed.
         def ret_window(begin: pd.Timestamp) -> float | None:
             sb = s[s.index < begin]
             sa = s[s.index <= end_ts]

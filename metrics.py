@@ -20,12 +20,15 @@ from risk_config import _IDKA_BENCH_INSTRUMENT
 def compute_pm_hs_var(dist_map: dict,
                        windows: tuple = (21, 63, 252),
                        z: float = 1.645) -> dict[str, dict]:
-    """Parametric 1d VaR per PM from the Historical Simulation series —
-       TODAY's portfolio × N historical days of factor returns.
-       Source: dist_map (from PORTIFOLIO_DAILY_HISTORICAL_SIMULATION via fetch_pnl_distribution).
+    """Parametric 1d VaR per PM, computed by fitting σ to the Historical
+       Simulation W series (z·σ, default z=1.645 → 95%) — NOT the empirical
+       quantile of W. For per-position outliers based on σ of implied returns,
+       use compute_pa_outliers instead. The HS source already represents
+       TODAY's portfolio × N historical factor-return days.
+       Source: dist_map (PORTIFOLIO_DAILY_HISTORICAL_SIMULATION via fetch_pnl_distribution).
        For each PM (PORTFOLIO key in dist_map ∈ {"CI","LF","JD","RJ"}):
          σ_N  = sample std of W[-N:]  (W already in bps of NAV)
-         VaR_N = z × σ_N                (default z=1.645 → 95%)
+         VaR_N = z × σ_N
        Also reports the worst simulated day (magnitude, bps) across the full window.
        Returns {pm_code: {"v21": float, "v63": float, "v252": float, "worst": float, "n": int}}.
     """
@@ -317,7 +320,9 @@ def compute_top_windows(w_series, k: int = 5, window_days: int = 21) -> dict | N
 
 
 def compute_distribution_stats(w_series, actual_bps=None):
-    """Returns dict with forward-looking stats and (optional) backward comparison."""
+    """Descriptive stats over the HS portfolio W series (sd, percentiles,
+       worst/best) — purely empirical, not predictive. Optional `actual_bps`
+       lets the caller compare today's realized PnL against the same window."""
     import numpy as np
     if w_series is None or len(w_series) < 30:
         return None

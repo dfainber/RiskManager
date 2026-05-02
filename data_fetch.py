@@ -2540,14 +2540,14 @@ def fetch_pa_leaves(date_str: str = DATA_STR) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS m12_bps,
       SUM(CASE WHEN "DATE" = DATE '{date_str}'
                THEN COALESCE("POSITION",0) ELSE 0 END) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','BALTRA','GFA','IDKAIPCAY3','IDKAIPCAY10')
-      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","CLASSE","GRUPO","LIVRO","BOOK","PRODUCT"
     """
@@ -2613,12 +2613,18 @@ def fetch_fund_position_changes(short: str, date_str: str, d1_str: str) -> pd.Da
     df["pct_nav"] = df["delta_brl"] * 100 / nav
     df["date_key"] = pd.to_datetime(df["val_date"]).dt.strftime("%Y-%m-%d")
 
+    # When the entire D-1 side is missing (no rows for d1_str — e.g. Frontier
+    # mainboard upstream has no history), emit no rows. Otherwise per-factor
+    # NaNs would produce "D-1=+0.00% / D-0=+89%" phantom Δ rows that pass the
+    # |Δ| gate as pure data-failure artifacts.
     pivot = df.pivot_table(
         index="factor", columns="date_key", values="pct_nav",
         aggfunc="sum", fill_value=0.0,
     )
+    has_d1 = d1_str in pivot.columns
     if date_str not in pivot.columns: pivot[date_str] = 0.0
-    if d1_str   not in pivot.columns: pivot[d1_str]   = 0.0
+    if not has_d1:
+        return None
     pivot["pct_d0"] = pivot[date_str]
     pivot["pct_d1"] = pivot[d1_str]
     pivot["delta"] = pivot["pct_d0"] - pivot["pct_d1"]
@@ -2666,12 +2672,15 @@ def fetch_fund_position_changes_by_product(short: str, date_str: str, d1_str: st
     df["pct_nav"] = df["delta_brl"] * 100 / nav
     df["date_key"] = pd.to_datetime(df["val_date"]).dt.strftime("%Y-%m-%d")
 
+    # If D-1 side is entirely missing, emit no rows (avoids phantom Δ — see
+    # twin guard in fetch_fund_position_changes above).
     pivot = df.pivot_table(
         index=["PRODUCT", "factor"], columns="date_key", values="pct_nav",
         aggfunc="sum", fill_value=0.0,
     )
+    if d1_str not in pivot.columns:
+        return None
     if date_str not in pivot.columns: pivot[date_str] = 0.0
-    if d1_str   not in pivot.columns: pivot[d1_str]   = 0.0
     pivot["pct_d0"] = pivot[date_str]
     pivot["pct_d1"] = pivot[d1_str]
     pivot["delta"] = pivot["pct_d0"] - pivot["pct_d1"]
@@ -2826,7 +2835,7 @@ def fetch_cdi_returns(date_str: str = DATA_STR) -> dict:
                 AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS mtd_bps,
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year',  DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'                     THEN "VALUE" ELSE 0 END) * 10000 AS m12_bps
     FROM public."ECO_INDEX"
     WHERE "INSTRUMENT" = 'CDI' AND "FIELD" = 'YIELD'
@@ -2962,8 +2971,15 @@ def fetch_book_pnl(date_str: str = DATA_STR) -> dict:
         # bps everywhere as PL / fund_nav so book/class/position bps add up.
         fund_nav = _latest_nav(desk, val_date_str)
         if not fund_nav:
-            # Fallback: |sum AMOUNT| as NAV proxy (less accurate)
-            fund_nav = abs(float(fdf["AMOUNT"].sum())) or None
+            # Fallback: |sum AMOUNT| as NAV proxy (less accurate). If the
+            # book is empty / cancelled, abs sum can be 0 — leave fund_nav
+            # None and let _bps_pct short-circuit to 0.0 with a WARN.
+            _abs_sum = abs(float(fdf["AMOUNT"].sum()))
+            if _abs_sum > 1e-9:
+                fund_nav = _abs_sum
+            else:
+                print(f"  [WARN] fetch_book_pnl: fund_nav unavailable for {desk} on {val_date_str} — bps will be 0")
+                fund_nav = None
 
         def _bps_pct(pl: float) -> float:
             """Returns PL/NAV as decimal (frontend multiplies by 10000)."""

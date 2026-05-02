@@ -1,25 +1,11 @@
 """EVOLUTION Performance Attribution — FX-segregated view.
 
-Mirrors generate_macro_pa_fx_split.py, but for the EVOLUTION fund. The FX-split
-is applied **one level below** the natural top of the EVOLUTION PA tree:
+Mirrors generate_macro_pa_fx_split.py for EVOLUTION; FX-split is applied
+one level below STRATEGY:
 
-  STRATEGY (Macro / Quant / Equities / Crédito / Caixa & Custos)
-    └── CLASSE_NEW   ← FX-split applied here
-          └── GRUPO_NEW
-                └── LIVRO
-                      └── PRODUCT
+  STRATEGY → CLASSE_NEW (FX-split here) → GRUPO_NEW → LIVRO → PRODUCT
 
-Re-mapping is identical to MACRO (only CLASSE/GRUPO change):
-  CLASSE='BRLUSD', GRUPO='Commodities'  → "FX Basis Risk & Carry" / "FX em Commodities"
-  CLASSE='BRLUSD', GRUPO='RV Intl'      → "FX Basis Risk & Carry" / "FX em RV Intl"
-  CLASSE='BRLUSD', GRUPO='RF Intl'      → "FX Basis Risk & Carry" / "FX em RF Intl"
-  CLASSE='BRLUSD', GRUPO='BRLUSD'       → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  CLASSE='BRLUSD', GRUPO='Custos'       → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  CLASSE='FX'                           → "FX Basis Risk & Carry" / "FX Spot & Futuros"
-  Everything else                       → unchanged
-
-Total per STRATEGY = unchanged. Total per CLASSE (Commodities / RV Intl / RF Intl)
-= unchanged. Grand total = unchanged.
+Total PnL preserved. The FX-bucketing rule lives in `pa_renderers.fx_split_classify`.
 
 Output: data/morning-calls/<date>_evolution_pa_fx_split.html
 """
@@ -62,12 +48,12 @@ def _fetch_evolution_pa(date_str: str) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS m12_bps
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" = 'EVOLUTION'
-      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "CLASSE", "GRUPO", "SUBCLASSE", "LIVRO", "BOOK", "PRODUCT"
     HAVING ABS(SUM(CASE WHEN "DATE" = DATE '{date_str}' THEN "DIA" ELSE 0 END)) > 1e-9
@@ -108,7 +94,9 @@ def _build_tree_table(df: pd.DataFrame) -> str:
     st_tot["_ord"] = st_tot["STRATEGY"].apply(
         lambda s: STRATEGY_ORDER.index(s) if s in STRATEGY_ORDER else 99
     )
-    st_tot = st_tot.sort_values(["_ord", "ytd_bps"], ascending=[True, False])
+    st_tot = st_tot.sort_values(["_ord", "ytd_bps"],
+                                ascending=[True, False],
+                                key=lambda s: s.abs() if s.name == "ytd_bps" else s)
 
     for _, sr in st_tot.iterrows():
         st = sr["STRATEGY"]

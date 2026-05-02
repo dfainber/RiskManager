@@ -121,7 +121,10 @@ def _build_idka_frame(label: str, portfolio_name: str, idx_name: str,
         rep_total_bps       = rep_total_bps.add(contrib_tr, fill_value=0.0)
 
     daily = bench.join(pd.DataFrame(out_cols), how="outer").sort_index()
-    daily["REP_RET_CLEAN_BPS"] = rep_total_clean_bps  # legacy clean-price (with coupon artifact)
+    # CLEAN_BPS uses ANBIMA UNIT_PRICE pct_change directly — generates -200~300
+    # bps phantom drops on NTN-B coupon dates (CLAUDE.md §8). Kept for the diff
+    # diagnostic that drives BENCH_VS_TR_DIFF_BPS only; do not consume in PA.
+    daily["REP_RET_CLEAN_BPS"] = rep_total_clean_bps
     daily["REP_RET_BPS"]       = rep_total_bps        # total-return adjusted
     daily["SPREAD_CLEAN_BPS"]  = daily["REP_RET_CLEAN_BPS"] - daily["BENCH_RET_BPS"]
     daily["SPREAD_BPS"]        = daily["REP_RET_BPS"]       - daily["BENCH_RET_BPS"]

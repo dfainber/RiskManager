@@ -1,14 +1,11 @@
 """QUANT Performance Attribution — FX-segregated view.
 
-Mirrors generate_evolution_pa_fx_split.py, but for the QUANT fund. The FX-split
-is applied **one level below** the natural top of the QUANT PA tree (LIVRO):
+Mirrors generate_evolution_pa_fx_split.py for QUANT; FX-split is applied
+one level below LIVRO:
 
-  LIVRO (Bracco / SIST_GLOBAL / SIST_RF / SIST_COMMO / SIST_FX / Quant_PA / RV BZ / Caixa* / Custos)
-    └── CLASSE_NEW   ← FX-split applied here
-          └── GRUPO_NEW
-                └── PRODUCT
+  LIVRO → CLASSE_NEW (FX-split here) → GRUPO_NEW → PRODUCT
 
-Re-mapping is identical to MACRO/EVOLUTION (only CLASSE/GRUPO change).
+Total PnL preserved. The FX-bucketing rule lives in `pa_renderers.fx_split_classify`.
 
 Output: data/morning-calls/<date>_quant_pa_fx_split.html
 """
@@ -50,12 +47,12 @@ def _fetch_quant_pa(date_str: str) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS m12_bps
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" = 'QUANT'
-      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "CLASSE", "GRUPO", "SUBCLASSE", "LIVRO", "BOOK", "PRODUCT"
     HAVING ABS(SUM(CASE WHEN "DATE" = DATE '{date_str}' THEN "DIA" ELSE 0 END)) > 1e-9

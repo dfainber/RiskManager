@@ -2,16 +2,13 @@
 
 Two side-by-side views, switched via the "FX Consolidado" toggle:
 
-  • Default — FX-split nested per LIVRO (same shape as QUANT/EVOLUTION/MACRO):
-       LIVRO → CLASSE_NEW (BRLUSD/FX → "FX Basis Risk & Carry")
-             → GRUPO_NEW → PRODUCT
+  • Default — FX-split nested per LIVRO:
+       LIVRO → CLASSE_NEW → GRUPO_NEW → PRODUCT
+  • FX Consolidado — every FX row across all LIVROs lifted into a single
+    top-level "FX Basis Risk & Carry" bucket above Caixa / Custos.
 
-  • FX Consolidado — every BRLUSD/FX row across all LIVROs is lifted into a
-    single top-level row "FX Basis Risk & Carry" placed above Caixa / Taxas
-    e Custos. Other LIVROs show only their asset-effect rows. The total of
-    both views is identical (pure regrouping, no recalculation).
-
-In REPORT_ALPHA_ATRIBUTION, MACRO_Q lives under FUNDO='GLOBAL'.
+Total preserved (pure regrouping). FX-bucketing rule: `pa_renderers.fx_split_classify`.
+MACRO_Q lives under FUNDO='GLOBAL' in REPORT_ALPHA_ATRIBUTION.
 
 Output: data/morning-calls/<date>_macroq_pa_fx_split.html
 """
@@ -52,12 +49,12 @@ def _fetch_macroq_pa(date_str: str) -> pd.DataFrame:
       SUM(CASE WHEN "DATE" >= DATE_TRUNC('year', DATE '{date_str}')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS ytd_bps,
-      SUM(CASE WHEN "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      SUM(CASE WHEN "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
                 AND "DATE" <= DATE '{date_str}'
                THEN "DIA" ELSE 0 END) * 10000 AS m12_bps
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
     WHERE "FUNDO" = 'GLOBAL'
-      AND "DATE" >  (DATE '{date_str}' - INTERVAL '12 months')
+      AND "DATE" >= (DATE '{date_str}' - INTERVAL '12 months')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "CLASSE", "GRUPO", "SUBCLASSE", "LIVRO", "BOOK", "PRODUCT"
     HAVING ABS(SUM(CASE WHEN "DATE" = DATE '{date_str}' THEN "DIA" ELSE 0 END)) > 1e-9

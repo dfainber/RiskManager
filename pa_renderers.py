@@ -430,6 +430,10 @@ def fx_split_classify(classe: str, grupo: str) -> tuple[str, str]:
     scripts which need to keep CLASSE/GRUPO + add CLASSE_NEW/GRUPO_NEW
     columns (for verification). The vectorized in-place version
     `_apply_fx_split_remap` is used by the main report's PA tree builder."""
+    # Trim CLASSE: DB emits 'Commodities ' (trailing space) for ~27 EVOLUTION/
+    # MACRO/QUANT/GLOBAL rows; without strip, 'Commodities' and 'Commodities '
+    # render as twin top-level rows.
+    classe = (classe or "").strip()
     if classe in _FX_SPLIT_CLASSES:
         grupo_clean = (grupo or "").strip()
         return (FX_SPLIT_BUCKET,
@@ -450,6 +454,9 @@ def _apply_fx_split_remap(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "CLASSE" not in df.columns:
         return df
     out = df.copy()
+    # Strip CLASSE first — DB emits 'Commodities ' (trailing space) for some
+    # rows; without this they render as a duplicate top-level bucket.
+    out["CLASSE"] = out["CLASSE"].astype(str).str.strip()
     is_fx = out["CLASSE"].isin(_FX_SPLIT_CLASSES)
     if not is_fx.any():
         return out

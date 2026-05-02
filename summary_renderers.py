@@ -624,7 +624,7 @@ def _render_top_rows(
                 html += (
                     f'<tr class="tp-row tp-lvl-2" data-tp-parent="{ipath}" style="display:none">'
                     f'<td class="sum-fund" style="padding-left:44px; font-size:11.5px; color:var(--muted)">{h["fund"]}</td>'
-                    f'<td class="mono" style="color:var(--muted); font-size:10.5px">{pct:+.0f}% da posição</td>'
+                    f'<td class="mono" style="color:var(--muted); font-size:10.5px" title="% do total do instrumento na casa (não do NAV do fundo)">{pct:+.0f}% do instrumento</td>'
                     f'<td class="mono" style="text-align:right; color:{hcol}; font-size:11.5px">{_mm(h["brl"])}</td>'
                     f'<td class="mono" style="color:var(--muted); font-size:10.5px">{h["unit"]}</td>'
                     "</tr>"
@@ -653,7 +653,7 @@ def build_top_positions_card(agg_rows: list, bench_matrix: dict) -> str:
       <table class="summary-table" data-no-sort="1">
         <thead><tr>
           <th style="text-align:left">Fator / Instrumento / Fundo</th>
-          <th style="text-align:left">Detalhe</th>
+          <th style="text-align:left" title="No nível Fundo: % do instrumento alocado naquele fundo">Fundo · share do instrumento</th>
           <th style="text-align:right">Total</th>
           <th style="text-align:left">Unidade</th>
         </tr></thead>
@@ -707,7 +707,7 @@ def build_var_bvar_card(house_rows: list) -> str:
     _dash = '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
     total_row = (
         '<tr class="house-total-row">'
-        '<td class="sum-fund" style="font-weight:700">Total (soma)</td>'
+        '<td class="sum-fund" style="font-weight:700" title="VaR/BVaR % são médias ponderadas por NAV (não-diversificado). NAV/PnL são somas.">Total NAV-pond. (não-div.)</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
         f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
         + _dash

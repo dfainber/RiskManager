@@ -54,7 +54,9 @@ def range_bar_svg(val, vmin, vmax, soft, hard, width=220, height=48) -> str:
     bar_color = "#4ade80" if util < UTIL_WARN else "#facc15" if util < UTIL_HARD else "#f87171"
     above_alert = pct >= ALERT_THRESHOLD
 
-    # Dot: pulsing ring if above alert threshold
+    # Dot: pulsing ring if above alert threshold.
+    # #fb923c is the canonical alert hue — if you change it, also update the
+    # mirror in generate_risk_report_meeting._TEXT_COLOR_MAP / _BG_HEX_MAP.
     dot_r   = 7
     ring_r  = 11
     dot_color = "#fb923c" if above_alert else bar_color
