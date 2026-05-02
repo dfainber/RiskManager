@@ -116,12 +116,21 @@ def compute_frontier_bvar_hs(df_frontier: pd.DataFrame, date_str: str = DATA_STR
 
 
 def compute_idka_bvar_hs(desk: str, date_str: str = DATA_STR,
-                          window_days: int = 756) -> dict | None:
+                          window_days: int = 756,
+                          bench_lag_bdays: int = 2) -> dict | None:
     """IDKA realized HS BVaR 95% 1d vs. its IDKA index benchmark.
        Uses fund cota (SHARE from LOTE_TRADING_DESKS_NAV_SHARE — flow-adjusted)
        minus IDKA index daily returns over up to `window_days` trading days.
        Fund-of-cota returns reflect historical positioning, which for replica
        funds should be close to current positioning.
+
+       ``bench_lag_bdays`` shifts the benchmark return by N trading days to
+       align the active-return axis with the fund's cotização calendar. IDKAs
+       use D-2 cotização: SHARE on date D reflects portfolio activity through
+       D-2 close, while the IDKA index on D moves D-1 → D. Without the shift,
+       σ(active) inflates ~10–30% vs the engine's RELATIVE_VAR_PCT. Default 2
+       bdays matches IDKA admin convention; pass 0 for funds with same-day
+       cotização.
     """
     bench = _IDKA_BENCH_INSTRUMENT.get(desk)
     if not bench:
@@ -156,10 +165,12 @@ def compute_idka_bvar_hs(desk: str, date_str: str = DATA_STR,
 
     # Align to fund's calendar (fund has fewer days than index); inner-join dates
     merged = df_f.join(df_b, how="inner").dropna()
-    if len(merged) < 30:
+    if len(merged) < 30 + max(0, bench_lag_bdays):
         return None
     merged["r_fund"]  = merged["SHARE"].pct_change()
-    merged["r_bench"] = merged["VALUE"].pct_change()
+    # Shift bench return by N rows of the joined calendar (≈ N trading days)
+    # to align with cotização axis — see docstring.
+    merged["r_bench"] = merged["VALUE"].pct_change().shift(bench_lag_bdays)
     merged = merged.dropna()
     er = (merged["r_fund"] - merged["r_bench"]).tail(window_days)
     if len(er) < 30:

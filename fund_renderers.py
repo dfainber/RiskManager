@@ -2599,6 +2599,24 @@ def _build_fund_mini_briefing(
     # only rephrases prose. Falls back to deterministic on any failure.
     commentary = polish_commentary(commentary, short)
 
+    # Convention footnote: only show on cards that actually use "dado/tomado".
+    # Full version lives in the executive briefing (single anchor at top).
+    bullets_text = " ".join(bullets)
+    if ("dado" in headline or "tomado" in headline
+            or "dado" in bullets_text or "tomado" in bullets_text
+            or "dado" in commentary or "tomado" in commentary):
+        footnote_html = (
+            '<div class="brief-footnote" '
+            'title="dado = DV01 < 0 (long bond, ex: NTN-B comprado, long DI1F) · '
+            'tomado = DV01 > 0 (short bond, ex: DI1F vendido)" '
+            'style="margin-top:8px; padding-top:6px; border-top:1px solid var(--line); '
+            'font-size:10px; color:var(--muted-strong); cursor:help">'
+            'ⓘ convenção <i>dado / tomado</i> — passe o mouse para detalhes'
+            '</div>'
+        )
+    else:
+        footnote_html = ""
+
     return f"""
     <section class="card brief-card">
       <div class="card-head">
@@ -2611,11 +2629,7 @@ def _build_fund_mini_briefing(
         {chips}
       </div>
       <ul class="brief-list">{"".join(bullets)}</ul>
-      <div class="brief-footnote" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted-strong); font-weight:500; line-height:1.5">
-        <b>Convenção de juros:</b>
-        <span style="color:var(--up);font-weight:700">dado</span> = DV01 &lt; 0 (long bond · ex: NTN-B comprado, long DI1F) ·
-        <span style="color:var(--down);font-weight:700">tomado</span> = DV01 &gt; 0 (short bond · ex: DI1F vendido).
-      </div>
+      {footnote_html}
     </section>"""
 
 
