@@ -1,0 +1,188 @@
+================================================================================
+RESUMO — REVIEW 2026-05-01 SESSION 2
+Foco: qualidade do CONTEÚDO, O QUE MOSTRAMOS, e ORDEM/HIERARQUIA do report
+Fonte: docs/CODE_REVIEW_2026-05-01_session2.md (em HEAD; working copy zerada)
+================================================================================
+
+Bugs de correctness (Day 1) já estão fechados. Este resumo cobre só o que afeta
+a leitura da página pelo gestor às 8h.
+
+================================================================================
+1. CONTEÚDO QUE ESTÁ ENGANANDO O LEITOR
+================================================================================
+
+1.1  BRIEFINGS VAPIDOS [§1.1 — STATUS: PARCIAL, gate apertado em d78992a]
+     8 de 19 cards de fundo renderizavam "dia tranquilo — sem eventos
+     materiais" mesmo em fundos que moveram. Exemplos do report de 2026-04-30:
+       - ALBATROZ "tranquilo" com VaR +7bps, stop 35% consumido,
+         MTD -0.53%, YTD -6.30%
+       - FRONTIER "tranquilo" com YTD -10.83% vs IBOV +16.26% (-27pp drag)
+       - MACRO "tranquilo" enquanto MACRO·LF tinha 9bps de margem (quase breach)
+     Gate atual já apertado (rule-based). LLM substitution continua na fila.
+
+1.2  STATUS CONSOLIDADO — TODOS OS FUNDOS COM DIA="—" [§1.3 — ABERTO]
+     Quando PA está em D-1, todas as células DIA dos fundos ficam "—" mas as
+     linhas de bench (IBOV +1.39%, CDI +0.05%) APARECEM preenchidas. O leitor
+     não sabe se "—" é "não moveu" ou "dado faltando". O card "Status dos
+     Dados" que explica isso fica 1.000 linhas abaixo, longe das células mudas.
+     Fix: render do D-1 com tag "(D-1)" + indicador na linha do fundo.
+
+1.3  RISK BUDGET — MACRO·LF "🟢 OK" COM 9bps DE MARGEM [§2.5 — ABERTO]
+     9bps de margem em base de 63bps/mês é ~14% do orçamento mensal. Mesma
+     página tem o Briefing Executivo dizendo "Atenção: MACRO LF margem 9 bps"
+     contradizendo o 🟢. Hoje threshold é só por % SEM/ANO; deveria também
+     thresholdar por margem absoluta em bps (<25 → 🟡, <10 → 🟠, ≤0 → 🔴).
+     Adicionar coluna "Days to soft breach @ burn rate 5d".
+
+1.4  "TOTAL (SOMA)" QUE NÃO É SOMA [§2.2 — ABERTO]
+     Risco VaR e BVaR card, footer: "Total (soma) · 815,1M · 0.69% · — · 0.44%"
+     Os 0.69% e 0.44% são MÉDIA NAV-weighted, não soma. Um leitor pode inferir
+     que é VaR não-diversificado da casa — não é.
+     Fix: rename para "Total NAV-weighted (não-diversificado)". Adicionar
+     segunda linha "HS diversificado: X.XX%" + benefício de diversificação.
+
+1.5  BREAKDOWN POR FATOR — UNIDADES MISTURADAS [§2.3 — ABERTO]
+     Mesma coluna mostra "Juros Reais (IPCA) Total -0.42 yrs" em cima de
+     "IPCA Idx Total +4.53%". yrs e % NAV juntos. IPCA Idx é parking-lot de
+     carry inflação (+53% no BALTRA) competindo visualmente com fatores
+     direcionais reais.
+     Fix: separar em 2 tabelas empilhadas (Duration factors em yrs / Notional
+     factors em %NAV). Esconder IPCA Idx por default (toggle).
+
+1.6  MUDANÇAS SIGNIFICATIVAS — LINHAS FANTASMA [§2.4 — ABERTO]
+     Quando D-1 falta, renderer mostra 0 em vez de "n/a". Filtro |Δ|≥0.30%
+     promove pure data-failure como "mudança significativa".
+     Exemplos vistos: Frontier D-1=0.00 / D-0=+89% / Δ=+89% (artifact puro);
+     Quantitativo Equity BR D-1=+0.00% / D-0=+4.40% (suspeito).
+     Fix: render "n/a" quando D-1 nulo + gate fora do filtro Δ.
+
+1.7  TOP POSIÇÕES — "% da posição" AMBÍGUO [§2.7 — ABERTO]
+     Sob DAPK35 mostra "Baltra +60% da posição / IDKA 10Y +24% / Albatroz +14%"
+     que soma 100%. Lê como "% do NAV do fundo" mas significa "% do total do
+     instrumento entre fundos que detêm". Misturado com R$ por fundo na mesma
+     drilldown.
+     Fix: rename header Lvl 2 de "Detalhe" para "Fundo · share do instrumento".
+     Ou splittar em 2 colunas ("Σ R$ no fundo" + "% do total instrumento").
+
+1.8  FRONTIER — "Util VaR —" PERPÉTUO [§2.6 — ABERTO]
+     Linha 7 do Status fica permanentemente cinza/inerte. Frontier moveu
+     -10.83% YTD vs IBOV +16.26% (27pp de drag) e a página mostra "all good"
+     todo dia. Para long-only o constraint relevante é tracking error /
+     orçamento de excess return, não VaR.
+     Fix: para Frontier especificamente, trocar Util VaR por TE-based metric
+     ("TE 8.2%/yr · X% de soft TE budget") ou ER cumulativo vs IBOV YTD.
+
+1.9  EVOLUTION — BRLUSD LEGADO NÃO ZERADO [§1.4 — ABERTO, requer escalation]
+     Em 2026-04-29 (pós-cutover) EVOLUTION emite BOTH legacy CLASSE='BRLUSD'
+     (-0.32 bps) E nova CLASSE='FX Carry & Bases Risk' (-7.73 bps). MACRO/QUANT
+     /GLOBAL têm legacy zerado. Hoje _apply_fx_split_remap soma os dois então
+     o bucket TOTAL está certo, mas a forma do dado está inconsistente.
+     Ação: pingar o owner da PA engine — bug de transição ou exposição real
+     não coberta pelo bucket novo?
+
+================================================================================
+2. ORDEM E HIERARQUIA VISUAL — A PÁGINA APONTA PRO LUGAR ERRADO
+================================================================================
+
+2.1  HEADLINE DO BRIEFING EXECUTIVO ESTÁ ERRADO [§1.2 — ABERTO]
+     Hoje: headline = "IDKA 10Y VaR subiu 14 bps vs D-1 (agora 0.66%)".
+     Embaixo, em "Atenção", em fonte menor: "MACRO · LF margem de stop em 9 bps".
+
+     IDKA 10Y a ~66% util é confortável. 9 bps margem num PM significa que
+     UM dia ruim breacha. Página aponta pro número errado.
+
+     Fix:
+       - Priority key = max(stop_margem_bps_remaining_inverse,
+                            util_VaR_pct,
+                            abs(Δ_VaR_bps))
+       - Quando qualquer PM tem <25 bps margem, headline vira:
+         "MACRO · LF margem 9 bps — risco de breach intramês."
+       - REORDENAR: "Atenção" ACIMA de "Risco · o que mudou" (hoje é o contrário)
+
+2.2  CROSS-FUND STOP-UTIL AUSENTE DO STATUS [§3.9 — ABERTO]
+     PM que aterrissa na página não consegue responder "de todos os fundos com
+     stop, qual está mais perto de breach?" sem rolar 4 seções diferentes.
+     Tooltip na linha "Macro" diz "LF 54% consumido" mas só vê com hover.
+     Fix: adicionar coluna "Util Stop" ao lado de "Util VaR" no Status
+     consolidado. Por fundo, mostrar pior PM. Teria surfaceado o LF=9bps no
+     topo da página direto.
+
+2.3  CONVENÇÃO "DADO/TOMADO" REPETE 9× POR PÁGINA [§3.6 — ABERTO]
+     O mesmo bloco de 4 linhas de convenção dado/tomado renderiza dentro de
+     CADA card de briefing por fundo (linhas 4082, 4777, 5707, 5902, 6377,
+     6716, 7618, 8153, 8688) + uma vez no Briefing Executivo. Na versão
+     meeting (telona, fontes maiores) isso vai dominar a página.
+     Fix: mostrar convenção só no Briefing Executivo + primeiro fundo cujo
+     briefing efetivamente menciona "dado/tomado". Resto: tooltip 1-linha.
+
+2.4  "DADO/TOMADO" É JARGÃO REGIONAL [§3.5 — ABERTO]  NAO FAZER
+     "Estar dado em juros" pode significar "long the rate (taker)" no slang de
+     parte das mesas — oposto da convenção do report. A legenda explica mas o
+     headline "casa está dado em Juros Reais (IPCA) · −345.8M líquido do bench"
+     em verde é genuinamente ambíguo pra leitor de outra mesa.
+     Fix: trocar por "long bond / short bond" ou "long DV01 / short DV01" no
+     headline. Glossário fica como apoio.
+
+2.5  COMMODITIES (com espaço trailing) APARECE COMO 2 LINHAS [§2.8 — ABERTO]
+     `q_models.REPORT_ALPHA_ATRIBUTION` tem CLASSE='Commodities ' (12 chars,
+     com espaço) coexistindo com 'Commodities'. _apply_fx_split_remap só faz
+     strip em GRUPO. Tree-builders externos agrupam por CLASSE sem strip e
+     mostram dois headers Commodities gêmeos no PA-FX-split.
+     Fix: adicionar TRIM em CLASSE no remap (1 linha) ou aplicar TRIM no SQL
+     do data_fetch.
+
+2.6  COMENTÁRIOS VACUOUS / DOCSTRINGS MENTINDO [§3.2, §3.3 — ABERTO]
+     13 comentários sem valor + 4 docstrings desatualizadas. Não muda render,
+     mas confunde quem vai mexer. ~1h de subtractive cleanup.
+
+================================================================================
+3. SKILLS DESATUALIZADAS — JÁ FECHADO
+================================================================================
+     5 SKILL.md alegavam features pendentes que já foram entregues
+     (macro-stop-monitor "carry rule em revisão" enquanto carry_step está vivo
+     há semanas; performance-attribution marcando ALBATROZ/MACRO_Q/BALTRA como
+     "a confirmar"; risk-data-collector descrevendo arquivos que não existem;
+     risk-daily-monitor referenciando MACRO_TABLES_GRAPHS.py inexistente; 8
+     references a "glpg-data-fetch" inexistente em vez de glpg_fetch.py).
+     Fechado em commit 9c886f5.
+
+================================================================================
+4. ORDEM SUGERIDA PRA ATACAR (foco em conteúdo + ordem)
+================================================================================
+
+A. Reordenar Briefing Executivo (§1.2 + §2.5 + §2.2 desta lista)
+   ~1h30. Maior impacto user-facing pendente. Resolve a contradição
+   "Atenção 9bps embaixo enquanto headline mostra IDKA 14bps" + adiciona
+   threshold por margem em bps + Util Stop column no Status.
+
+B. Status consolidado D-1 tagging (§1.2 desta lista)
+   ~1h. Acaba com a confusão "—" = sem dado vs sem movimento.
+
+C. "Total (soma)" rename + Mudanças D-1 null guard + Top Posições rename
+   (§1.4 + §1.6 + §1.7 desta lista)
+   ~1h30 batch. Cleanup de labels/semantica enganosa.
+
+D. Frontier — métrica certa pro long-only (§1.8 desta lista)
+   ~1h. Trocar Util VaR (sempre "—") por TE-based. MAS NAO TEM LIMITE EFETIVO DE QQ FORMA
+
+
+F. Breakdown por Fator unit split (§1.5 desta lista)
+   ~1h. Separar yrs de %NAV em 2 tabelas.
+
+G. Comment/docstring cleanup (§2.6 desta lista)
+   ~1h. Subtractive, baixíssimo risco.
+
+H. Commodities trailing-space TRIM (§2.5 desta lista)
+   15min. One-liner.
+
+I. EVOLUTION BRLUSD legacy — escalation (§1.9 desta lista) Place on to dos
+   Email/Slack pro PA engine owner. Não é code fix.
+
+================================================================================
+PENDENTES FORA DESTE ESCOPO (correctness, code-only, mega-refactors)
+================================================================================
+- §1.5/§1.6: build_html (4,420L) e main() (540L) split — sessão dedicada
+- §2.9-2.13j: várias correctness mediums (iterrows, sign comparisons,
+  divisores que não validam NAV, etc) — não mudam render
+- §4.x in-session: venv mismatch, hardcoded hostnames, nome DATE_60D mente
+================================================================================
