@@ -1,0 +1,14 @@
+{
+  "_comment": "Substring-based overrides applied to asset_master rows in normalize_issuer_overrides. If 'produto' contains the substring (case-insensitive), the listed columns are overwritten with the override value. Add new entries here instead of editing credit_data.py.",
+  "rules": [
+    {
+      "match_substring": "Cruz",
+      "case_insensitive": true,
+      "set": {
+        "apelido_emissor":  "Santa Cruz",
+        "grupo_economico":  "Santa Cruz",
+        "nome_emissor":     "Santa Cruz"
+      }
+    }
+  ]
+}

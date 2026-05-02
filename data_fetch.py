@@ -30,6 +30,9 @@ from risk_config import (
     _EVO_LIVRO_EXTRA_STRATEGY,
     _FUND_DESK_FOR_EXPO,
     _PRODCLASS_TO_FACTOR,
+    _MACRO_DESK,
+    _ALBATROZ_DESK,
+    _FRONTIER_DESK,
 )
 from db_helpers import _parse_rf, _parse_pm, _prev_bday, _latest_nav, _require_nav
 
@@ -906,8 +909,7 @@ _VAR_DOD_COLUMNS = [
     "children",  # list[dict] | None — populated only for parent rows that explode (e.g. Albatroz)
 ]
 
-_ALBATROZ_PRIMITIVE_LABEL = "GALAPAGOS ALBATROZ FIRF LP"
-_ALBATROZ_DESK = "GALAPAGOS ALBATROZ FIRF LP"
+_ALBATROZ_PRIMITIVE_LABEL = _ALBATROZ_DESK
 
 
 def _empty_var_dod() -> pd.DataFrame:
@@ -1175,12 +1177,18 @@ def _fetch_albatroz_lookthrough_pos(idka_desk: str, date_str: str) -> dict[str, 
     return {f"{r.BOOK}::{r.PRODUCT}": float(r.pos_brl) for r in df.itertuples(index=False)}
 
 
-def _var_dod_rpm(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd.DataFrame:
+def _var_dod_rpm(desk: str, date_d: str, date_d1: str, nav_d: float,
+                 nav_d1: float | None = None) -> pd.DataFrame:
     """MACRO/QUANT/EVOLUTION VaR DoD via LOTE_FUND_STRESS_RPM (LEVEL=10, BOOK aggregate).
     Vol proxy: using today's |DELTA| sum per BOOK from LOTE_PRODUCT_EXPO as a
     constant denominator for both days. vol_x_bps = contrib_x_bps / pos_pct_nav_d
     (bps de risco por 1% NAV em gross size). Captura mudança de "intensidade
-    de vol" do BOOK holding-position-constant."""
+    de vol" do BOOK holding-position-constant.
+
+    nav_d1 (optional): D-1 NAV. If provided, the D-1 contribution row is divided
+    by nav_d1 instead of nav_d — preserves the right %-of-NAV scale across a
+    chunky subscription/redemption between D-1 and D. Falls back to nav_d if
+    None (legacy behavior)."""
     q = f"""
     SELECT "VAL_DATE", "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
     FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
@@ -1196,7 +1204,10 @@ def _var_dod_rpm(desk: str, date_d: str, date_d1: str, nav_d: float) -> pd.DataF
     if df.empty or nav_d <= 0:
         return _empty_var_dod()
     df["VAL_DATE"] = pd.to_datetime(df["VAL_DATE"]).dt.strftime("%Y-%m-%d")
-    df["contrib_bps"] = -df["var_brl"].astype(float) / nav_d * 10000.0
+    nav_for_d1 = nav_d1 if (nav_d1 is not None and nav_d1 > 0) else nav_d
+    nav_per_date = {date_d: nav_d, date_d1: nav_for_d1}
+    df["nav_for_row"] = df["VAL_DATE"].map(nav_per_date).fillna(nav_d).astype(float)
+    df["contrib_bps"] = -df["var_brl"].astype(float) / df["nav_for_row"] * 10000.0
     p = df.pivot_table(index="BOOK", columns="VAL_DATE",
                         values="contrib_bps", aggfunc="sum").fillna(0.0)
     if date_d not in p.columns or date_d1 not in p.columns:
@@ -1671,10 +1682,12 @@ def fetch_var_dod_decomposition(fund_key: str, date_str: str = DATA_STR) -> pd.D
         return _var_dod_idka(desk, date_d, date_d1, bench_primitive,
                              nav_d, nav_d1)
     if source == "rpm_book":
-        nav_d = _latest_nav(desk, date_d)
+        nav_d  = _latest_nav(desk, date_d)
+        nav_d1 = _latest_nav(desk, date_d1)
         if nav_d is None or nav_d <= 0:
             return _empty_var_dod()
-        return _var_dod_rpm(desk, date_d, date_d1, float(nav_d))
+        nav_d1_arg = float(nav_d1) if (nav_d1 is not None and nav_d1 > 0) else None
+        return _var_dod_rpm(desk, date_d, date_d1, float(nav_d), nav_d1_arg)
     if source == "lote_fund":
         nav_d = _latest_nav(desk, date_d)
         if nav_d is None or nav_d <= 0:
@@ -1784,7 +1797,7 @@ def fetch_pnl_actual_by_cut(date_str: str = DATA_STR) -> dict:
 
 def fetch_macro_exposure(date_str: str = DATA_STR) -> tuple:
     """Returns (df_expo, df_var, aum) for the given date."""
-    aum = _require_nav("Galapagos Macro FIM", date_str)
+    aum = _require_nav(_MACRO_DESK, date_str)
 
     expo = read_sql(f"""
         SELECT "BOOK", "PRODUCT", "PRODUCT_CLASS", "PRIMITIVE_CLASS",
@@ -1908,7 +1921,7 @@ def _fetch_single_names_generic(date_str: str, desk: str, source: str,
           AND "PRIMITIVE_CLASS"           = 'Equity'
           {extra_where}
     """)
-    fut_delta = float(fut["delta"].iloc[0]) if not fut.empty and pd.notna(fut["delta"].iloc[0]) else 0.0
+    fut_delta = float(pd.to_numeric(fut["delta"], errors="coerce").fillna(0.0).iloc[0]) if not fut.empty else 0.0
 
     # latest composition per list (IBOV + SMLLBV) as of date_str
     compo = read_sql(f"""
@@ -2048,7 +2061,7 @@ def fetch_quant_var(date_str: str = DATA_STR) -> pd.DataFrame:
 
 
 def fetch_albatroz_exposure(date_str: str = DATA_STR,
-                            desk: str = "GALAPAGOS ALBATROZ FIRF LP") -> tuple:
+                            desk: str = _ALBATROZ_DESK) -> tuple:
     """
     RF exposure snapshot for an RF desk — position-level from LOTE_PRODUCT_EXPO.
     Returns (df, nav) where df columns are:
@@ -2147,7 +2160,7 @@ def fetch_rf_exposure_map(desk: str, date_str: str = DATA_STR,
                         PRIMITIVE_CLASS, PRODUCT, expiry, days_to_exp,
                         delta_brl, mod_dur, ano_eq_brl, factor, bucket
     """
-    albatroz_td = "GALAPAGOS ALBATROZ FIRF LP"
+    albatroz_td = _ALBATROZ_DESK
     if lookthrough_only:
         # Single query: all desks where `desk` is the share_source (Evolution semantics).
         q_lt = f"""
@@ -2449,11 +2462,11 @@ def fetch_macro_pm_book_var(date_str: str = DATA_STR) -> dict[str, float]:
        Soma-se |PARAMETRIC_VAR| por prefixo de PM → magnitude de perda em bps de NAV.
        Usa |·| por book para preservar o caráter conservador "não diversificado"
        (não permite hedge natural entre books do mesmo PM)."""
-    nav = _require_nav("Galapagos Macro FIM", date_str)
+    nav = _require_nav(_MACRO_DESK, date_str)
     df = read_sql(f"""
         SELECT "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
         FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
-        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+        WHERE "TRADING_DESK" = '{_MACRO_DESK}'
           AND "VAL_DATE"     = DATE '{date_str}'
           AND "TREE"         = 'Main_Macro_Ativos'
           AND "LEVEL"        = 10
@@ -2491,7 +2504,7 @@ def fetch_macro_pm_var_history(date_str: str = DATA_STR,
     df = read_sql(f"""
         SELECT "VAL_DATE", "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
         FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
-        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+        WHERE "TRADING_DESK" = '{_MACRO_DESK}'
           AND "TREE"         = 'Main_Macro_Ativos'
           AND "LEVEL"        = 10
           AND "VAL_DATE"    >= DATE '{date_str}' - INTERVAL '{cal_window} days'
@@ -2507,7 +2520,7 @@ def fetch_macro_pm_var_history(date_str: str = DATA_STR,
     for vd, sub in df.groupby("VAL_DATE"):
         # History loop: skip days with missing/non-positive NAV instead of raising —
         # one bad day shouldn't kill the whole 121-day series.
-        nav = _latest_nav("Galapagos Macro FIM", vd.strftime("%Y-%m-%d"))
+        nav = _latest_nav(_MACRO_DESK, vd.strftime("%Y-%m-%d"))
         if nav is None or nav <= 0:
             continue
         rec: dict = {"VAL_DATE": vd}
@@ -2761,7 +2774,7 @@ def fetch_idka_albatroz_weight(idka_desk: str, date_str: str = DATA_STR) -> floa
     q = f"""
     SELECT "TRADING_DESK_SHARE_SOURCE" AS source, SUM(ABS("POSITION")) AS pos
     FROM "LOTE45"."LOTE_PRODUCT_EXPO"
-    WHERE "TRADING_DESK" = 'GALAPAGOS ALBATROZ FIRF LP'
+    WHERE "TRADING_DESK" = '{_ALBATROZ_DESK}'
       AND "VAL_DATE"     = DATE '{date_str}'
     GROUP BY "TRADING_DESK_SHARE_SOURCE"
     """
@@ -2773,7 +2786,7 @@ def fetch_idka_albatroz_weight(idka_desk: str, date_str: str = DATA_STR) -> floa
     total     = float(df["pos"].sum())
     if total == 0 or slice_val == 0:
         return 0.0
-    alb_nav   = _latest_nav("GALAPAGOS ALBATROZ FIRF LP", date_str) or 0.0
+    alb_nav   = _latest_nav(_ALBATROZ_DESK, date_str) or 0.0
     idka_nav  = _latest_nav(idka_desk, date_str) or 0.0
     if idka_nav == 0:
         return 0.0
@@ -2921,13 +2934,13 @@ def fetch_di1_3y_rate(date_str: str = DATA_STR, target_bdays: int = 756) -> dict
 # ── Book PnL + Peers ──────────────────────────────────────────────────────────
 
 _BOOK_PNL_FUND_MAP: dict[str, str] = {
-    "Galapagos Macro FIM":            "Macro",
+    _MACRO_DESK:           "Macro",
     "Galapagos Evolution FIC FIM CP": "Evolution",
     "Galapagos Quantitativo FIM":     "Quantitativo",
     "Galapagos Global Macro Q":       "Macro Q",
-    "Frontier Ações FIC FI":          "Frontier",
+    _FRONTIER_DESK:        "Frontier",
     "FRONTIER LONG BIAS":             "Frontier LB",
-    "GALAPAGOS ALBATROZ FIRF LP":     "Albatroz",
+    _ALBATROZ_DESK:        "Albatroz",
 }
 
 _PEERS_FILE = Path(os.environ.get(

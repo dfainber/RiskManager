@@ -68,10 +68,6 @@ def fetch_all_latest_navs(date_str: str) -> dict:
        calls hit memory instead of the DB. Returns the {desk: nav} dict as well.
     """
     desks = list(ALL_FUNDS.keys())
-    # Include MACRO family names that aren't in ALL_FUNDS under the desk key we use at call sites
-    extras = ["Galapagos Macro FIM", "GALAPAGOS ALBATROZ FIRF LP",
-              "Frontier A\u00e7\u00f5es FIC FI"]
-    desks = list({*desks, *extras})
     tds = ", ".join(f"'{d}'" for d in desks)
     df = read_sql(f"""
         SELECT DISTINCT ON ("TRADING_DESK") "TRADING_DESK", "NAV"

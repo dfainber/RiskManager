@@ -30,6 +30,7 @@ from risk_config import (
     _PM_LIVRO,
     ALERT_COMMENTS,
     _FUND_PEERS_GROUP,
+    _MACRO_DESK, _ALBATROZ_DESK, _EVOLUTION_DESK, _BALTRA_DESK,
 )
 from svg_renderers import make_sparkline, range_bar_svg, multi_line_chart_svg
 from db_helpers import _prev_bday, fetch_all_latest_navs, _latest_nav, _require_nav
@@ -910,13 +911,12 @@ def build_html(d: ReportData) -> str:
     # RF Exposure Map (IDKA 3Y, IDKA 10Y, Albatroz, MACRO, EVOLUTION)
     # MACRO/EVOLUTION use bench_dur=0 ("—" label) since they have no fixed-duration mandate.
     _RF_MAP_CFG = {
-        "IDKA_3Y":   {"desk": "IDKA IPCA 3Y FIRF",              "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
-        "IDKA_10Y":  {"desk": "IDKA IPCA 10Y FIRF",             "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
-        "ALBATROZ":  {"desk": "GALAPAGOS ALBATROZ FIRF LP",     "bench_dur": 0.0,  "bench_label": "CDI"},
-        "BALTRA":    {"desk": "Galapagos Baltra Icatu Qualif Prev FIM CP",
-                                                                 "bench_dur": 0.0,  "bench_label": "IPCA+"},
-        "MACRO":     {"desk": "Galapagos Macro FIM",            "bench_dur": 0.0,  "bench_label": "—"},
-        "EVOLUTION": {"desk": "Galapagos Evolution FIC FIM CP", "bench_dur": 0.0,  "bench_label": "—"},
+        "IDKA_3Y":   {"desk": "IDKA IPCA 3Y FIRF",  "bench_dur": 3.0,  "bench_label": "IDKA IPCA 3A"},
+        "IDKA_10Y":  {"desk": "IDKA IPCA 10Y FIRF", "bench_dur": 10.0, "bench_label": "IDKA IPCA 10A"},
+        "ALBATROZ":  {"desk": _ALBATROZ_DESK,       "bench_dur": 0.0,  "bench_label": "CDI"},
+        "BALTRA":    {"desk": _BALTRA_DESK,         "bench_dur": 0.0,  "bench_label": "IPCA+"},
+        "MACRO":     {"desk": _MACRO_DESK,          "bench_dur": 0.0,  "bench_label": "—"},
+        "EVOLUTION": {"desk": _EVOLUTION_DESK,      "bench_dur": 0.0,  "bench_label": "—"},
     }
     if rf_expo_maps:
         for short_k, cfg_k in _RF_MAP_CFG.items():
@@ -1827,17 +1827,16 @@ def main():  # noqa: C901
                                    "Galapagos Baltra Icatu Qualif Prev FIM CP")
         # Credit look-through positions for the new "Crédito" tab
         fut_baltra_cred = ex.submit(fetch_fund_credit_positions,
-                                    "Galapagos Baltra Icatu Qualif Prev FIM CP", DATA_STR)
+                                    _BALTRA_DESK, DATA_STR)
         fut_evo_cred    = ex.submit(fetch_fund_credit_positions,
-                                    "Galapagos Evolution FIC FIM CP", DATA_STR)
+                                    _EVOLUTION_DESK, DATA_STR)
         fut_rf_expo = {
             "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
             "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
-            "ALBATROZ":  ex.submit(fetch_rf_exposure_map, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR),
-            "BALTRA":    ex.submit(fetch_rf_exposure_map, "Galapagos Baltra Icatu Qualif Prev FIM CP", DATA_STR),
-            "MACRO":     ex.submit(fetch_rf_exposure_map, "Galapagos Macro FIM", DATA_STR),
-            "EVOLUTION": ex.submit(fetch_rf_exposure_map, "Galapagos Evolution FIC FIM CP",
-                                   DATA_STR, True),
+            "ALBATROZ":  ex.submit(fetch_rf_exposure_map, _ALBATROZ_DESK, DATA_STR),
+            "BALTRA":    ex.submit(fetch_rf_exposure_map, _BALTRA_DESK, DATA_STR),
+            "MACRO":     ex.submit(fetch_rf_exposure_map, _MACRO_DESK, DATA_STR),
+            "EVOLUTION": ex.submit(fetch_rf_exposure_map, _EVOLUTION_DESK, DATA_STR, True),
         }
         # Pre-warm NAV cache for today + D-1 so every _latest_nav() call hits memory.
         fut_navs    = ex.submit(fetch_all_latest_navs, DATA_STR)
@@ -1925,7 +1924,7 @@ def main():  # noqa: C901
         expo_date_label = d1_str
         # NAV must come from a real source; the historical `or 1.0` fallback could
         # mis-scale every %NAV / bps in this branch by ~10⁵× if both lookups fail.
-        macro_aum = _aum_raw or _require_nav("Galapagos Macro FIM", d1_str)
+        macro_aum = _aum_raw or _require_nav(_MACRO_DESK, d1_str)
         df_expo, df_var = _expo_d1_raw, _var_d1_raw
         # D-1 becomes the new D-0; D-2 becomes the delta reference
         try:

@@ -2,7 +2,13 @@
 glpg_fetch.py
 =============
 Thin wrapper for querying GLPG-DB01 (PostgreSQL).
-Credentials loaded from .env in this directory, then env vars, then fallback.
+Credentials are loaded from a .env file next to this module (preferred) or
+from process environment variables. Required keys:
+
+    GLPG_DB_HOST, GLPG_DB_PORT, GLPG_DB_NAME, GLPG_DB_USER, GLPG_DB_PASSWORD
+
+If any required key is missing, import fails fast with an explicit error
+(no host/user fallbacks — see global security policy).
 
 Usage:
     from glpg_fetch import read_sql
@@ -26,15 +32,19 @@ except ImportError:
     pass
 
 
-def _env(name: str, fallback: str) -> str:
-    return os.environ.get(name) or fallback
+_REQUIRED_VARS = ("GLPG_DB_HOST", "GLPG_DB_PORT", "GLPG_DB_NAME", "GLPG_DB_USER", "GLPG_DB_PASSWORD")
+_missing = [name for name in _REQUIRED_VARS if not os.environ.get(name)]
+if _missing:
+    raise RuntimeError(
+        "glpg_fetch: missing required env vars: " + ", ".join(_missing) +
+        f". Populate {Path(__file__).parent / '.env'} or set them in the process environment."
+    )
 
-
-_DB_HOST = _env("GLPG_DB_HOST",     "GLPG-DB01")
-_DB_PORT = _env("GLPG_DB_PORT",     "5432")
-_DB_NAME = _env("GLPG_DB_NAME",     "DATA_DEV_DB")
-_DB_USER = _env("GLPG_DB_USER",     "svc_automation")
-_DB_PASS = _env("GLPG_DB_PASSWORD", "")
+_DB_HOST = os.environ["GLPG_DB_HOST"]
+_DB_PORT = os.environ["GLPG_DB_PORT"]
+_DB_NAME = os.environ["GLPG_DB_NAME"]
+_DB_USER = os.environ["GLPG_DB_USER"]
+_DB_PASS = os.environ["GLPG_DB_PASSWORD"]
 
 
 # Per-thread connection cache — each thread keeps one live connection and reuses it

@@ -11,6 +11,21 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 4 — security + centralization batch)
+
+Session 4 closes 5 more open items: §4.3 (security — env-only DB credentials), §2.13h (desk-name centralization), §3.3c (issuer override → JSON), §2.11 (iloc cast hardening), §2.13a (VaR DoD nav_d1 plumbing fully wired). §2.13f infrastructure landed — full call-site propagation deferred. Both dark + meeting reports regenerate clean; smoke test passes.
+
+### Session 4 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 4.3 | `glpg_fetch.py` no longer falls back to hardcoded host/user — env-only with fail-fast | ✅ DONE | [`glpg_fetch.py`](../glpg_fetch.py) |
+| 2.13h | Desk-name centralization (`_MACRO_DESK`, `_ALBATROZ_DESK`, `_FRONTIER_DESK`, `_EVOLUTION_DESK`, `_BALTRA_DESK` etc. in [`risk_config.py`](../risk_config.py)) — all literal sites in `data_fetch.py`, `db_helpers.py`, `pm_vol_card.py`, `generate_risk_report.py` swept | ✅ DONE | 4 files |
+| 3.3c | "Cruz" issuer override → [`credit/issuer_overrides.json`](../credit/issuer_overrides.json), substring-rule loader in [`credit/credit_data.py`](../credit/credit_data.py) | ✅ DONE | new JSON + 1 file |
+| 2.11 | `data_fetch.py:1913` `float(iloc[0])` → `pd.to_numeric(...).fillna(0.0).iloc[0]` | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L1913) |
+| 2.13a | `_var_dod_rpm` now accepts `nav_d1` and divides D-1 contributions by D-1 NAV (call site plumbed through `_var_dod_dispatch`) | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L1180) |
+| 2.13f | `_build_expo_unified_table` accepts `nav_d1` kwarg (defaults to None → falls back to `nav` = legacy behavior). Per-renderer call-site propagation pending | 🟡 PARTIAL | [`expo_renderers.py`](../expo_renderers.py#L41) |
+
 ## STATUS (2026-05-01, session 3 — quantity-over-quality pass)
 
 All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 hygiene shipped across **9 commits** since this doc was written. Both dark + meeting reports regenerate clean.
@@ -54,15 +69,14 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
 - §1.5 / §1.6 `build_html` / `main()` extraction (half-day each — partly in progress per `c8a93a6` / `7bb06fe` / `d98dae1`)
 - §2.3 Breakdown por Fator unit-mixing
+- §2.5 Risk Budget thresholding by margem (bps) — full re-thresh + "days to soft breach" projection
 - §2.6 Frontier perpetual "—" (TE-based metric needed)
-- §2.9 / §2.10 / §2.11 carryover iterrows + iloc guards
-- §2.13a / §2.13b / §2.13f VaR-DoD NAV axis + IDKA SHARE flow PnL (need careful NAV-axis review)
-- §2.13h Desk-name centralization (many call sites)
-- §3.3c Issuer "Cruz" hardcode → JSON
+- §2.9 / §2.10 carryover iterrows vectorization
+- §2.13b IDKA SHARE flow PnL (cotização axis mismatch)
+- §2.13f VaR DoD exposure NAV-axis — call-site propagation through 3 per-fund renderers
 - §3.4–§3.9 aesthetic carryovers (hex codes, dado/tomado convention, `data-no-sort`, meeting-port hardcodes, Util Stop column)
 - §4.1 Python venv discipline (`from __future__ import annotations`)
 - §4.2 CLI entry-point convention
-- §4.3 `glpg_fetch.py` hardcoded host/user fallbacks (security)
 
 ---
 

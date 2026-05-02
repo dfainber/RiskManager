@@ -346,13 +346,24 @@ ALERT_COMMENTS = {
 
 
 # ── Fund short → TRADING_DESK name (for LOTE_PRODUCT_EXPO lookups) ────────────
+# \u2500\u2500 Canonical TRADING_DESK names (DB strings \u2014 exact match) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# Centralized so a typo or rename only needs one change. Import these instead
+# of repeating the literal string at call sites (audit \u00a72.13h).
+_MACRO_DESK     = "Galapagos Macro FIM"
+_QUANT_DESK     = "Galapagos Quantitativo FIM"
+_EVOLUTION_DESK = "Galapagos Evolution FIC FIM CP"
+_MACRO_Q_DESK   = "Galapagos Global Macro Q"
+_ALBATROZ_DESK  = "GALAPAGOS ALBATROZ FIRF LP"
+_FRONTIER_DESK  = "Frontier A\u00e7\u00f5es FIC FI"
+_BALTRA_DESK    = "Galapagos Baltra Icatu Qualif Prev FIM CP"
+
 _FUND_DESK_FOR_EXPO = {
-    "MACRO":     "Galapagos Macro FIM",
-    "QUANT":     "Galapagos Quantitativo FIM",
-    "EVOLUTION": "Galapagos Evolution FIC FIM CP",
-    "MACRO_Q":   "Galapagos Global Macro Q",
-    "ALBATROZ":  "GALAPAGOS ALBATROZ FIRF LP",
-    "FRONTIER":  "Frontier A\u00e7\u00f5es FIC FI",
+    "MACRO":     _MACRO_DESK,
+    "QUANT":     _QUANT_DESK,
+    "EVOLUTION": _EVOLUTION_DESK,
+    "MACRO_Q":   _MACRO_Q_DESK,
+    "ALBATROZ":  _ALBATROZ_DESK,
+    "FRONTIER":  _FRONTIER_DESK,
 }
 
 # PRODUCT_CLASS → higher-level risk factor. None = non-directional (Cash, LFT) — excluded.

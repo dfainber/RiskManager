@@ -6,7 +6,9 @@ risk-monitor modules. All queries use glpg_fetch.read_sql.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -18,6 +20,22 @@ from .credit_config import (
     CREDIT_CURVE_CHAINS,
     EXCLUDE_PRODUCT_CLASSES,
 )
+
+
+_ISSUER_OVERRIDES_PATH = Path(__file__).parent / "issuer_overrides.json"
+_ISSUER_OVERRIDE_RULES: list[dict] | None = None
+
+
+def _load_issuer_override_rules() -> list[dict]:
+    """Lazy-load and cache the override rules from credit/issuer_overrides.json."""
+    global _ISSUER_OVERRIDE_RULES
+    if _ISSUER_OVERRIDE_RULES is None:
+        if _ISSUER_OVERRIDES_PATH.exists():
+            with open(_ISSUER_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+                _ISSUER_OVERRIDE_RULES = json.load(f).get("rules", [])
+        else:
+            _ISSUER_OVERRIDE_RULES = []
+    return _ISSUER_OVERRIDE_RULES
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -99,24 +117,32 @@ ORDER BY b."POSITION" DESC
 # ────────────────────────────────────────────────────────────────────────────
 
 def normalize_issuer_overrides(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply known issuer overrides driven by the product name.
+    """Apply substring-driven issuer overrides loaded from issuer_overrides.json.
 
     Why: some rows in ``credit.asset_master`` have inconsistent or wrong
     apelido_emissor / grupo_economico / nome_emissor for FIDCs that
     legitimately belong to the same issuer (e.g. Santa Cruz tranches).
-    Rather than touch the master file, we normalize on read so concentration
-    and limit-utilization rollups behave correctly.
-
-    Currently:
-        - Any product with "Cruz" in the name → issuer = "Santa Cruz"
+    Rather than editing the master file, we normalize on read so concentration
+    and limit-utilization rollups behave correctly. Add new rules to
+    `credit/issuer_overrides.json` — no code change needed.
     """
     if df is None or df.empty or "produto" not in df.columns:
         return df
-    has_cruz = df["produto"].astype(str).str.contains("Cruz", case=False, na=False)
-    if has_cruz.any():
-        for col in ("apelido_emissor", "grupo_economico", "nome_emissor"):
+    rules = _load_issuer_override_rules()
+    if not rules:
+        return df
+    produto_str = df["produto"].astype(str)
+    for rule in rules:
+        substring = rule.get("match_substring", "")
+        if not substring:
+            continue
+        case_insensitive = bool(rule.get("case_insensitive", True))
+        mask = produto_str.str.contains(substring, case=not case_insensitive, na=False, regex=False)
+        if not mask.any():
+            continue
+        for col, value in rule.get("set", {}).items():
             if col in df.columns:
-                df.loc[has_cruz, col] = "Santa Cruz"
+                df.loc[mask, col] = value
     return df
 
 

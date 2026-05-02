@@ -21,6 +21,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 from glpg_fetch import read_sql
+from risk_config import _MACRO_DESK
 
 # ── Config ──────────────────────────────────────────────────────────────────
 def _parse_date_arg(s: str) -> str:
@@ -125,7 +126,7 @@ def fetch_nav_series(date_str: str, lookback_days: int = 400) -> pd.DataFrame:
     df = read_sql(f"""
         SELECT "VAL_DATE", SUM("NAV") AS nav
         FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
-        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+        WHERE "TRADING_DESK" = '{_MACRO_DESK}'
           AND "VAL_DATE" >= DATE '{date_str}' - INTERVAL '{lookback_days} days'
           AND "VAL_DATE" <= DATE '{date_str}'
         GROUP BY "VAL_DATE"
@@ -146,7 +147,7 @@ def fetch_lote_pm_var_series(date_str: str, lookback_days: int = 400,
     df_var = read_sql(f"""
         SELECT "VAL_DATE", "BOOK", SUM("PARAMETRIC_VAR") AS var_brl
         FROM "LOTE45"."LOTE_FUND_STRESS_RPM"
-        WHERE "TRADING_DESK" = 'Galapagos Macro FIM'
+        WHERE "TRADING_DESK" = '{_MACRO_DESK}'
           AND "TREE"         = 'Main_Macro_Ativos'
           AND "LEVEL"        = 10
           AND "VAL_DATE"     >= DATE '{date_str}' - INTERVAL '{lookback_days} days'

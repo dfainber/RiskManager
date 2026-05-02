@@ -49,12 +49,17 @@ def _build_expo_unified_table(
     table_id: str | None = None,
     diversified_var_bps: float | None = None,
     diversified_var_bps_d1: float | None = None,
+    nav_d1: float | None = None,
 ) -> str:
     """Render a unified Exposure factor × product table.
        Expected df columns: factor, PRODUCT, PRODUCT_CLASS, delta, pct_nav, sigma.
        Expected df_var columns: factor, PRODUCT, PRODUCT_CLASS, var_pct (bps, positive=loss).
        factor_order: ordered list of factor keys for initial display (default sort |Net| desc).
+       nav_d1: D-1 NAV. If provided, D-1 deltas are divided by nav_d1 instead
+       of nav — preserves the right %-of-NAV scale across a chunky
+       subscription/redemption between D-1 and D. Falls back to nav if None.
     """
+    nav_for_d1 = nav_d1 if (nav_d1 is not None and nav_d1 > 0) else nav
     if df is None or df.empty:
         return ""
     tbl_id = table_id or f"tbl-uexpo-{fund_key}"
@@ -74,7 +79,7 @@ def _build_expo_unified_table(
         p1 = (df_d1.assign(_abs=df_d1["delta"].abs())
                     .groupby(["factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
                     .agg(delta=("delta", "sum")))
-        p1["net_pct"] = p1["delta"] * 100 / nav
+        p1["net_pct"] = p1["delta"] * 100 / nav_for_d1
         for r in p1.itertuples(index=False):
             d1_prod[(r.factor, r.PRODUCT, r.PRODUCT_CLASS)] = r.net_pct
 
@@ -119,7 +124,7 @@ def _build_expo_unified_table(
         if df_d1 is not None and not df_d1.empty:
             sub1 = df_d1[df_d1["factor"] == f]
             if not sub1.empty:
-                d1_net_pct = float(sub1["delta"].sum()) * 100 / nav
+                d1_net_pct = float(sub1["delta"].sum()) * 100 / nav_for_d1
         d1_var_pct = None
         if v1_prod:
             d1_var_pct = sum(v1_prod.get((f, r.PRODUCT, r.PRODUCT_CLASS), 0.0)
