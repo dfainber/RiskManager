@@ -841,12 +841,20 @@ def _build_pa_alerts_html(alerts: list, df_pa, df_pa_daily) -> str:
 
 
 # ── Status consolidado (cross-fund landing card) builders ───────────────────
-def _sum_bp_cell(bps: float) -> str:
+def _sum_bp_cell(bps: float, lag_tag: str = "") -> str:
+    """Render a basis-points cell as percentage. ``lag_tag`` (e.g. "(D-1)")
+    is appended in muted small text when the value is from a prior date —
+    used by the Status consolidado DIA column when PA hasn't landed yet."""
     pct = bps / 100.0
     if abs(pct) < 0.005:
+        if lag_tag:
+            tip = "PA pendente para hoje — última obs D-1"
+            return (f'<td class="mono" style="color:var(--muted); text-align:right" '
+                    f'title="{tip}">flat <span style="font-size:10px">{lag_tag}</span></td>')
         return '<td class="mono" style="color:var(--muted); text-align:right">—</td>'
     color = "var(--up)" if bps >= 0 else "var(--down)"
-    return f'<td class="mono" style="color:{color}; text-align:right">{pct:+.2f}%</td>'
+    suffix = f' <span style="color:var(--muted);font-size:10px">{lag_tag}</span>' if lag_tag else ''
+    return f'<td class="mono" style="color:{color}; text-align:right">{pct:+.2f}%{suffix}</td>'
 
 
 def _sum_util_cell(util):
@@ -875,16 +883,32 @@ def _sum_dvar_cell(dvar):
 
 def _build_summary_rows_html(*, td_by_short: dict, df_pa, df_frontier,
                              frontier_bvar: dict | None, series_map: dict,
-                             pm_margem: dict | None, stop_hist: dict | None) -> str:
+                             pm_margem: dict | None, stop_hist: dict | None,
+                             df_pa_daily=None, pa_has_today: bool = True) -> str:
     """Per-fund row HTML for the Status consolidado card (Summary view).
     Columns: status emoji, fund label, dia/mtd/ytd/m12 alpha bps cells, VaR %,
     Util % vs soft, Δ VaR D-1 bps. MACRO/ALBATROZ also surface stop-utilization
     via the worst-PM (MACRO) or absolute MTD vs 150 bps (ALBATROZ); the worst
-    of (var_util, stop_util) drives the green/yellow/red dot."""
+    of (var_util, stop_util) drives the green/yellow/red dot.
+
+    When ``pa_has_today`` is False (PA on D-1), the DIA column falls back
+    to the last available day's dia_bps from ``df_pa_daily`` and is tagged
+    "(D-1)" so the user knows the value is one day stale.
+    """
+    # Build lag fallback: max DATE in df_pa_daily and per-FUNDO sum at that date.
+    lag_dia_by_fundo: dict[str, float] = {}
+    lag_tag = ""
+    if (not pa_has_today) and df_pa_daily is not None and not df_pa_daily.empty:
+        latest = df_pa_daily["DATE"].max()
+        lag_tag = "(D-1)"
+        sub_lag = df_pa_daily[df_pa_daily["DATE"] == latest]
+        for fundo, grp in sub_lag.groupby("FUNDO"):
+            lag_dia_by_fundo[str(fundo)] = float(grp["dia_bps"].sum())
     rows = ""
     for short in FUND_ORDER:
         td      = td_by_short.get(short)
         pa_key  = _FUND_PA_KEY.get(short)
+        dia_lag_tag = ""
 
         if pa_key and df_pa is not None and not df_pa.empty:
             sub = df_pa[df_pa["FUNDO"] == pa_key]
@@ -892,6 +916,10 @@ def _build_summary_rows_html(*, td_by_short: dict, df_pa, df_frontier,
             a_mtd = float(sub["mtd_bps"].sum()) if not sub.empty else 0.0
             a_ytd = float(sub["ytd_bps"].sum()) if not sub.empty else 0.0
             a_m12 = float(sub["m12_bps"].sum()) if not sub.empty else 0.0
+            # PA on D-1 → swap dia for the lagged value when available
+            if (not pa_has_today) and pa_key in lag_dia_by_fundo:
+                a_dia = lag_dia_by_fundo[pa_key]
+                dia_lag_tag = lag_tag
         elif short == "FRONTIER" and df_frontier is not None and not df_frontier.empty:
             # Frontier has no PA in REPORT_ALPHA_ATRIBUTION. Use excess return vs IBOV
             # (TOTAL_IBVSP_*) to stay apples-to-apples with the other funds' alpha vs CDI.
@@ -959,7 +987,7 @@ def _build_summary_rows_html(*, td_by_short: dict, df_pa, df_frontier,
             f'<tr onclick="selectFund(\'{short}\')" style="cursor:pointer">'
             f'<td class="sum-status"{_title_attr}>{status}</td>'
             f'<td class="sum-fund">{FUND_LABELS.get(short, short)}</td>'
-            + _sum_bp_cell(a_dia) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
+            + _sum_bp_cell(a_dia, dia_lag_tag) + _sum_bp_cell(a_mtd) + _sum_bp_cell(a_ytd) + _sum_bp_cell(a_m12)
             + _sum_var_cell(var_today) + _sum_util_cell(var_util)
             + _sum_dvar_cell(dvar)
             + "</tr>"
@@ -1630,6 +1658,8 @@ def build_html(d: ReportData) -> str:
         td_by_short=td_by_short, df_pa=df_pa, df_frontier=df_frontier,
         frontier_bvar=frontier_bvar, series_map=series_map,
         pm_margem=pm_margem, stop_hist=stop_hist,
+        df_pa_daily=df_pa_daily,
+        pa_has_today=bool((d.data_manifest or {}).get("pa_has_today", True)),
     )
     bench_rows_html = _build_bench_rows_html(ibov, cdi, idka_idx_ret)
 

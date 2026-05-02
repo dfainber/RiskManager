@@ -2709,7 +2709,8 @@ def fetch_pa_daily_per_product(date_str: str = DATA_STR, lookback_days: int = 90
            SUM("DIA") * 10000              AS dia_bps,
            ABS(SUM(COALESCE("POSITION",0))) AS position_brl
     FROM q_models."REPORT_ALPHA_ATRIBUTION"
-    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','GFA')
+    WHERE "FUNDO" IN ('MACRO','QUANT','EVOLUTION','GLOBAL','ALBATROZ','GFA',
+                      'BALTRA','IDKAIPCAY3','IDKAIPCAY10')
       AND "DATE" >  (DATE '{date_str}' - INTERVAL '{lookback_days} days')
       AND "DATE" <= DATE '{date_str}'
     GROUP BY "FUNDO","LIVRO","PRODUCT","DATE"

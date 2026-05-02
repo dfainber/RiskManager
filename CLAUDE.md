@@ -181,6 +181,7 @@ Closed na sessão 2026-05-02 (commits 0cd1674 + bb14a7a + dcac9de):
 - ~~**§1.5 build_html extraction batch 2**~~ — 690 → 540 linhas (-22%). 3 helpers: `_assemble_sections_html` (per-fund reorder + peers tab), `_build_var_commentary` (DoD prefetch + top-driver), `_build_summary_view` (EVO C4 headline + summary cards). Smoke test passes; output diff vs baseline = same drift como self-vs-self regen.
 - ~~**§1.2 Briefing Executivo headline priority**~~ — Headline agora escolhe pela regra `max(margem_inverse, util_VaR, |Δ VaR|)` com triggers individuais (margem<25 / util≥85% / |ΔVaR|≥10 bps). PA hit ≥1% NAV continua override. "Atenção" reposicionada acima do brief-grid (full-width strip — antes ficava em col 2, abaixo de "Risco · o que mudou").
 - ~~**§14 Holiday-aware default date**~~ — `risk_runtime._resolve_default_data_date` consulta `LOTE45.LOTE_TRADING_DESKS_NAV_SHARE.MAX(VAL_DATE) < CURRENT_DATE` (DB primary — calendário implícito B3 + awareness de ingestion lag); fallback é o set hardcoded `_BR_HOLIDAYS` (2024-2027) com `BusinessDay(1)` walk-back. DB lookup é lazy — consumers que passam `--date` não pagam custo. Sem CLI arg em pós-feriado, agora pega o último trading day com dados ingeridos (ex: Sat 2026-05-02 → 2026-04-29).
+- ~~**§1.3 Status DIA fallback when PA on D-1**~~ — Quando `pa_has_today` é False, a coluna DIA do Status consolidado renderiza o valor do D-1 com tag `(D-1)` em texto pequeno mudo (antes mostrava `—` silente). Backed by `df_pa_daily` (estendido pra incluir BALTRA + IDKAs em `fetch_pa_daily_per_product`). Tooltip "PA pendente para hoje — última obs D-1" no caso flat.
 
 UI tweaks na sessão 2026-05-02:
 - Removida footer row "Total NAV-pond. (não-div.)" do "Risco VaR e BVaR por fundo".
@@ -188,13 +189,12 @@ UI tweaks na sessão 2026-05-02:
 
 Próximas (ainda abertas):
 
-6. **Status DIA fallback when PA on D-1** (§1.3) — render "+0.04% (D-1)" instead of silent "—".
-7. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
-8. **`build_html` extraction batch 3** (§1.5 continued) — ~540L restantes em build_html: master HTML template f-string (~85L), body composition + tab subtab generation (~150L), orchestration glue (~300L de variable wiring + section-list construction loops).
-9. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
-10. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
-11. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
-12. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
+6. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
+7. **`build_html` extraction batch 3** (§1.5 continued) — ~540L restantes em build_html: master HTML template f-string (~85L), body composition + tab subtab generation (~150L), orchestration glue (~300L de variable wiring + section-list construction loops).
+8. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
+9. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
+10. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).
+11. **EVOLUTION BRLUSD legacy non-zero** (§1.4) — escalar pra dono do PA engine; não é bug do kit.
 
 **Backlog primário agora**: `docs/CODE_REVIEW_2026-05-01_session2.md` (com STATUS atualizado no topo na sessão 3). A `docs/CODE_REVIEW_2026-05-01.md` original tem todos itens fechados (PA-FX-split + §2d) ou cross-listados na nova review. Roadmap analítico continua em `memory/project_todo_risk_analytics_roadmap.md`.
 

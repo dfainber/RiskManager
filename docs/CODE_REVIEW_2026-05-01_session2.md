@@ -11,6 +11,22 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 9 — Status DIA D-1 fallback)
+
+Closes §1.3 (Status consolidado DIA fallback). When PA hasn't landed for
+the requested date, the Status table no longer renders silent `—` cells —
+it now shows the last available day's value with an unobtrusive
+`(D-1)` muted tag. Bench rows continue to render normal DIA values, so
+the table no longer looks broken.
+
+### Session 9 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 1.3 | `_sum_bp_cell` accepts optional `lag_tag`; renders the value + `(D-1)` muted suffix when set, plus tooltip "PA pendente para hoje — última obs D-1" on flat values. | ✅ DONE | [`generate_risk_report.py`](../generate_risk_report.py#L844) |
+| 1.3 | `_build_summary_rows_html` accepts `df_pa_daily` + `pa_has_today`; falls back to `df_pa_daily` per-fund max-date sum when `pa_has_today` is False. | ✅ DONE | [`generate_risk_report.py`](../generate_risk_report.py#L879) |
+| 1.3 | `fetch_pa_daily_per_product` extended to cover BALTRA / IDKAIPCAY3 / IDKAIPCAY10 (was MACRO/QUANT/EVOLUTION/GLOBAL/ALBATROZ/GFA only) so the lag-fallback covers all 9 funds. | ✅ DONE | [`data_fetch.py`](../data_fetch.py#L2712) |
+
 ## STATUS (2026-05-02, session 8 — briefing headline + holiday-aware default)
 
 Closes §1.2 (Briefing Executivo headline priority) and the parking-lot
@@ -129,7 +145,6 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 | 4.6 | PA-FX-split docstring slim-down (4 scripts) | ✅ DONE | `4fee511` |
 
 ### Still open (deferred — bigger sessions)
-- §1.3 Status DIA fallback when PA on D-1 (UX)
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
 - §1.5 `build_html` extraction — **in progress**, 524L extracted in session 6 + 180L extracted in session 7; ~540L remaining (master HTML template f-string, body composition, orchestration glue)
 - §2.3 Breakdown por Fator unit-mixing
