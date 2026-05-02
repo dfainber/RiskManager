@@ -178,6 +178,7 @@ Closed na sessão 2026-05-02 (commits 0cd1674 + bb14a7a + dcac9de):
 - ~~**§1.6 main() split**~~ — 540 → 8 linhas. Helpers `_fetch_all_data` / `_build_report_data` / `_write_output`.
 - ~~**§2.13f nav_d1 propagation**~~ — Plumbed end-to-end: ReportData (novos `quant_expo_nav_d1`/`evo_expo_nav_d1`), `build_quant_exposure_section` + `build_evolution_exposure_section`, `_build_expo_unified_table`.
 - ~~**§1.5 build_html extraction batch 1**~~ — 1214 → 690 linhas (-43%). 5 helpers: `_build_pa_alerts_html`, `_build_summary_rows_html`+`_build_bench_rows_html`, `_build_factor_matrix`, `_build_agg_rows`, `_build_house_rows`.
+- ~~**§1.5 build_html extraction batch 2**~~ — 690 → 540 linhas (-22%). 3 helpers: `_assemble_sections_html` (per-fund reorder + peers tab), `_build_var_commentary` (DoD prefetch + top-driver), `_build_summary_view` (EVO C4 headline + summary cards). Smoke test passes; output diff vs baseline = same drift como self-vs-self regen.
 
 UI tweaks na sessão 2026-05-02:
 - Removida footer row "Total NAV-pond. (não-div.)" do "Risco VaR e BVaR por fundo".
@@ -188,7 +189,7 @@ Próximas (ainda abertas):
 6. **Briefing Executivo headline priority** (§1.2) — `max(margem_inverse, util_VaR, |Δ VaR|)`; reordenar "Atenção" ABOVE "o que mudou".
 7. **Status DIA fallback when PA on D-1** (§1.3) — render "+0.04% (D-1)" instead of silent "—".
 8. **LLM briefings** — substituir rule-based por Haiku 4.5 em `fund_renderers._build_fund_mini_briefing` (long-term substitution; rule-tightening em #3 é stopgap).
-9. **`build_html` extraction batch 2** (§1.5 continued) — ~690L restantes em build_html: tab-section assembly loop (~250L), executive briefing composition, peers/pnl/market tab blocks, master HTML template f-string.
+9. **`build_html` extraction batch 3** (§1.5 continued) — ~540L restantes em build_html: master HTML template f-string (~85L), body composition + tab subtab generation (~150L), orchestration glue (~300L de variable wiring + section-list construction loops).
 10. **VaR DoD exposure NAV-axis (§2.13b — IDKA cota timing)** — IDKA SHARE pct_change tem cotização axis mismatch (D-2 admin vs D bench); BVaR potencialmente overstated 10-30% vs engine.
 11. **Iterrows vectorization** (§2.9 / §2.10) — `data_fetch.py:1417` nested + 3 sites em `generate_risk_report.py`.
 12. **Unit tests** para `svg_renderers` + `metrics` (sem DB, ≈ 1 dia).

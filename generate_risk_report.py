@@ -1123,6 +1123,196 @@ def _build_house_rows(series_map: dict, td_by_short: dict,
     return house_rows
 
 
+def _assemble_sections_html(
+    *,
+    sections: list,
+    house_by_short: dict,
+    series_map: dict, td_by_short: dict, df_pa,
+    factor_matrix, bench_matrix,
+    pm_margem, frontier_bvar, df_frontier,
+    available_pairs: set, reports_with_data: list,
+    has_peers: bool, peers_val_date: str,
+) -> tuple[str, list]:
+    """Build per-fund mini briefings, register peers sections, then assemble
+    the ordered ``sections_html`` (briefing last per fund, peers after).
+
+    Mutates ``available_pairs`` in place; returns the updated
+    ``reports_with_data`` list (callers must rebind).
+    """
+    briefing_by_short = {}
+    for short in FUND_ORDER:
+        hr = house_by_short.get(short)
+        if not hr:
+            continue
+        mini_html = _build_fund_mini_briefing(
+            short, hr, series_map, td_by_short, df_pa,
+            factor_matrix, bench_matrix,
+            pm_margem=pm_margem if short == "MACRO" else None,
+            frontier_bvar=frontier_bvar if short == "FRONTIER" else None,
+            df_frontier=df_frontier if short == "FRONTIER" else None,
+        )
+        if mini_html:
+            briefing_by_short[short] = mini_html
+            available_pairs.add((short, "briefing"))
+    if "briefing" not in reports_with_data:
+        reports_with_data = list(reports_with_data) + ["briefing"]
+
+    for _f, _pg in _FUND_PEERS_GROUP.items():
+        if _pg and has_peers:
+            available_pairs.add((_f, "peers"))
+    if any(_FUND_PEERS_GROUP.get(f) for f in FUND_ORDER) and has_peers:
+        if "peers" not in reports_with_data:
+            reports_with_data = list(reports_with_data) + ["peers"]
+
+    sections_by_fund = {}
+    for f, r, h in sections:
+        sections_by_fund.setdefault(f, []).append((r, h))
+    out = ""
+    for f in FUND_ORDER:
+        for r, h in sections_by_fund.get(f, []):
+            out += _wrap_tpl(f, r, h)
+        if f in briefing_by_short:
+            out += _wrap_tpl(f, "briefing", briefing_by_short[f])
+        _pg = _FUND_PEERS_GROUP.get(f)
+        if _pg and has_peers:
+            _peers_body = (
+                f'<section class="card">'
+                f'<div class="card-head">'
+                f'<span class="card-title">Peers — {FUND_LABELS.get(f, f)}</span>'
+                f'<span class="card-sub" data-peers-sub="1">— {peers_val_date} · grupo {_pg}</span>'
+                f'<div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">'
+                f'<button class="pa-tgl active rpt-peers-anchor" data-anchor="current" onclick="rptSetPeersAnchor(\'current\')">Atual</button>'
+                f'<button class="pa-tgl rpt-peers-anchor"        data-anchor="eopm"    onclick="rptSetPeersAnchor(\'eopm\')">Fim Mês Ant.</button>'
+                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
+                f'<button class="pa-tgl active" onclick="rptSetPeersMode(\'abs\')">Absoluto</button>'
+                f'<button class="pa-tgl"        onclick="rptSetPeersMode(\'alpha\')">Alpha</button>'
+                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
+                f'<button class="pa-tgl active rpt-fpeers-vw" data-fview="charts" data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'charts\')">Gráficos</button>'
+                f'<button class="pa-tgl rpt-fpeers-vw"        data-fview="table"  data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'table\')">Tabela</button>'
+                f'</div></div>'
+                f'<div class="rpt-peers-fund-strips" data-peers-group="{_pg}" '
+                f'style="padding:8px 4px"></div>'
+                f'<div class="rpt-peers-fund-tbl-wrap" data-peers-group="{_pg}" '
+                f'style="overflow-x:auto;display:none">'
+                f'<table class="summary-table rpt-peers-fund-tbl" data-no-sort="1" data-peers-group="{_pg}">'
+                f'<tbody></tbody></table>'
+                f'</div></section>'
+            )
+            out += _wrap_tpl(f, "peers", _peers_body)
+    return out, reports_with_data
+
+
+def _build_var_commentary(date_str: str) -> tuple[dict, dict]:
+    """Prefetch VaR DoD decomp per fund + extract top-driver commentary.
+
+    Returns ``(dod_dfs, commentary)`` where ``dod_dfs`` is the raw per-fund
+    decomposition (also consumed by ``build_vardod_data_payload``) and
+    ``commentary`` maps fund_key → ``{delta, driver, driver_delta, pos_eff,
+    marg_eff, override}`` for funds whose Δ VaR clears the threshold (5 bps
+    default; 2 bps for IDKAs since BVaR magnitudes are smaller).
+    """
+    _DOD_THRESHOLD = {"IDKA_3Y": 2.0, "IDKA_10Y": 2.0}
+    _DOD_THRESHOLD_DEFAULT = 5.0
+    dod_dfs: dict = {}
+    for _fk in _VAR_DOD_DISPATCH:
+        try:
+            dod_dfs[_fk] = fetch_var_dod_decomposition(_fk, date_str)
+        except Exception:
+            dod_dfs[_fk] = None
+
+    def _top_driver(fund_key: str) -> dict | None:
+        df = dod_dfs.get(fund_key)
+        if df is None or df.empty:
+            return None
+        mask = (df["contrib_d1_bps"].abs() >= 0.05) | (df["contrib_d_bps"].abs() >= 0.05)
+        df = df[mask]
+        if df.empty:
+            return None
+        delta_total = float(df["delta_bps"].sum())
+        threshold = _DOD_THRESHOLD.get(fund_key, _DOD_THRESHOLD_DEFAULT)
+        if abs(delta_total) < threshold:
+            return None
+        # Exclude bench primitive for IDKAs (passivo — mechanical 100% NAV tracking).
+        cfg = _VAR_DOD_DISPATCH.get(fund_key)
+        bench_primitive = cfg[3] if cfg else None
+        df_drivers = df[df["label"] != bench_primitive] if bench_primitive else df
+        if df_drivers.empty:
+            df_drivers = df
+        top_idx = df_drivers["delta_bps"].abs().idxmax()
+        top = df_drivers.loc[top_idx]
+        pos_eff_total = None
+        marg_eff_total = None
+        if df["pos_effect_bps"].notna().any():
+            pos_eff_total  = float(df["pos_effect_bps"].fillna(0).sum())
+            marg_eff_total = float(df["vol_effect_bps"].fillna(0).sum())
+        override = any(str(o or "").strip() for o in df.get("override_note", []))
+        return {
+            "delta":        delta_total,
+            "driver":       str(top.get("label", "—")),
+            "driver_delta": float(top["delta_bps"]),
+            "pos_eff":      pos_eff_total,
+            "marg_eff":     marg_eff_total,
+            "override":     override,
+        }
+
+    commentary: dict = {}
+    for _fk in _VAR_DOD_DISPATCH:
+        _r = _top_driver(_fk)
+        if _r:
+            commentary[_fk] = _r
+    return dod_dfs, commentary
+
+
+def _build_summary_view(
+    *,
+    evolution_c4_state: dict,
+    briefing_html: str, fund_grid_html: str, house_html: str,
+    by_factor_html: str, vol_regime_html: str, alerts_html: str,
+    comments_html: str, movers_html: str, changes_html: str,
+    top_positions_html: str, dq_compact_html: str,
+) -> str:
+    """Compose the Summary view section-wrap (EVO C4 headline + cards)."""
+    evo_c4_headline_html = ""
+    if evolution_c4_state:
+        n_lit = evolution_c4_state.get("n_lit", 0)
+        alert_on = evolution_c4_state.get("alert", False)
+        if n_lit >= 1:
+            if alert_on:
+                bg = "rgba(255,90,106,0.14)"; border = "var(--down)"
+                icon = "🚨"; title = "EVOLUTION · Bull Market Alignment — alerta disparado"
+            else:
+                bg = "rgba(184,135,0,0.10)"; border = "var(--warn)"
+                icon = "🟡"; title = "EVOLUTION · Alinhamento parcial de estratégias"
+            lit_names = ", ".join(c["name"] for c in evolution_c4_state.get("conditions", []) if c["lit"])
+            evo_c4_headline_html = f"""
+    <section class="card" style="background:{bg};border-left:4px solid {border};margin-bottom:14px">
+      <div style="padding:10px 16px;font-size:13px;color:var(--text)">
+        <div style="font-weight:700;margin-bottom:4px">{icon} {title}</div>
+        <div style="color:var(--muted);font-size:12px">
+          {n_lit} de 5 condições acesas{' (gatilho ≥3)' if not alert_on else ''} · {lit_names}
+          · <a href="#" onclick="if(typeof selectFund==='function'){{selectFund('EVOLUTION');setTimeout(function(){{var el=document.querySelector('[data-fund=\\'EVOLUTION\\'][data-report=\\'diversification\\']');if(el)el.scrollIntoView({{behavior:'smooth'}});}},100);}}return false;"
+               style="color:var(--accent-blue);text-decoration:underline">ver detalhe →</a>
+        </div>
+      </div>
+    </section>"""
+
+    return f"""
+    <div class="section-wrap" data-view="summary">
+      {evo_c4_headline_html}
+      {briefing_html}
+      {fund_grid_html}
+      {house_html}
+      {by_factor_html}
+      {vol_regime_html}
+      {alerts_html}
+      {comments_html}
+      {movers_html}
+      {changes_html}
+      {top_positions_html}
+      {dq_compact_html}
+    </div>"""
+
+
 def build_html(d: ReportData) -> str:
     (series_map, stop_hist, df_today, df_expo, df_var, macro_aum,
      df_expo_d1, df_var_d1, df_pnl_prod, pm_margem,
@@ -1456,82 +1646,20 @@ def build_html(d: ReportData) -> str:
         macro_aum=macro_aum, td_by_short=td_by_short,
     )
 
-    # Per-fund mini briefings. Rebuild sections_html so briefings come FIRST
-    # within each fund's block (DOM order = tab order: briefing → ... → others).
-    _briefing_by_short = {}
-    for short in FUND_ORDER:
-        hr = _house_by_short.get(short)
-        if not hr:
-            continue
-        mini_html = _build_fund_mini_briefing(
-            short, hr, series_map, td_by_short, df_pa,
-            factor_matrix, bench_matrix,
-            pm_margem=pm_margem if short == "MACRO" else None,
-            frontier_bvar=frontier_bvar if short == "FRONTIER" else None,
-            df_frontier=df_frontier if short == "FRONTIER" else None,
-        )
-        if mini_html:
-            _briefing_by_short[short] = mini_html
-            available_pairs.add((short, "briefing"))
-    if "briefing" not in reports_with_data:
-        reports_with_data = list(reports_with_data) + ["briefing"]
-
     # Resolve P&L and Peers data early — needed both here and in section HTML
     _book_pnl       = d.book_pnl   or {}
     _peers          = d.peers_data or {}
     _peers_val_date = _peers.get("val_date", "—")
     _has_peers      = bool(_peers)
 
-    # Register per-fund peers sections for funds that have a peers group
-    _has_peers = bool(_peers)
-    for _f, _pg in _FUND_PEERS_GROUP.items():
-        if _pg and _has_peers:
-            available_pairs.add((_f, "peers"))
-    if any(_FUND_PEERS_GROUP.get(f) for f in FUND_ORDER) and _has_peers:
-        if "peers" not in reports_with_data:
-            reports_with_data = list(reports_with_data) + ["peers"]
-
-    # Rebuild sections_html: briefing comes LAST per fund (user parked it here
-    # while its quality is validated — tab stays accessible but not the default).
-    # Peers section appended after briefing (bottom of each fund view).
-    #
-    # Each (fund, report) block is wrapped via module-level _wrap_tpl().
-    _sections_by_fund = {}
-    for f, r, h in sections:
-        _sections_by_fund.setdefault(f, []).append((r, h))
-    _reordered_html = ""
-    for f in FUND_ORDER:
-        for r, h in _sections_by_fund.get(f, []):
-            _reordered_html += _wrap_tpl(f, r, h)
-        if f in _briefing_by_short:
-            _reordered_html += _wrap_tpl(f, "briefing", _briefing_by_short[f])
-        _pg = _FUND_PEERS_GROUP.get(f)
-        if _pg and _has_peers:
-            _peers_body = (
-                f'<section class="card">'
-                f'<div class="card-head">'
-                f'<span class="card-title">Peers — {FUND_LABELS.get(f, f)}</span>'
-                f'<span class="card-sub" data-peers-sub="1">— {_peers_val_date} · grupo {_pg}</span>'
-                f'<div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">'
-                f'<button class="pa-tgl active rpt-peers-anchor" data-anchor="current" onclick="rptSetPeersAnchor(\'current\')">Atual</button>'
-                f'<button class="pa-tgl rpt-peers-anchor"        data-anchor="eopm"    onclick="rptSetPeersAnchor(\'eopm\')">Fim Mês Ant.</button>'
-                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
-                f'<button class="pa-tgl active" onclick="rptSetPeersMode(\'abs\')">Absoluto</button>'
-                f'<button class="pa-tgl"        onclick="rptSetPeersMode(\'alpha\')">Alpha</button>'
-                f'<div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>'
-                f'<button class="pa-tgl active rpt-fpeers-vw" data-fview="charts" data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'charts\')">Gráficos</button>'
-                f'<button class="pa-tgl rpt-fpeers-vw"        data-fview="table"  data-pg="{_pg}" onclick="rptSetFundPeersView(\'{_pg}\',\'table\')">Tabela</button>'
-                f'</div></div>'
-                f'<div class="rpt-peers-fund-strips" data-peers-group="{_pg}" '
-                f'style="padding:8px 4px"></div>'
-                f'<div class="rpt-peers-fund-tbl-wrap" data-peers-group="{_pg}" '
-                f'style="overflow-x:auto;display:none">'
-                f'<table class="summary-table rpt-peers-fund-tbl" data-no-sort="1" data-peers-group="{_pg}">'
-                f'<tbody></tbody></table>'
-                f'</div></section>'
-            )
-            _reordered_html += _wrap_tpl(f, "peers", _peers_body)
-    sections_html = _reordered_html
+    sections_html, reports_with_data = _assemble_sections_html(
+        sections=sections, house_by_short=_house_by_short,
+        series_map=series_map, td_by_short=td_by_short, df_pa=df_pa,
+        factor_matrix=factor_matrix, bench_matrix=bench_matrix,
+        pm_margem=pm_margem, frontier_bvar=frontier_bvar, df_frontier=df_frontier,
+        available_pairs=available_pairs, reports_with_data=reports_with_data,
+        has_peers=_has_peers, peers_val_date=_peers_val_date,
+    )
 
     agg_rows = _build_agg_rows(rf_expo_maps, df_frontier, df_quant_sn, df_evo_direct, df_expo)
 
@@ -1551,62 +1679,8 @@ def build_html(d: ReportData) -> str:
     changes_html = build_changes_card(df_expo, df_expo_d1, position_changes)
 
     # Δ VaR commentary: pull from VaR DoD attribution (full-suite coverage).
-    # Threshold: 5 bps default; IDKAs use 2 bps (BVaR is smaller magnitude).
-    # Prefetch all DoD dataframes once — shared with build_vardod_data_payload below.
-    _DOD_THRESHOLD = {"IDKA_3Y": 2.0, "IDKA_10Y": 2.0}
-    _DOD_THRESHOLD_DEFAULT = 5.0
-    _dod_dfs: dict = {}
-    for _fk in _VAR_DOD_DISPATCH:
-        try:
-            _dod_dfs[_fk] = fetch_var_dod_decomposition(_fk, DATA_STR)
-        except Exception:
-            _dod_dfs[_fk] = None
-
-    def _dod_top_driver(fund_key: str) -> dict | None:
-        df = _dod_dfs.get(fund_key)
-        if df is None or df.empty:
-            return None
-        # Same zero-row filter as the modal payload
-        mask = (df["contrib_d1_bps"].abs() >= 0.05) | (df["contrib_d_bps"].abs() >= 0.05)
-        df = df[mask]
-        if df.empty:
-            return None
-        delta_total = float(df["delta_bps"].sum())
-        threshold = _DOD_THRESHOLD.get(fund_key, _DOD_THRESHOLD_DEFAULT)
-        if abs(delta_total) < threshold:
-            return None
-        # Top by |delta| — exclude the bench primitive for IDKAs (passivo, not a
-        # gestor decision; it's mechanical 100% NAV tracking with override applied).
-        cfg = _VAR_DOD_DISPATCH.get(fund_key)
-        bench_primitive = cfg[3] if cfg else None
-        df_drivers = df[df["label"] != bench_primitive] if bench_primitive else df
-        if df_drivers.empty:
-            df_drivers = df  # fallback when only the bench primitive exists
-        top_idx = df_drivers["delta_bps"].abs().idxmax()
-        top = df_drivers.loc[top_idx]
-        # Fund-level pos/marg decomp (sum across rows when available)
-        pos_eff_total = None
-        marg_eff_total = None
-        if df["pos_effect_bps"].notna().any():
-            pos_eff_total  = float(df["pos_effect_bps"].fillna(0).sum())
-            marg_eff_total = float(df["vol_effect_bps"].fillna(0).sum())
-        # Override flag if any row carries a note (engine artifact)
-        override = any(str(o or "").strip() for o in df.get("override_note", []))
-        return {
-            "delta":        delta_total,
-            "driver":       str(top.get("label", "—")),
-            "driver_delta": float(top["delta_bps"]),
-            "pos_eff":      pos_eff_total,
-            "marg_eff":     marg_eff_total,
-            "override":     override,
-        }
-
-    _var_commentary: dict = {}
-    for _fk in _VAR_DOD_DISPATCH:
-        _r = _dod_top_driver(_fk)
-        if _r:
-            _var_commentary[_fk] = _r
-
+    # _dod_dfs is also reused by build_vardod_data_payload below.
+    _dod_dfs, _var_commentary = _build_var_commentary(DATA_STR)
     comments_html = build_comments_card(df_pa_daily, _var_commentary or None)
 
     # Data Quality section
@@ -1627,47 +1701,13 @@ def build_html(d: ReportData) -> str:
         ibov=ibov, cdi=cdi, usdbrl=d.usdbrl, di1_3y=d.di1_3y,
     )
 
-    # Camada 4 — headline no topo do Summary quando o alerta do Evolution está aceso
-    # ou parcialmente aceso (≥1 condição). Link direto pro tab "Diversificação" do EVOLUTION.
-    evo_c4_headline_html = ""
-    if evolution_c4_state:
-        n_lit = evolution_c4_state.get("n_lit", 0)
-        alert_on = evolution_c4_state.get("alert", False)
-        if n_lit >= 1:
-            if alert_on:
-                bg = "rgba(255,90,106,0.14)"; border = "var(--down)"
-                icon = "🚨"; title = "EVOLUTION · Bull Market Alignment — alerta disparado"
-            else:
-                bg = "rgba(184,135,0,0.10)"; border = "var(--warn)"
-                icon = "🟡"; title = "EVOLUTION · Alinhamento parcial de estratégias"
-            lit_names = ", ".join(c["name"] for c in evolution_c4_state.get("conditions", []) if c["lit"])
-            evo_c4_headline_html = f"""
-    <section class="card" style="background:{bg};border-left:4px solid {border};margin-bottom:14px">
-      <div style="padding:10px 16px;font-size:13px;color:var(--text)">
-        <div style="font-weight:700;margin-bottom:4px">{icon} {title}</div>
-        <div style="color:var(--muted);font-size:12px">
-          {n_lit} de 5 condições acesas{' (gatilho ≥3)' if not alert_on else ''} · {lit_names}
-          · <a href="#" onclick="if(typeof selectFund==='function'){{selectFund('EVOLUTION');setTimeout(function(){{var el=document.querySelector('[data-fund=\\'EVOLUTION\\'][data-report=\\'diversification\\']');if(el)el.scrollIntoView({{behavior:'smooth'}});}},100);}}return false;"
-               style="color:var(--accent-blue);text-decoration:underline">ver detalhe →</a>
-        </div>
-      </div>
-    </section>"""
-
-    summary_html = f"""
-    <div class="section-wrap" data-view="summary">
-      {evo_c4_headline_html}
-      {briefing_html}
-      {fund_grid_html}
-      {house_html}
-      {by_factor_html}
-      {vol_regime_html}
-      {alerts_html}
-      {comments_html}
-      {movers_html}
-      {changes_html}
-      {top_positions_html}
-      {dq_compact_html}
-    </div>"""
+    summary_html = _build_summary_view(
+        evolution_c4_state=evolution_c4_state,
+        briefing_html=briefing_html, fund_grid_html=fund_grid_html, house_html=house_html,
+        by_factor_html=by_factor_html, vol_regime_html=vol_regime_html, alerts_html=alerts_html,
+        comments_html=comments_html, movers_html=movers_html, changes_html=changes_html,
+        top_positions_html=top_positions_html, dq_compact_html=dq_compact_html,
+    )
     quality_html = f'<div class="section-wrap" data-view="quality">{dq_full_html}</div>'
     # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
     alerts_html = ""

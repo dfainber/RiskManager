@@ -11,6 +11,26 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 7 — build_html extraction batch 2)
+
+Closes §1.5 further. build_html went from **690 → 540 lines** (additional
+22% reduction) by extracting 3 more self-contained blocks: per-fund
+sections assembly (briefings + peers reorder), VaR DoD commentary
+prefetch + top-driver extraction, and the Summary view section-wrap
+composition. No behavior change: smoke_test passes (output diff vs
+baseline matches the same set/DB drift as a self-vs-self regen), dark
++ meeting reports regenerate clean.
+
+### Session 7 additions
+
+| § | Item | Lines extracted | Helper |
+|----|------|----------------|--------|
+| 1.5 | Per-fund sections reorder (briefings last + peers tab) | 70 | `_assemble_sections_html` |
+| 1.5 | VaR DoD prefetch + top-driver per-fund commentary | 60 | `_build_var_commentary` |
+| 1.5 | Summary view section-wrap (EVO C4 headline + cards) | 50 | `_build_summary_view` |
+
+§1.5 is now reclassified from "in progress — ~700 lines remaining" to "in progress — ~540 lines remaining". What's left in build_html is dominated by the master HTML template f-string (~85L), the master `<body>` page composition + tab subtab generation (~150L), and orchestration glue (~300L of variable wiring + section list construction loops that are not cleanly extractable).
+
 ## STATUS (2026-05-02, session 6 — build_html extraction batch 1)
 
 Closes §1.5 (partial — biggest open audit item). build_html went from
@@ -27,8 +47,6 @@ smoke_test passes, dark + meeting reports regenerate clean.
 | 1.5 | Cross-fund top positions list (Top Posições card source) | 60 | `_build_agg_rows` |
 | 1.5 | Status consolidado per-fund row HTML + bench rows | 145 | `_build_summary_rows_html` + `_build_bench_rows_html` |
 | 1.5 | PA contribution alerts card (size + fund sort, ≥1% NAV flag) | 135 | `_build_pa_alerts_html` |
-
-§1.5 is now reclassified from "huge — half-day session" to "in progress — ~700 lines remaining". Build_html is dominated now by tab-section assembly (~250L), the master HTML template f-string (~85L) and the executive briefing / market / pnl / peers tab compositions.
 
 ## STATUS (2026-05-02, session 5 — main() split + nav_d1 propagation)
 
@@ -99,7 +117,7 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 - §1.2 Briefing Executivo headline priority (UX — needs design call)
 - §1.3 Status DIA fallback when PA on D-1 (UX)
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
-- §1.5 `build_html` extraction — **in progress**, 524L extracted in session 6; ~690L remaining (tab-section assembly, exec briefing, peers/pnl/market tabs, master template f-string)
+- §1.5 `build_html` extraction — **in progress**, 524L extracted in session 6 + 180L extracted in session 7; ~540L remaining (master HTML template f-string, body composition, orchestration glue)
 - §2.3 Breakdown por Fator unit-mixing
 - §2.5 Risk Budget thresholding by margem (bps) — full re-thresh + "days to soft breach" projection
 - §2.6 Frontier perpetual "—" (TE-based metric needed)
