@@ -135,7 +135,11 @@ from credit_card_renderers import (
     CREDIT_ALOC_JS,
 )
 from credit.credit_data import fetch_cdi_annual_rate, fetch_ipca_12m, fetch_price_quality_flags
-from html_assets import MAIN_CSS, IOS_POLYFILL_JS, main_navigation_js, cards_data_js
+from html_assets import (
+    MAIN_CSS, IOS_POLYFILL_JS,
+    main_navigation_js, cards_data_js,
+    pnl_tab_section_html, peers_tab_section_html,
+)
 
 # ── Config (fund mandates, thresholds, stops, display) moved to risk_config.py ─
 
@@ -524,6 +528,20 @@ def _build_market_section(snap: dict) -> str:
   }})();
   </script>
 </div>"""
+
+
+def _wrap_tpl(f: str, r: str, body: str) -> str:
+    """Wrap a section body in the lazy-hydration <template> + inner <div> shell.
+
+    Hydration order: <template> nodes are parsed by the browser but kept off the
+    live DOM until JS clones them via _hydrateSection(fund, report). This avoids
+    paying ~12k cells worth of layout/paint at first load.
+    """
+    return (
+        f'<template class="tpl-section" data-fund="{f}" data-report="{r}">'
+        f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{body}</div>'
+        f'</template>'
+    )
 
 
 def build_html(d: ReportData) -> str:
@@ -1197,12 +1215,7 @@ def build_html(d: ReportData) -> str:
     # `_hydrateSection(fund, report)` (in the page JS) clones the template into
     # the #sections-container div on demand the first time the user enters Per-Fundo
     # or Per-Report mode.
-    sections_html = "".join(
-        f'<template class="tpl-section" data-fund="{f}" data-report="{r}">'
-        f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{h}</div>'
-        f'</template>'
-        for f, r, h in sections
-    )
+    sections_html = "".join(_wrap_tpl(f, r, h) for f, r, h in sections)
 
     # ── Summary (cross-fund landing) ──────────────────────────────────────
     def _sum_bp_cell(bps: float) -> str:
@@ -1596,18 +1609,7 @@ def build_html(d: ReportData) -> str:
     # while its quality is validated — tab stays accessible but not the default).
     # Peers section appended after briefing (bottom of each fund view).
     #
-    # Each (fund, report) block is wrapped in a <template>, NOT a live <div>.
-    # Template content is parsed by the browser but kept off the live DOM until
-    # JS hydrates it via _hydrateSection(fund, report) on first selectFund/
-    # selectReport. This avoids the layout/paint cost of ~12k cells at first
-    # load. Hidden sections of the active fund hydrate immediately on entry;
-    # other funds hydrate lazily on their first visit.
-    def _wrap_tpl(f: str, r: str, body: str) -> str:
-        return (
-            f'<template class="tpl-section" data-fund="{f}" data-report="{r}">'
-            f'<div id="sec-{f}-{r}" class="section-wrap" data-fund="{f}" data-report="{r}">{body}</div>'
-            f'</template>'
-        )
+    # Each (fund, report) block is wrapped via module-level _wrap_tpl().
     _sections_by_fund = {}
     for f, r, h in sections:
         _sections_by_fund.setdefault(f, []).append((r, h))
@@ -1851,56 +1853,10 @@ def build_html(d: ReportData) -> str:
     _peers_eopm_json = json.dumps(_peers_eopm,      separators=(",", ":"), ensure_ascii=False)
 
     _pnl_baked_date = _book_pnl.get("val_date") or str(_prev_bday(DATA))
-    pnl_section_html = f"""<div class="section-wrap" data-view="pnl">
-  <section class="card">
-    <div class="card-head">
-      <span class="card-title">Daily P&amp;L</span>
-      <span class="card-sub" id="rpt-pnl-meta">— {_pnl_baked_date} · por book, classe e posição</span>
-      <button id="rpt-pnl-refresh-btn" onclick="refreshRptPnl()"
-              style="margin-left:auto;padding:4px 12px;font-size:12px;border-radius:4px;
-                     background:var(--panel-2);border:1px solid var(--line-2);
-                     color:var(--text);cursor:pointer">↻ Atualizar</button>
-    </div>
-    <div id="rpt-pnl-container"><div style="padding:24px;color:var(--muted)">Sem dados P&amp;L para {_pnl_baked_date}.</div></div>
-  </section>
-</div>"""
+    pnl_section_html = pnl_tab_section_html(_pnl_baked_date=_pnl_baked_date)
 
     # ── Peers tab section (house-level, group selector) ───────────────────────
-    peers_section_html = f"""<div class="section-wrap" data-view="peers">
-  <section class="card">
-    <div class="card-head">
-      <span class="card-title">Peers</span>
-      <span class="card-sub" data-peers-sub="1">— {_peers_val_date} · comparativo vs. pares</span>
-      <div class="pa-view-toggle" style="margin-left:auto;gap:6px;display:flex;align-items:center;flex-wrap:wrap">
-        <button class="pa-tgl active rpt-peers-anchor" data-anchor="current" onclick="rptSetPeersAnchor('current')">Atual</button>
-        <button class="pa-tgl rpt-peers-anchor"        data-anchor="eopm"    onclick="rptSetPeersAnchor('eopm')">Fim Mês Ant.</button>
-        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
-        <select id="rpt-peers-grp-sel" onchange="rptOnGroupChange()"
-                style="background:var(--panel-2);border:1px solid var(--line-2);border-radius:4px;
-                       color:var(--text);font-size:12px;padding:4px 8px;cursor:pointer"></select>
-        <button class="pa-tgl active" id="rpt-btn-abs"   onclick="rptSetPeersMode('abs')">Absoluto</button>
-        <button class="pa-tgl"        id="rpt-btn-alpha" onclick="rptSetPeersMode('alpha')">Alpha</button>
-        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
-        <button class="pa-tgl"        id="rpt-per-mtd"  onclick="rptSetPeriod('MTD')">MTD</button>
-        <button class="pa-tgl"        id="rpt-per-ytd"  onclick="rptSetPeriod('YTD')">YTD</button>
-        <button class="pa-tgl active" id="rpt-per-12m"  onclick="rptSetPeriod('12M')">12M</button>
-        <button class="pa-tgl"        id="rpt-per-24m"  onclick="rptSetPeriod('24M')">24M</button>
-        <button class="pa-tgl"        id="rpt-per-36m"  onclick="rptSetPeriod('36M')">36M</button>
-        <div style="width:1px;height:16px;background:var(--line);margin:0 2px"></div>
-        <button class="pa-tgl"        id="rpt-view-tbl" onclick="rptSetView('table')">Tabela</button>
-        <button class="pa-tgl active" id="rpt-view-chrt" onclick="rptSetView('charts')">Gráficos</button>
-      </div>
-    </div>
-    <div id="rpt-peers-charts-wrap">
-      <div id="rpt-peers-charts" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;min-height:80px;padding:4px 0"></div>
-    </div>
-    <div id="rpt-peers-tbl-wrap" style="display:none;overflow-x:auto">
-      <table class="summary-table" id="rpt-peers-tbl" data-no-sort="1">
-        <tbody><tr><td class="sum-fund" style="color:var(--muted)">Sem dados de peers disponíveis.</td></tr></tbody>
-      </table>
-    </div>
-  </section>
-</div>"""
+    peers_section_html = peers_tab_section_html(_peers_val_date=_peers_val_date)
 
     # (Análise helpers and per-fund loop were relocated above `sections_html`; see earlier block.)
 
