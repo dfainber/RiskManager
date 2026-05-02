@@ -75,6 +75,7 @@ from fund_renderers import (
     build_analise_sections,
     _build_fund_mini_briefing,
     _build_executive_briefing,
+    build_per_fund_risk_monitor_sections,
 )
 from summary_renderers import (
     build_vol_regime_card,
@@ -578,8 +579,6 @@ def build_html(d: ReportData) -> str:
     sections = []  # list of (fund_short, report_id, html)
     evolution_c4_state = {}  # Camada 4 state — populated when EVOLUTION diversificação renders
 
-    def util_color(u):
-        return "var(--up)" if u < 70 else "var(--warn)" if u < 100 else "var(--down)"
 
     def _latest_hs_var_bps(short: str) -> float | None:
         """Latest fund-level HS VaR (bps) — same source as the Risk Monitor card."""
@@ -608,234 +607,12 @@ def build_html(d: ReportData) -> str:
         return abs(float(s_avail.iloc[-2]["var_pct"])) * 100.0
 
 
-    for short in FUND_ORDER:
-        td = td_by_short.get(short)
-        if td is None:
-            continue
-        cfg = ALL_FUNDS[td]
-        s = series_map.get(td)
-        if s is None or s.empty:
-            continue
-        s_avail = s[s["VAL_DATE"] <= DATA]
-        if s_avail.empty:
-            continue
-        tr = s_avail.iloc[-1]
-        var_today    = abs(tr["var_pct"])
-        stress_today = abs(tr["stress_pct"])
-        var_util     = var_today    / cfg["var_soft"]    * 100
-        str_util     = stress_today / cfg["stress_soft"] * 100
-
-        var_abs, str_abs = var_today, stress_today
-        var_min_abs,  var_max_abs  = s["var_pct"].abs().min(),    s["var_pct"].abs().max()
-        str_min_abs,  str_max_abs  = s["stress_pct"].abs().min(), s["stress_pct"].abs().max()
-
-        var_range_pct    = (var_abs - var_min_abs)  / (var_max_abs - var_min_abs) * 100  if var_max_abs != var_min_abs else 0
-        stress_range_pct = (str_abs - str_min_abs)  / (str_max_abs - str_min_abs) * 100  if str_max_abs != str_min_abs else 0
-
-        _is_idka = cfg.get("primary") == "bvar"
-        _is_inf  = cfg.get("informative") is True
-        if not _is_inf and var_range_pct >= ALERT_THRESHOLD:
-            alerts.append((short, "BVaR" if _is_idka else "VaR", var_range_pct, var_today, var_util, ALERT_COMMENTS.get(("var", short), "")))
-        if not (_is_idka or _is_inf) and stress_range_pct >= ALERT_THRESHOLD:
-            alerts.append((short, "Stress", stress_range_pct, stress_today, str_util, ALERT_COMMENTS.get(("stress", short), "")))
-
-        var_bar    = range_bar_svg(var_abs,  var_min_abs,  var_max_abs,  cfg["var_soft"],    cfg["var_hard"])
-        stress_bar = range_bar_svg(str_abs,  str_min_abs,  str_max_abs,  cfg["stress_soft"], cfg["stress_hard"])
-
-        spark_var    = make_sparkline(s.set_index("VAL_DATE")["var_pct"],    "#1a8fd1")
-        spark_stress = make_sparkline(s.set_index("VAL_DATE")["stress_pct"], "#f472b6")
-
-        # IDKA: primary metric is BVaR (relative to benchmark); secondary is absolute VaR
-        # shown for reference only (no util %, no hard limit highlighted).
-        # Frontier: LO equity — no limits, both VaR and Stress shown as informative.
-        is_idka = cfg.get("primary") == "bvar"
-        is_informative = cfg.get("informative") is True
-        if is_idka:
-            primary_label   = "BVaR 95%"
-            secondary_label = "VaR 95% (ref)"
-            secondary_util_html = (
-                f'<td class="util-cell mono" style="color:var(--muted)">ref</td>'
-            )
-        elif is_informative:
-            primary_label   = "VaR 95% (ref)"
-            secondary_label = "Stress (ref)"
-            secondary_util_html = (
-                f'<td class="util-cell mono" style="color:var(--muted)">ref</td>'
-            )
-        else:
-            primary_label   = "VaR 95% 1d"
-            secondary_label = "Stress"
-            secondary_util_html = (
-                f'<td class="util-cell mono" style="color:{util_color(str_util)}">{str_util:.0f}% soft</td>'
-            )
-
-        risk_monitor_html = f"""
-        <section class="card">
-          <div class="card-head">
-            <span class="card-title">Risk Monitor</span>
-            <span class="card-sub">— {short}</span>
-          </div>
-          <table class="metric-table" data-no-sort="1">
-            <thead>
-              <tr class="col-headers">
-                <th>Métrica</th>
-                <th style="text-align:right">Valor</th>
-                <th>12M Range <span class="tick">▏80%</span></th>
-                <th style="text-align:right">Utilização</th>
-                <th>60D Trend</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="metric-row">
-                <td class="metric-name">{primary_label}</td>
-                <td class="value-cell mono" style="color:{'var(--muted)' if is_informative else util_color(var_util)}">{var_today:.2f}%</td>
-                <td class="bar-cell">{'' if is_informative else var_bar}</td>
-                <td class="util-cell mono" style="color:{'var(--muted)' if is_informative else util_color(var_util)}">{'ref' if is_informative else f'{var_util:.0f}% soft'}</td>
-                <td class="spark-cell"><img src="data:image/png;base64,{spark_var}" height="38"/></td>
-              </tr>
-              <tr class="metric-row">
-                <td class="metric-name">{secondary_label}</td>
-                <td class="value-cell mono" style="color:{'var(--muted)' if (is_idka or is_informative) else util_color(str_util)}">{stress_today:.2f}%</td>
-                <td class="bar-cell">{'' if (is_idka or is_informative) else stress_bar}</td>
-                {secondary_util_html}
-                <td class="spark-cell"><img src="data:image/png;base64,{spark_stress}" height="38"/></td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="bar-legend">
-            <span style="color:var(--warn)">─ ─</span> soft &nbsp;
-            <span style="color:var(--down)">─ ─</span> hard &nbsp;
-            <span style="color:#fb923c">▏</span> 80° pct (alerta)
-          </div>
-        </section>"""
-
-        # Price-quality pill — ALBATROZ + BALTRA have direct credit-bearing
-        # instruments (CRIs/debentures + Prev-book NTN-Bs). Flag if any PRICE is
-        # null in LOTE_BOOK_OVERVIEW for D or D-1.
-        pq_flags = None
-        if short == "ALBATROZ":
-            pq_flags = d.alb_pq_flags
-        elif short == "BALTRA":
-            pq_flags = d.baltra_pq_flags
-        if pq_flags is not None:
-            n = 0 if pq_flags.empty else len(pq_flags)
-            if n == 0:
-                pq_html = (
-                    '<section class="card" style="border-color:rgba(38,208,124,.40);padding:8px 14px">'
-                    '<span style="color:var(--up);font-weight:600">✓ Sanity Check de Preços</span> '
-                    '<span class="card-sub">— todos os ativos não-cota com PRICE em D e D-1</span>'
-                    '</section>'
-                )
-            else:
-                _d1_str = str(_prev_bday(DATA_STR))
-                rows = []
-                for _, r in pq_flags.iterrows():
-                    miss_t = bool(r["missing_today"]); miss_p = bool(r["missing_prev"])
-                    why = []
-                    if miss_t: why.append(f"D ({DATA_STR})")
-                    if miss_p: why.append(f"D-1 ({_d1_str})")
-                    pos_brl_str = fmt_br_num(f"{r['pos_brl']:,.0f}")
-                    rows.append(
-                        f'<tr><td>{r["produto"]}</td>'
-                        f'<td style="color:var(--muted)">{r["product_class"] or "—"}</td>'
-                        f'<td class="mono" style="text-align:right">{pos_brl_str}</td>'
-                        f'<td style="color:var(--down);font-size:11px">{" · ".join(why)}</td></tr>'
-                    )
-                pq_html = (
-                    '<section class="card" style="border-color:rgba(255,90,106,.40)">'
-                    '<div class="card-head">'
-                    f'<span class="card-title" style="color:var(--down)">⚠ Sanity Check de Preços — {n} ativo(s) sem preço</span>'
-                    f'<span class="card-sub">— {short} · cotas/caixa/provisões isentas</span>'
-                    '</div>'
-                    '<table class="summary-table" data-no-sort="1">'
-                    '<thead><tr><th>Produto</th><th>Tipo</th>'
-                    '<th style="text-align:right">Posição (R$)</th><th>Falha</th></tr></thead>'
-                    f'<tbody>{"".join(rows)}</tbody></table></section>'
-                )
-            risk_monitor_html = risk_monitor_html + pq_html
-
-        sections.append((short, "risk-monitor", risk_monitor_html))
-
-        # MACRO PM VaR history chart — inline below Risk Monitor (CI/LF/RJ/JD + fund total).
-        if short == "MACRO" and d.macro_pm_var_hist is not None and not d.macro_pm_var_hist.empty:
-            try:
-                pm_hist = d.macro_pm_var_hist
-                # Fund total series — pull last 121 obs from series_map (consistent with sparkline source)
-                fund_s = series_map.get(td_by_short.get("MACRO"))
-                if fund_s is not None and not fund_s.empty:
-                    fund_s = fund_s[fund_s["VAL_DATE"] <= DATA].tail(len(pm_hist))
-                # Units: tudo em bps de NAV.
-                #   fund_s["var_pct"] está em pct (0.57 = 0.57%) → ×100 = bps.
-                #   pm_hist[pm] já está em bps (× 10000 / NAV).
-                fund_vals = (fund_s["var_pct"].abs() * 100).tolist() if fund_s is not None and not fund_s.empty else []
-                dates = pm_hist["VAL_DATE"].tolist()
-                if len(fund_vals) != len(dates):
-                    if fund_s is not None and not fund_s.empty:
-                        merged = pm_hist[["VAL_DATE"]].merge(
-                            fund_s[["VAL_DATE", "var_pct"]], on="VAL_DATE", how="left"
-                        )
-                        merged["var_pct"] = merged["var_pct"].ffill().bfill()
-                        fund_vals = (merged["var_pct"].abs() * 100).tolist()
-                    else:
-                        fund_vals = []
-                series_payload = []
-                if fund_vals:
-                    series_payload.append({
-                        "label": "Fund (total)", "values": fund_vals,
-                        "color": "#facc15", "stroke": 2.4,
-                    })
-                # Brand-aligned palette: blue family for PMs, gold for fund total.
-                pm_colors = {
-                    "CI": "#5aa3e8",   # brand blue
-                    "LF": "#1a8fd1",   # deep blue (sparkline VaR)
-                    "RJ": "#22d3ee",   # cyan
-                    "JD": "#a78bfa",   # purple
-                }
-                for pm in ("CI", "LF", "RJ", "JD"):
-                    if pm in pm_hist.columns:
-                        series_payload.append({
-                            "label": pm,
-                            "values": [float(v) for v in pm_hist[pm].tolist()],
-                            "color": pm_colors[pm], "stroke": 1.4,
-                        })
-                chart_svg = multi_line_chart_svg(
-                    dates, series_payload, width=820, height=320,
-                    y_suffix=" bps",
-                )
-                # Append to the parent risk-monitor entry rather than as a new
-                # section: lazy hydration's querySelector('template[data-fund=...]
-                # [data-report=...]') matches only the first template, so a
-                # duplicate (fund, report) pair never reaches the live DOM.
-                _chart_html = f"""
-                <section class="card">
-                  <div class="card-head">
-                    <span class="card-title">VaR Histórico</span>
-                    <span class="card-sub">— MACRO · Fund + PMs (CI/LF/RJ/JD) · últimos {len(dates)}d úteis</span>
-                  </div>
-                  {chart_svg}
-                  <div class="bar-legend" style="margin-top:8px">
-                    Fund total via <code>LOTE_FUND_STRESS_RPM</code> (LEVEL=2). PMs via mesma tabela TREE='Main_Macro_Ativos' (LEVEL=10), agregando |Σ signed PARAMETRIC_VAR| por book do PM. Diversificado dentro do PM, não entre PMs.
-                  </div>
-                </section>"""
-                _f, _r, _h = sections[-1]
-                sections[-1] = (_f, _r, _h + _chart_html)
-            except Exception as _e:
-                print(f"  MACRO PM VaR history chart failed ({_e})")
-
-        # Diversificação — só para EVOLUTION, imediatamente após Risk Monitor
-        if short == "EVOLUTION":
-            try:
-                div_html, _c4_state = build_evolution_diversification_section(DATA_STR)
-                sections.append(("EVOLUTION", "diversification", div_html))
-                # stash C4 state on the local closure for Summary to pick up
-                evolution_c4_state = _c4_state
-            except Exception as _e:
-                sections.append(("EVOLUTION", "diversification",
-                    f"<section class='card'><div class='card-head'>"
-                    f"<span class='card-title'>Diversificação</span></div>"
-                    f"<div style='color:var(--muted);padding:12px'>"
-                    f"Falha ao montar: {_e}</div></section>"))
-                evolution_c4_state = {}
+    # Per-fund Risk Monitor sections (extracted to fund_renderers.py)
+    _new_secs, _new_alerts, evolution_c4_state = (
+        build_per_fund_risk_monitor_sections(d, td_by_short=td_by_short, series_map=series_map)
+    )
+    sections.extend(_new_secs)
+    alerts.extend(_new_alerts)
 
     # Build alerts section
     # ── PA contribution alerts — filter by |dia_bps|, sorted by contribution ──
