@@ -11,6 +11,19 @@ Findings are spot-verified against the codebase / rendered report; agent halluci
 
 ---
 
+## STATUS (2026-05-02, session 5 — main() split + nav_d1 propagation)
+
+Session 5 closes 2 more open items: §1.6 (main() split into 3 helpers) and §2.13f (full nav_d1 call-site propagation through QUANT/EVOLUTION exposure renderers). Plus 2 ad-hoc UI tweaks: removed "Total NAV-pond. (não-div.)" footer row from "Risco VaR e BVaR por fundo" card; Vol Regime card now skips empty rows instead of rendering `—` placeholders. Both dark + meeting reports regenerate clean; smoke test passes.
+
+### Session 5 additions
+
+| § | Item | Status | File |
+|----|------|--------|------|
+| 1.6 | `main()` 540 lines → 3 helpers (`_fetch_all_data` / `_build_report_data` / `_write_output`). Orchestrator main() now 8 lines. | ✅ DONE | [`generate_risk_report.py`](../generate_risk_report.py#L1763) |
+| 2.13f | `nav_d1` plumbed end-to-end: fetched in `_fetch_all_data` (no longer discarded), forwarded through `ReportData` (new `quant_expo_nav_d1` / `evo_expo_nav_d1` fields), wired through `build_quant_exposure_section` + `build_evolution_exposure_section` and into the unified table. D-1 deltas now divided by D-1 NAV under chunky NAV swings. | ✅ DONE | 2 files |
+| ad-hoc | Removed "Total NAV-pond. (não-div.)" footer row from Risco VaR e BVaR card | ✅ DONE | [`summary_renderers.py`](../summary_renderers.py) |
+| ad-hoc | Vol Regime: skip empty rows instead of rendering `—` placeholders | ✅ DONE | [`fund_renderers.py`](../fund_renderers.py#L267) |
+
 ## STATUS (2026-05-02, session 4 — security + centralization batch)
 
 Session 4 closes 5 more open items: §4.3 (security — env-only DB credentials), §2.13h (desk-name centralization), §3.3c (issuer override → JSON), §2.11 (iloc cast hardening), §2.13a (VaR DoD nav_d1 plumbing fully wired). §2.13f infrastructure landed — full call-site propagation deferred. Both dark + meeting reports regenerate clean; smoke test passes.
@@ -67,13 +80,12 @@ All 6 NEW HIGH correctness items + briefing tightening + skill-refresh + Day-3 h
 - §1.2 Briefing Executivo headline priority (UX — needs design call)
 - §1.3 Status DIA fallback when PA on D-1 (UX)
 - §1.4 EVOLUTION BRLUSD legacy non-zero (escalation to PA engine owner, not code)
-- §1.5 / §1.6 `build_html` / `main()` extraction (half-day each — partly in progress per `c8a93a6` / `7bb06fe` / `d98dae1`)
+- §1.5 `build_html` extraction (half-day session — partly in progress per `c8a93a6` / `7bb06fe` / `d98dae1`)
 - §2.3 Breakdown por Fator unit-mixing
 - §2.5 Risk Budget thresholding by margem (bps) — full re-thresh + "days to soft breach" projection
 - §2.6 Frontier perpetual "—" (TE-based metric needed)
 - §2.9 / §2.10 carryover iterrows vectorization
 - §2.13b IDKA SHARE flow PnL (cotização axis mismatch)
-- §2.13f VaR DoD exposure NAV-axis — call-site propagation through 3 per-fund renderers
 - §3.4–§3.9 aesthetic carryovers (hex codes, dado/tomado convention, `data-no-sort`, meeting-port hardcodes, Util Stop column)
 - §4.1 Python venv discipline (`from __future__ import annotations`)
 - §4.2 CLI entry-point convention

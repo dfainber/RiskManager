@@ -366,20 +366,26 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
                                    df_var: pd.DataFrame = None,
                                    df_var_d1: pd.DataFrame = None,
                                    diversified_var_bps: float | None = None,
-                                   diversified_var_bps_d1: float | None = None) -> str:
+                                   diversified_var_bps_d1: float | None = None,
+                                   nav_d1: float | None = None) -> str:
     """QUANT exposure card — two views:
        1. Por Fator: unified factor × product table (Net/Gross + σ + VaR + Δs).
        2. Por Livro: factor × livro matrix (which livro drives each factor).
+
+       nav_d1 (optional): D-1 NAV. If provided, D-1 deltas are divided by it
+       instead of today's `nav` — protects %NAV scaling across a chunky
+       subscription/redemption between D-1 and D.
     """
     if df is None or df.empty or not nav:
         return ""
+    nav_for_d1 = nav_d1 if (nav_d1 is not None and nav_d1 > 0) else nav
 
     df_var_tagged    = _prepare_quant_var_for_unified(df_var)
     df_var_d1_tagged = _prepare_quant_var_for_unified(df_var_d1)
     if df_d1 is not None and not df_d1.empty:
         if "pct_nav" not in df_d1.columns:
             df_d1 = df_d1.copy()
-            df_d1["pct_nav"] = df_d1["delta"] * 100 / nav
+            df_d1["pct_nav"] = df_d1["delta"] * 100 / nav_for_d1
     if "pct_nav" not in df.columns:
         df = df.copy()
         df["pct_nav"] = df["delta"] * 100 / nav
@@ -394,6 +400,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
         factor_order=_QUANT_FACTOR_ORDER,
         diversified_var_bps=diversified_var_bps,
         diversified_var_bps_d1=diversified_var_bps_d1,
+        nav_d1=nav_d1,
     )
 
     # ── Por Livro summary (livro-level: Net, Δ Expo, σ, VaR signed, Δ VaR) ────
@@ -424,7 +431,7 @@ def build_quant_exposure_section(df: pd.DataFrame, nav: float,
     v1_livro = {}
     if df_d1 is not None and not df_d1.empty:
         d1g = (df_d1.groupby("BOOK", as_index=False).agg(delta=("delta", "sum")))
-        d1_livro_net = {r.BOOK: r.delta * 100 / nav for r in d1g.itertuples(index=False)}
+        d1_livro_net = {r.BOOK: r.delta * 100 / nav_for_d1 for r in d1g.itertuples(index=False)}
     if df_var_d1_tagged is not None and not df_var_d1_tagged.empty and "BOOK" in df_var_d1_tagged.columns:
         v1l = df_var_d1_tagged.groupby("BOOK", as_index=False).agg(var_pct=("var_pct", "sum"))
         v1_livro = dict(zip(v1l["BOOK"], v1l["var_pct"]))
@@ -535,14 +542,19 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
                                       df_var_d1: pd.DataFrame = None,
                                       df_pnl_prod: pd.DataFrame = None,
                                       diversified_var_bps: float | None = None,
-                                      diversified_var_bps_d1: float | None = None) -> str:
+                                      diversified_var_bps_d1: float | None = None,
+                                      nav_d1: float | None = None) -> str:
     """EVOLUTION exposure — full look-through card with two views:
        1. POR STRATEGY (default): Strategy → LIVRO → Instrumento, 3-level drill.
        2. POR FATOR: factor × product using the shared _build_expo_unified_table.
        Columns mirror MACRO: %NAV, σ, Δ Expo, VaR(bps), Δ VaR, DIA.
+
+       nav_d1 (optional): D-1 NAV. If provided, D-1 deltas are divided by it
+       instead of `nav` — protects %NAV scaling across NAV swings.
     """
     if df is None or df.empty or not nav:
         return ""
+    nav_for_d1 = nav_d1 if (nav_d1 is not None and nav_d1 > 0) else nav
 
     # ── Build the Por Fator view (reuse MACRO helper) ────────────────────────
     _expo_u    = df.rename(columns={"factor": "factor"}).copy()  # already tagged
@@ -559,6 +571,7 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         factor_order=_RF_ORDER,
         diversified_var_bps=diversified_var_bps,
         diversified_var_bps_d1=diversified_var_bps_d1,
+        nav_d1=nav_d1,
     )
 
     # ── Build the Por Strategy view (Strategy → LIVRO → Instrumento) ────────
@@ -592,7 +605,7 @@ def build_evolution_exposure_section(df: pd.DataFrame, nav: float,
         p1 = (df_d1.groupby(["strategy", "livro", "factor", "PRODUCT", "PRODUCT_CLASS"], as_index=False)
                     .agg(delta=("delta", "sum")))
         p1 = p1.merge(rf_delta_tot_d1, on="factor", how="left")
-        p1["pct_nav"] = p1["delta"] * 100 / nav
+        p1["pct_nav"] = p1["delta"] * 100 / nav_for_d1
         p1["prod_var_pct"] = p1.apply(
             lambda r: (r["delta"] / r["rf_delta"] * rf_var_map_d1.get(r["factor"], 0.0))
                       if r["rf_delta"] else 0.0,

@@ -699,23 +699,6 @@ def build_var_bvar_card(house_rows: list) -> str:
             + f'<td class="mono" style="text-align:center; color:var(--muted)">{r["bench"]}</td>'
             + "</tr>"
         )
-    tot_nav      = sum(r["nav"]      for r in house_rows)
-    tot_var_brl  = sum(r["var_brl"]  for r in house_rows)
-    tot_bvar_brl = sum(r["bvar_brl"] for r in house_rows)
-    tot_var_pct  = (tot_var_brl  / tot_nav * 100) if tot_nav else 0.0
-    tot_bvar_pct = (tot_bvar_brl / tot_nav * 100) if tot_nav else 0.0
-    _dash = '<td class="mono" style="text-align:right; color:var(--muted)">—</td>'
-    total_row = (
-        '<tr class="house-total-row">'
-        '<td class="sum-fund" style="font-weight:700" title="VaR/BVaR % são médias ponderadas por NAV (não-diversificado). NAV/PnL são somas.">Total NAV-pond. (não-div.)</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{_mm(tot_nav)}</td>'
-        f'<td class="mono" style="text-align:right; font-weight:700">{tot_var_pct:.2f}%</td>'
-        + _dash
-        + f'<td class="mono" style="text-align:right; font-weight:700">{tot_bvar_pct:.2f}%</td>'
-        + _dash
-        + '<td></td>'
-        '</tr>'
-    )
     return f"""
     <section class="card">
       <div class="card-head">
@@ -733,7 +716,6 @@ def build_var_bvar_card(house_rows: list) -> str:
           <th style="text-align:center">Bench</th>
         </tr></thead>
         <tbody>{rows_html}</tbody>
-        <tfoot>{total_row}</tfoot>
       </table>
       <div class="bar-legend" style="margin-top:10px">
         <span style="color:#facc15">★</span> top-5 risco absoluto (R$) &nbsp;·&nbsp;

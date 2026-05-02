@@ -167,6 +167,7 @@ class ReportData:
     df_quant_expo:    Optional[pd.DataFrame]    = None
     quant_expo_nav:   Optional[float]           = None
     df_quant_expo_d1: Optional[pd.DataFrame]    = None
+    quant_expo_nav_d1: Optional[float]          = None
     df_quant_var:     Optional[pd.DataFrame]    = None
     df_quant_var_d1:  Optional[pd.DataFrame]    = None
     # EVOLUTION
@@ -177,6 +178,7 @@ class ReportData:
     df_evo_expo:      Optional[pd.DataFrame]    = None
     evo_expo_nav:     Optional[float]           = None
     df_evo_expo_d1:   Optional[pd.DataFrame]    = None
+    evo_expo_nav_d1:  Optional[float]           = None
     df_evo_var:       Optional[pd.DataFrame]    = None
     df_evo_var_d1:    Optional[pd.DataFrame]    = None
     df_evo_pnl_prod:  Optional[pd.DataFrame]    = None
@@ -557,8 +559,8 @@ def build_html(d: ReportData) -> str:
      df_pa, cdi, ibov, df_pa_daily, idka_idx_ret, walb, rf_expo_maps,
      position_changes, dist_map, dist_map_prev, dist_actuals,
      vol_regime_map, pm_book_var, expo_date_label, data_manifest,
-     df_quant_expo, quant_expo_nav, df_quant_expo_d1, df_quant_var, df_quant_var_d1,
-     df_evo_expo, evo_expo_nav, df_evo_expo_d1, df_evo_var, df_evo_var_d1,
+     df_quant_expo, quant_expo_nav, df_quant_expo_d1, quant_expo_nav_d1, df_quant_var, df_quant_var_d1,
+     df_evo_expo, evo_expo_nav, df_evo_expo_d1, evo_expo_nav_d1, df_evo_var, df_evo_var_d1,
      df_evo_pnl_prod) = (
         d.series_map, d.stop_hist, d.df_today, d.df_expo, d.df_var, d.macro_aum,
         d.df_expo_d1, d.df_var_d1, d.df_pnl_prod, d.pm_margem,
@@ -570,8 +572,8 @@ def build_html(d: ReportData) -> str:
         d.df_pa, d.cdi, d.ibov, d.df_pa_daily, d.idka_idx_ret, d.walb, d.rf_expo_maps,
         d.position_changes, d.dist_map, d.dist_map_prev, d.dist_actuals,
         d.vol_regime_map, d.pm_book_var, d.expo_date_label, d.data_manifest,
-        d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.df_quant_var, d.df_quant_var_d1,
-        d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.df_evo_var, d.df_evo_var_d1,
+        d.df_quant_expo, d.quant_expo_nav, d.df_quant_expo_d1, d.quant_expo_nav_d1, d.df_quant_var, d.df_quant_var_d1,
+        d.df_evo_expo, d.evo_expo_nav, d.df_evo_expo_d1, d.evo_expo_nav_d1, d.df_evo_var, d.df_evo_var_d1,
         d.df_evo_pnl_prod)
     market_snap = d.market_snap or {}
     alerts = []
@@ -890,6 +892,7 @@ def build_html(d: ReportData) -> str:
             df_var_d1=df_quant_var_d1,
             diversified_var_bps=_latest_hs_var_bps("QUANT"),
             diversified_var_bps_d1=_prev_hs_var_bps("QUANT"),
+            nav_d1=quant_expo_nav_d1,
         )
         if q_expo_html:
             sections.append(("QUANT", "exposure", q_expo_html))
@@ -904,6 +907,7 @@ def build_html(d: ReportData) -> str:
             df_pnl_prod=df_evo_pnl_prod,
             diversified_var_bps=_latest_hs_var_bps("EVOLUTION"),
             diversified_var_bps_d1=_prev_hs_var_bps("EVOLUTION"),
+            nav_d1=evo_expo_nav_d1,
         )
         if e_expo_html:
             sections.append(("EVOLUTION", "exposure", e_expo_html))
@@ -1759,18 +1763,18 @@ def build_html(d: ReportData) -> str:
 </html>"""
     return html
 
-# ── Main ─────────────────────────────────────────────────────────────────────
-def main():  # noqa: C901
+def _fetch_all_data(date_str: str, d1_str: str, d2_str: str):
+    """Submit every fetch_* future, resolve with per-task fallbacks, run the
+    cheap post-fetch derivations (build_series, stop_hist, df_today, expo
+    fallback, pm_margem, frontier_bvar, vol_regime). Returns a SimpleNamespace
+    with one attribute per data slot — consumed by _build_report_data.
+    """
     import time
     from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
 
     t0 = time.time()
-    print(f"Fetching data for {DATA_STR}...")
-    d1_str = _prev_bday(DATA_STR)
-    d2_str = _prev_bday(d1_str)
 
-    # Fan out all independent DB queries to a thread pool.
-    # Each fetch keeps its own connection; I/O-bound so GIL not an issue.
     with ThreadPoolExecutor(max_workers=12) as ex:
         fut_risk       = ex.submit(fetch_risk_history)
         fut_risk_raw   = ex.submit(fetch_risk_history_raw)
@@ -1779,84 +1783,81 @@ def main():  # noqa: C901
         # Price quality (LOTE_BOOK_OVERVIEW PRICE non-null on D and D-1) for funds
         # with direct credit-bearing instruments. ALBATROZ has CRIs/debentures;
         # BALTRA has NTN-Bs in the Prev book.
-        fut_alb_pq     = ex.submit(fetch_price_quality_flags, "GALAPAGOS ALBATROZ FIRF LP", DATA_STR, d1_str)
-        fut_baltra_pq  = ex.submit(fetch_price_quality_flags, "Galapagos Baltra Icatu Qualif Prev FIM CP", DATA_STR, d1_str)
+        fut_alb_pq     = ex.submit(fetch_price_quality_flags, _ALBATROZ_DESK, date_str, d1_str)
+        fut_baltra_pq  = ex.submit(fetch_price_quality_flags, _BALTRA_DESK, date_str, d1_str)
         fut_aum        = ex.submit(fetch_aum_history)
         fut_pm_pnl       = ex.submit(fetch_pm_pnl_history)
         fut_pm_book_pnl  = ex.submit(fetch_pm_book_pnl_history)
-        fut_pm_book_var  = ex.submit(fetch_macro_pm_book_var,  DATA_STR)
-        fut_expo       = ex.submit(fetch_macro_exposure, DATA_STR)
+        fut_pm_book_var  = ex.submit(fetch_macro_pm_book_var,  date_str)
+        fut_expo       = ex.submit(fetch_macro_exposure, date_str)
         fut_expo_d1    = ex.submit(fetch_macro_exposure, d1_str)
         fut_expo_d2    = ex.submit(fetch_macro_exposure, d2_str)
-        fut_pnl_prod   = ex.submit(fetch_macro_pnl_products, DATA_STR)
+        fut_pnl_prod   = ex.submit(fetch_macro_pnl_products, date_str)
         fut_pnl_prod_d1= ex.submit(fetch_macro_pnl_products, d1_str)
-        fut_quant_sn   = ex.submit(fetch_quant_single_names, DATA_STR)
+        fut_quant_sn   = ex.submit(fetch_quant_single_names, date_str)
         fut_quant_sn_d1= ex.submit(fetch_quant_single_names, d1_str)
-        fut_evo_sn     = ex.submit(fetch_evolution_single_names, DATA_STR)
+        fut_evo_sn     = ex.submit(fetch_evolution_single_names, date_str)
         fut_evo_sn_d1  = ex.submit(fetch_evolution_single_names, d1_str)
-        fut_evo_direct = ex.submit(fetch_evolution_direct_single_names, DATA_STR)
-        fut_dist       = ex.submit(fetch_pnl_distribution, DATA_STR)
+        fut_evo_direct = ex.submit(fetch_evolution_direct_single_names, date_str)
+        fut_dist       = ex.submit(fetch_pnl_distribution, date_str)
         fut_dist_prev  = ex.submit(fetch_pnl_distribution, d1_str)
-        fut_dist_act   = ex.submit(fetch_pnl_actual_by_cut, DATA_STR)
-        fut_pa         = ex.submit(fetch_pa_leaves, DATA_STR)
-        fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, DATA_STR)
-        fut_cdi        = ex.submit(fetch_cdi_returns, DATA_STR)
-        fut_ibov       = ex.submit(fetch_ibov_returns, DATA_STR)
-        fut_usdbrl     = ex.submit(fetch_usdbrl_returns, DATA_STR)
-        fut_di1_3y     = ex.submit(fetch_di1_3y_rate, DATA_STR)
+        fut_dist_act   = ex.submit(fetch_pnl_actual_by_cut, date_str)
+        fut_pa         = ex.submit(fetch_pa_leaves, date_str)
+        fut_pa_daily   = ex.submit(fetch_pa_daily_per_product, date_str)
+        fut_cdi        = ex.submit(fetch_cdi_returns, date_str)
+        fut_ibov       = ex.submit(fetch_ibov_returns, date_str)
+        fut_usdbrl     = ex.submit(fetch_usdbrl_returns, date_str)
+        fut_di1_3y     = ex.submit(fetch_di1_3y_rate, date_str)
         fut_idka_idx = {
-            "IDKA_3Y":  ex.submit(fetch_idka_index_returns, "IDKA_IPCA_3A",  DATA_STR),
-            "IDKA_10Y": ex.submit(fetch_idka_index_returns, "IDKA_IPCA_10A", DATA_STR),
+            "IDKA_3Y":  ex.submit(fetch_idka_index_returns, "IDKA_IPCA_3A",  date_str),
+            "IDKA_10Y": ex.submit(fetch_idka_index_returns, "IDKA_IPCA_10A", date_str),
         }
         fut_walb = {
-            "IDKA_3Y":  ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 3Y FIRF",  DATA_STR),
-            "IDKA_10Y": ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 10Y FIRF", DATA_STR),
+            "IDKA_3Y":  ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 3Y FIRF",  date_str),
+            "IDKA_10Y": ex.submit(fetch_idka_albatroz_weight, "IDKA IPCA 10Y FIRF", date_str),
         }
-        fut_alb        = ex.submit(fetch_albatroz_exposure, DATA_STR)
-        fut_quant_expo    = ex.submit(fetch_quant_exposure, DATA_STR)
+        fut_alb        = ex.submit(fetch_albatroz_exposure, date_str)
+        fut_quant_expo    = ex.submit(fetch_quant_exposure, date_str)
         fut_quant_expo_d1 = ex.submit(fetch_quant_exposure, d1_str)
-        fut_quant_var     = ex.submit(fetch_quant_var,      DATA_STR)
+        fut_quant_var     = ex.submit(fetch_quant_var,      date_str)
         fut_quant_var_d1  = ex.submit(fetch_quant_var,      d1_str)
-        fut_evo_expo      = ex.submit(fetch_evolution_exposure, DATA_STR)
+        fut_evo_expo      = ex.submit(fetch_evolution_exposure, date_str)
         fut_evo_expo_d1   = ex.submit(fetch_evolution_exposure, d1_str)
-        fut_evo_var       = ex.submit(fetch_evolution_var,      DATA_STR)
+        fut_evo_var       = ex.submit(fetch_evolution_var,      date_str)
         fut_evo_var_d1    = ex.submit(fetch_evolution_var,      d1_str)
-        fut_evo_pnl_prod  = ex.submit(fetch_evolution_pnl_products, DATA_STR)
+        fut_evo_pnl_prod  = ex.submit(fetch_evolution_pnl_products, date_str)
         fut_alb_d1     = ex.submit(fetch_albatroz_exposure, d1_str)
-        fut_baltra     = ex.submit(fetch_albatroz_exposure, DATA_STR,
-                                   "Galapagos Baltra Icatu Qualif Prev FIM CP")
+        fut_baltra     = ex.submit(fetch_albatroz_exposure, date_str, _BALTRA_DESK)
         # Credit look-through positions for the new "Crédito" tab
-        fut_baltra_cred = ex.submit(fetch_fund_credit_positions,
-                                    _BALTRA_DESK, DATA_STR)
-        fut_evo_cred    = ex.submit(fetch_fund_credit_positions,
-                                    _EVOLUTION_DESK, DATA_STR)
+        fut_baltra_cred = ex.submit(fetch_fund_credit_positions, _BALTRA_DESK, date_str)
+        fut_evo_cred    = ex.submit(fetch_fund_credit_positions, _EVOLUTION_DESK, date_str)
         fut_rf_expo = {
-            "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  DATA_STR),
-            "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", DATA_STR),
-            "ALBATROZ":  ex.submit(fetch_rf_exposure_map, _ALBATROZ_DESK, DATA_STR),
-            "BALTRA":    ex.submit(fetch_rf_exposure_map, _BALTRA_DESK, DATA_STR),
-            "MACRO":     ex.submit(fetch_rf_exposure_map, _MACRO_DESK, DATA_STR),
-            "EVOLUTION": ex.submit(fetch_rf_exposure_map, _EVOLUTION_DESK, DATA_STR, True),
+            "IDKA_3Y":   ex.submit(fetch_rf_exposure_map, "IDKA IPCA 3Y FIRF",  date_str),
+            "IDKA_10Y":  ex.submit(fetch_rf_exposure_map, "IDKA IPCA 10Y FIRF", date_str),
+            "ALBATROZ":  ex.submit(fetch_rf_exposure_map, _ALBATROZ_DESK, date_str),
+            "BALTRA":    ex.submit(fetch_rf_exposure_map, _BALTRA_DESK, date_str),
+            "MACRO":     ex.submit(fetch_rf_exposure_map, _MACRO_DESK, date_str),
+            "EVOLUTION": ex.submit(fetch_rf_exposure_map, _EVOLUTION_DESK, date_str, True),
         }
         # Pre-warm NAV cache for today + D-1 so every _latest_nav() call hits memory.
-        fut_navs    = ex.submit(fetch_all_latest_navs, DATA_STR)
+        fut_navs    = ex.submit(fetch_all_latest_navs, date_str)
         fut_navs_d1 = ex.submit(fetch_all_latest_navs, d1_str)
-        fut_frontier   = ex.submit(fetch_frontier_mainboard, DATA_STR)
+        fut_frontier   = ex.submit(fetch_frontier_mainboard, date_str)
         fut_frontier_expo = ex.submit(fetch_frontier_exposure_data)
         fut_chg        = {
-            short: ex.submit(fetch_fund_position_changes, short, DATA_STR, d1_str)
+            short: ex.submit(fetch_fund_position_changes, short, date_str, d1_str)
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
         fut_chg_prod   = {
-            short: ex.submit(fetch_fund_position_changes_by_product, short, DATA_STR, d1_str)
+            short: ex.submit(fetch_fund_position_changes_by_product, short, date_str, d1_str)
             for short in ("QUANT", "EVOLUTION", "MACRO_Q", "ALBATROZ", "FRONTIER")
         }
-        fut_macro_pm_hist = ex.submit(fetch_macro_pm_var_history, DATA_STR, 121)
-        _pnl_date      = _prev_bday(DATA_STR)
+        fut_macro_pm_hist = ex.submit(fetch_macro_pm_var_history, date_str, 121)
+        _pnl_date      = _prev_bday(date_str)
         fut_book_pnl    = ex.submit(fetch_book_pnl,        _pnl_date)
-        fut_peers_data       = ex.submit(fetch_peers_data, DATA_STR, "current")
-        fut_peers_data_eopm  = ex.submit(fetch_peers_data, DATA_STR, "eopm")
-        fut_market_snap = ex.submit(fetch_market_snapshot, DATA_STR)
+        fut_peers_data       = ex.submit(fetch_peers_data, date_str, "current")
+        fut_peers_data_eopm  = ex.submit(fetch_peers_data, date_str, "eopm")
+        fut_market_snap = ex.submit(fetch_market_snapshot, date_str)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
     df_risk     = fut_risk.result()
@@ -1920,7 +1921,7 @@ def main():  # noqa: C901
     _expo_d1_raw, _var_d1_raw, _ = fut_expo_d1.result()
     expo_date_label = None  # None = today's data; otherwise the fallback date string
     if _expo_raw.empty and not _expo_d1_raw.empty:
-        print(f"  Exposure missing for {DATA_STR} — using {d1_str}")
+        print(f"  Exposure missing for {date_str} — using {d1_str}")
         expo_date_label = d1_str
         # NAV must come from a real source; the historical `or 1.0` fallback could
         # mis-scale every %NAV / bps in this branch by ~10⁵× if both lookups fail.
@@ -1945,7 +1946,7 @@ def main():  # noqa: C901
         df_pnl_prod = fut_pnl_prod_d1.result()
 
     # PM margem (budget remaining in bps) from stop history
-    cur_mes = pd.Timestamp(DATA_STR).to_period("M").to_timestamp()
+    cur_mes = pd.Timestamp(date_str).to_period("M").to_timestamp()
     pm_margem = {}
     for pm, livro in _PM_LIVRO.items():
         if pm not in stop_hist:
@@ -2064,11 +2065,11 @@ def main():  # noqa: C901
         print(f"  EVOLUTION credit fetch failed ({e})")
         df_evo_credit = None
     try:
-        cdi_annual = fetch_cdi_annual_rate(DATA_STR)
+        cdi_annual = fetch_cdi_annual_rate(date_str)
     except Exception:
         cdi_annual = None
     try:
-        ipca_annual = fetch_ipca_12m(DATA_STR)
+        ipca_annual = fetch_ipca_12m(date_str)
     except Exception:
         ipca_annual = None
 
@@ -2078,10 +2079,10 @@ def main():  # noqa: C901
         print(f"  QUANT exposure fetch failed ({e})")
         df_quant_expo, quant_expo_nav = None, None
     try:
-        df_quant_expo_d1, _ = fut_quant_expo_d1.result()
+        df_quant_expo_d1, quant_expo_nav_d1 = fut_quant_expo_d1.result()
     except Exception as e:
         print(f"  QUANT D-1 exposure fetch failed ({e})")
-        df_quant_expo_d1 = None
+        df_quant_expo_d1, quant_expo_nav_d1 = None, None
     try:
         df_quant_var = fut_quant_var.result()
     except Exception as e:
@@ -2100,10 +2101,10 @@ def main():  # noqa: C901
         print(f"  EVOLUTION exposure fetch failed ({e})")
         df_evo_expo, evo_expo_nav = None, None
     try:
-        df_evo_expo_d1, _ = fut_evo_expo_d1.result()
+        df_evo_expo_d1, evo_expo_nav_d1 = fut_evo_expo_d1.result()
     except Exception as e:
         print(f"  EVOLUTION D-1 exposure fetch failed ({e})")
-        df_evo_expo_d1 = None
+        df_evo_expo_d1, evo_expo_nav_d1 = None, None
     try:
         df_evo_var = fut_evo_var.result()
     except Exception as e:
@@ -2133,7 +2134,7 @@ def main():  # noqa: C901
         df_frontier = None
 
     try:
-        frontier_bvar    = compute_frontier_bvar_hs(df_frontier, DATA_STR) if df_frontier is not None else None
+        frontier_bvar    = compute_frontier_bvar_hs(df_frontier, date_str) if df_frontier is not None else None
         frontier_bvar_d1 = compute_frontier_bvar_hs(df_frontier, d1_str)   if df_frontier is not None else None
     except Exception as e:
         print(f"  Frontier BVaR (HS) failed ({e})")
@@ -2204,60 +2205,19 @@ def main():  # noqa: C901
 
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
-    # ── Data manifest: what landed and what is stale/missing ─────────────────
-    _var_dates = {}
-    for td, cfg in ALL_FUNDS.items():
-        s = series.get(td)
-        if s is not None and not s.empty:
-            s_avail = s[s["VAL_DATE"] <= DATA]
-            if not s_avail.empty:
-                _var_dates[cfg["short"]] = s_avail.iloc[-1]["VAL_DATE"]
-    data_manifest = {
-        "requested_date": DATA_STR,
-        "d1_str":         d1_str,
-        # PA / PnL
-        "pa_ok":          df_pa is not None and not df_pa.empty,
-        "pa_has_today":   (df_pa is not None and not df_pa.empty and
-                           not df_pa[df_pa["dia_bps"].abs() > 1e-6].empty),
-        # VaR / Stress
-        "var_dates":      _var_dates,    # short → actual date used (may be D-1)
-        # Exposure
-        "expo_ok":        df_expo is not None and not df_expo.empty,
-        "expo_date":      expo_date_label or DATA_STR,
-        # Single-names
-        "quant_sn_ok":    df_quant_sn is not None,
-        "evo_sn_ok":      df_evo_sn is not None,
-        # Distribution
-        "dist_today_ok":  bool(dist_map),
-        "dist_prev_ok":   bool(dist_map_prev),
-        # ALBATROZ
-        "alb_expo_ok":    df_alb_expo is not None and not df_alb_expo.empty,
-        "quant_expo_ok":  df_quant_expo is not None and not df_quant_expo.empty,
-        "evo_expo_ok":    df_evo_expo is not None and not df_evo_expo.empty,
-        # Stop monitor
-        "stop_ok":        bool(pm_margem),
-        "stop_has_pnl":   any(abs(pm_margem.get(pm, STOP_BASE) - STOP_BASE) > 1 for pm in pm_margem),
-        # Detail for quality tab
-        "expo_rows":      len(df_expo) if df_expo is not None and not df_expo.empty else 0,
-        "quant_sn_rows":  len(df_quant_sn) if df_quant_sn is not None else 0,
-        "evo_sn_rows":    len(df_evo_sn)   if df_evo_sn   is not None else 0,
-        "alb_expo_rows":  len(df_alb_expo) if df_alb_expo is not None and not df_alb_expo.empty else 0,
-        "quant_expo_rows": len(df_quant_expo) if df_quant_expo is not None and not df_quant_expo.empty else 0,
-        "evo_expo_rows":  len(df_evo_expo) if df_evo_expo is not None and not df_evo_expo.empty else 0,
-        "stop_pms":       sorted(pm_margem.keys()) if pm_margem else [],
-        "stop_pms_pnl":   [pm for pm, v in (pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
-    }
-
-    report_data = ReportData(
-        series_map=series, stop_hist=stop_hist,
+    return SimpleNamespace(
+        # raw fetched
+        series=series, stop_hist=stop_hist,
         df_today=df_today, df_expo=df_expo, df_var=df_var, macro_aum=macro_aum,
         df_expo_d1=df_expo_d1, df_var_d1=df_var_d1,
         df_pnl_prod=df_pnl_prod, pm_margem=pm_margem,
         df_quant_sn=df_quant_sn, quant_nav=quant_nav, quant_legs=quant_legs,
         df_quant_expo=df_quant_expo, quant_expo_nav=quant_expo_nav,
-        df_quant_expo_d1=df_quant_expo_d1, df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
+        df_quant_expo_d1=df_quant_expo_d1, quant_expo_nav_d1=quant_expo_nav_d1,
+        df_quant_var=df_quant_var, df_quant_var_d1=df_quant_var_d1,
         df_evo_sn=df_evo_sn, evo_nav=evo_nav, evo_legs=evo_legs, df_evo_direct=df_evo_direct,
-        df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav, df_evo_expo_d1=df_evo_expo_d1,
+        df_evo_expo=df_evo_expo, evo_expo_nav=evo_expo_nav,
+        df_evo_expo_d1=df_evo_expo_d1, evo_expo_nav_d1=evo_expo_nav_d1,
         df_evo_var=df_evo_var, df_evo_var_d1=df_evo_var_d1, df_evo_pnl_prod=df_evo_pnl_prod,
         df_alb_expo=df_alb_expo, alb_nav=alb_nav,
         df_baltra_expo=df_baltra_expo, baltra_nav=baltra_nav,
@@ -2268,32 +2228,115 @@ def main():  # noqa: C901
         df_frontier_ibov=df_frontier_ibov, df_frontier_smll=df_frontier_smll,
         df_frontier_sectors=df_frontier_sectors,
         df_pa=df_pa, cdi=cdi, ibov=ibov, usdbrl=usdbrl, di1_3y=di1_3y,
-        macro_pm_var_hist=macro_pm_var_hist,
-        df_pa_daily=df_pa_daily,
+        macro_pm_var_hist=macro_pm_var_hist, df_pa_daily=df_pa_daily,
         idka_idx_ret=idka_idx_ret, walb=walb, rf_expo_maps=rf_expo_maps,
         position_changes=position_changes,
         dist_map=dist_map, dist_map_prev=dist_map_prev, dist_actuals=dist_actuals,
         vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
-        expo_date_label=expo_date_label, data_manifest=data_manifest,
+        expo_date_label=expo_date_label,
         book_pnl=book_pnl, peers_data=peers_data, peers_data_eopm=peers_data_eopm,
         market_snap=market_snap,
         df_pm_book_pnl=df_pm_book_pnl,
     )
-    html = build_html(report_data)
-    out  = OUT_DIR / f"{DATA_STR}_risk_monitor.html"
+
+
+def _build_report_data(date_str: str, d1_str: str, fd) -> "ReportData":
+    """Assemble the data_manifest + ReportData from a fully-resolved fetched
+    namespace (output of _fetch_all_data)."""
+    _var_dates = {}
+    for td, cfg in ALL_FUNDS.items():
+        s = fd.series.get(td)
+        if s is not None and not s.empty:
+            s_avail = s[s["VAL_DATE"] <= DATA]
+            if not s_avail.empty:
+                _var_dates[cfg["short"]] = s_avail.iloc[-1]["VAL_DATE"]
+    data_manifest = {
+        "requested_date": date_str,
+        "d1_str":         d1_str,
+        # PA / PnL
+        "pa_ok":          fd.df_pa is not None and not fd.df_pa.empty,
+        "pa_has_today":   (fd.df_pa is not None and not fd.df_pa.empty and
+                           not fd.df_pa[fd.df_pa["dia_bps"].abs() > 1e-6].empty),
+        # VaR / Stress
+        "var_dates":      _var_dates,    # short → actual date used (may be D-1)
+        # Exposure
+        "expo_ok":        fd.df_expo is not None and not fd.df_expo.empty,
+        "expo_date":      fd.expo_date_label or date_str,
+        # Single-names
+        "quant_sn_ok":    fd.df_quant_sn is not None,
+        "evo_sn_ok":      fd.df_evo_sn is not None,
+        # Distribution
+        "dist_today_ok":  bool(fd.dist_map),
+        "dist_prev_ok":   bool(fd.dist_map_prev),
+        # ALBATROZ
+        "alb_expo_ok":    fd.df_alb_expo is not None and not fd.df_alb_expo.empty,
+        "quant_expo_ok":  fd.df_quant_expo is not None and not fd.df_quant_expo.empty,
+        "evo_expo_ok":    fd.df_evo_expo is not None and not fd.df_evo_expo.empty,
+        # Stop monitor
+        "stop_ok":        bool(fd.pm_margem),
+        "stop_has_pnl":   any(abs(fd.pm_margem.get(pm, STOP_BASE) - STOP_BASE) > 1 for pm in fd.pm_margem),
+        # Detail for quality tab
+        "expo_rows":      len(fd.df_expo) if fd.df_expo is not None and not fd.df_expo.empty else 0,
+        "quant_sn_rows":  len(fd.df_quant_sn) if fd.df_quant_sn is not None else 0,
+        "evo_sn_rows":    len(fd.df_evo_sn)   if fd.df_evo_sn   is not None else 0,
+        "alb_expo_rows":  len(fd.df_alb_expo) if fd.df_alb_expo is not None and not fd.df_alb_expo.empty else 0,
+        "quant_expo_rows": len(fd.df_quant_expo) if fd.df_quant_expo is not None and not fd.df_quant_expo.empty else 0,
+        "evo_expo_rows":  len(fd.df_evo_expo) if fd.df_evo_expo is not None and not fd.df_evo_expo.empty else 0,
+        "stop_pms":       sorted(fd.pm_margem.keys()) if fd.pm_margem else [],
+        "stop_pms_pnl":   [pm for pm, v in (fd.pm_margem or {}).items() if abs(v - STOP_BASE) > 1],
+    }
+
+    return ReportData(
+        series_map=fd.series, stop_hist=fd.stop_hist,
+        df_today=fd.df_today, df_expo=fd.df_expo, df_var=fd.df_var, macro_aum=fd.macro_aum,
+        df_expo_d1=fd.df_expo_d1, df_var_d1=fd.df_var_d1,
+        df_pnl_prod=fd.df_pnl_prod, pm_margem=fd.pm_margem,
+        df_quant_sn=fd.df_quant_sn, quant_nav=fd.quant_nav, quant_legs=fd.quant_legs,
+        df_quant_expo=fd.df_quant_expo, quant_expo_nav=fd.quant_expo_nav,
+        df_quant_expo_d1=fd.df_quant_expo_d1, quant_expo_nav_d1=fd.quant_expo_nav_d1,
+        df_quant_var=fd.df_quant_var, df_quant_var_d1=fd.df_quant_var_d1,
+        df_evo_sn=fd.df_evo_sn, evo_nav=fd.evo_nav, evo_legs=fd.evo_legs, df_evo_direct=fd.df_evo_direct,
+        df_evo_expo=fd.df_evo_expo, evo_expo_nav=fd.evo_expo_nav,
+        df_evo_expo_d1=fd.df_evo_expo_d1, evo_expo_nav_d1=fd.evo_expo_nav_d1,
+        df_evo_var=fd.df_evo_var, df_evo_var_d1=fd.df_evo_var_d1, df_evo_pnl_prod=fd.df_evo_pnl_prod,
+        df_alb_expo=fd.df_alb_expo, alb_nav=fd.alb_nav,
+        df_baltra_expo=fd.df_baltra_expo, baltra_nav=fd.baltra_nav,
+        alb_pq_flags=fd.alb_pq_flags, baltra_pq_flags=fd.baltra_pq_flags,
+        df_baltra_credit=fd.df_baltra_credit, df_evo_credit=fd.df_evo_credit,
+        cdi_annual=fd.cdi_annual, ipca_annual=fd.ipca_annual,
+        df_frontier=fd.df_frontier, frontier_bvar=fd.frontier_bvar, frontier_bvar_d1=fd.frontier_bvar_d1,
+        df_frontier_ibov=fd.df_frontier_ibov, df_frontier_smll=fd.df_frontier_smll,
+        df_frontier_sectors=fd.df_frontier_sectors,
+        df_pa=fd.df_pa, cdi=fd.cdi, ibov=fd.ibov, usdbrl=fd.usdbrl, di1_3y=fd.di1_3y,
+        macro_pm_var_hist=fd.macro_pm_var_hist,
+        df_pa_daily=fd.df_pa_daily,
+        idka_idx_ret=fd.idka_idx_ret, walb=fd.walb, rf_expo_maps=fd.rf_expo_maps,
+        position_changes=fd.position_changes,
+        dist_map=fd.dist_map, dist_map_prev=fd.dist_map_prev, dist_actuals=fd.dist_actuals,
+        vol_regime_map=fd.vol_regime_map, pm_book_var=fd.pm_book_var,
+        expo_date_label=fd.expo_date_label, data_manifest=data_manifest,
+        book_pnl=fd.book_pnl, peers_data=fd.peers_data, peers_data_eopm=fd.peers_data_eopm,
+        market_snap=fd.market_snap,
+        df_pm_book_pnl=fd.df_pm_book_pnl,
+    )
+
+
+def _write_output(html: str, date_str: str) -> None:
+    """Write the rendered HTML to OUT_DIR + mirror to RISK_MIRROR_PATH (env-overridable)."""
+    out  = OUT_DIR / f"{date_str}_risk_monitor.html"
     out.write_text(html, encoding="utf-8")
     print(f"Saved: {out}")
 
     # Mirror copy to shared Risk_Manager Morningcall folder for distribution.
     # Two files written to share:
-    #   {DATA_STR}_risk_monitor.html  — dated archive (acumula histórico)
+    #   {date_str}_risk_monitor.html  — dated archive (acumula histórico)
     #   ultimo_risk_monitor.html      — "latest" pointer (nome fixo, sempre
     #                                    sobrescreve — pra link/URL constante)
     # Mirror path overridable via RISK_MIRROR_PATH; empty/unset disables mirroring.
     mirror_path = os.environ.get("RISK_MIRROR_PATH", r"F:\Bloomberg\Risk_Manager\Data\Morningcall")
     if mirror_path:
         mirror_dir = Path(mirror_path)
-        mirror = mirror_dir / f"{DATA_STR}_risk_monitor.html"
+        mirror = mirror_dir / f"{date_str}_risk_monitor.html"
         try:
             mirror_dir.mkdir(parents=True, exist_ok=True)
             mirror.write_text(html, encoding="utf-8")
@@ -2304,6 +2347,17 @@ def main():  # noqa: C901
             print(f"Saved (ultimo): {latest}")
         except Exception as e:
             print(f"WARNING: mirror save failed for {mirror_dir}: {e!r}", file=sys.stderr)
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+def main():
+    print(f"Fetching data for {DATA_STR}...")
+    d1_str = _prev_bday(DATA_STR)
+    d2_str = _prev_bday(d1_str)
+    fd = _fetch_all_data(DATA_STR, d1_str, d2_str)
+    report_data = _build_report_data(DATA_STR, d1_str, fd)
+    html = build_html(report_data)
+    _write_output(html, DATA_STR)
 
 
 if __name__ == "__main__":

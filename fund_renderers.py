@@ -265,19 +265,6 @@ def build_vol_regime_section(fund_short: str, vol_regime_map: dict) -> str:
             row_attr = f' data-parent="{fund_short}"'
 
         if not r:
-            rows += (
-                f'<tr class="{row_cls}"{row_attr}>'
-                f'<td class="dist-tag" style="color:{tag_c}">{caret}{tag}</td>'
-                f'<td class="dist-name">{label}</td>'
-                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
-                '<td style="text-align:center">—</td>'
-                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
-                '<td style="text-align:center">—</td>'
-                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
-                '<td class="dist-num mono" style="color:var(--muted)">—</td>'
-                '<td class="mono" style="color:var(--muted); text-align:center">—</td>'
-                "</tr>"
-            )
             continue
         any_data = True
         if not is_fund:
