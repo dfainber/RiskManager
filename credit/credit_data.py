@@ -137,17 +137,26 @@ def fetch_price_quality_flags(trading_desk: str, dt: str, dt_prev: str) -> pd.Da
     empty DataFrame means all clear). Columns: produto, product_class,
     pos_brl, price_today, price_prev, missing_today, missing_prev.
     """
+    # GROUP BY PRODUCT in both CTEs prevents an N×M join explosion when the same
+    # PRODUCT exists across multiple BOOKs (e.g. NTN-B 2030 in Caixa + RF Curto).
+    # Without this, today=2 rows × prev=2 rows = 4 combined rows, all flagged if
+    # any price is null — inflating the warning count in the emailed PDF.
     sql = f"""
 WITH today AS (
-  SELECT "PRODUCT" AS produto, "PRODUCT_CLASS" AS product_class,
-         "POSITION" AS pos_brl, "PRICE" AS price_today
+  SELECT "PRODUCT" AS produto,
+         MAX("PRODUCT_CLASS") AS product_class,
+         SUM("POSITION") AS pos_brl,
+         MAX(NULLIF("PRICE", 0)) AS price_today
   FROM "LOTE45"."LOTE_BOOK_OVERVIEW"
   WHERE "TRADING_DESK" = '{trading_desk}' AND "VAL_DATE" = '{dt}'
+  GROUP BY "PRODUCT"
 ),
 prev AS (
-  SELECT "PRODUCT" AS produto, "PRICE" AS price_prev
+  SELECT "PRODUCT" AS produto,
+         MAX(NULLIF("PRICE", 0)) AS price_prev
   FROM "LOTE45"."LOTE_BOOK_OVERVIEW"
   WHERE "TRADING_DESK" = '{trading_desk}' AND "VAL_DATE" = '{dt_prev}'
+  GROUP BY "PRODUCT"
 )
 SELECT t.produto, t.product_class, t.pos_brl, t.price_today, p.price_prev
 FROM today t
