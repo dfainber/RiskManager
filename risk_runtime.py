@@ -50,10 +50,27 @@ _BR_HOLIDAYS: set[str] = {
 def _resolve_default_data_date() -> str:
     """Walk back from today (calendar) to the most recent BR trading day.
 
-    Pre-fix: ``today − BusinessDay(1)`` returned the last weekday and silently
-    landed on a holiday (e.g. 2026-05-02 Saturday → 2026-05-01 Labor Day, no
-    data). Now skips weekends + ``_BR_HOLIDAYS`` entries.
+    Primary source: ``LOTE45.LOTE_TRADING_DESKS_NAV_SHARE`` — the lote table
+    only contains rows for trading days, so MAX(VAL_DATE) < today encodes
+    the B3 calendar implicitly (no explicit holiday table exists in the DB
+    as of 2026-05-02). ``glpg_fetch`` is imported lazily so users that
+    always pass --date don't pay the DB cost.
+
+    Fallback: ``today − BusinessDay(1)`` skipping weekends + the hardcoded
+    ``_BR_HOLIDAYS`` set. Used when the DB is unreachable (offline mode,
+    early script bootstrap, smoke tests without env vars).
     """
+    try:
+        from glpg_fetch import read_sql
+        result = read_sql("""
+            SELECT MAX("VAL_DATE")::text AS d
+            FROM "LOTE45"."LOTE_TRADING_DESKS_NAV_SHARE"
+            WHERE "VAL_DATE" < CURRENT_DATE
+        """)
+        if not result.empty and result["d"].iloc[0] is not None:
+            return pd.Timestamp(result["d"].iloc[0]).strftime("%Y-%m-%d")
+    except Exception:
+        pass
     d = pd.Timestamp("today").normalize()
     for _ in range(15):  # safety bound — won't realistically loop > 5 days
         d = d - pd.tseries.offsets.BusinessDay(1)
