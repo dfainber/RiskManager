@@ -14,8 +14,10 @@ data/peers_data.json
 data/macro-stops/snapshots/
 data/.smoke_snapshots/
 data/email-logs/
+scripts/out/
 logs/
 tmp_*.py
 smoketest_out.txt
 .claude/scheduled_tasks.lock
 Thumbs.db
+*.lnk

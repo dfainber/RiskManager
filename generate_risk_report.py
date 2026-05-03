@@ -111,6 +111,11 @@ from data_fetch import (
     fetch_fund_credit_positions,
     _VAR_DOD_DISPATCH,
 )
+from market_states_fetch import fetch_market_states_snapshot
+from market_states_renderers import (
+    build_market_states_section,
+    build_market_states_summary_strip,
+)
 from credit_card_renderers import (
     CREDIT_SECTION_CSS,
     CREDIT_ALOC_JS,
@@ -204,6 +209,7 @@ class ReportData:
     peers_data:       Optional[dict]            = None
     peers_data_eopm:  Optional[dict]            = None
     market_snap:      Optional[dict]            = None
+    market_states:    Optional[dict]            = None
     df_pm_book_pnl:   Optional[pd.DataFrame]    = None
 
 
@@ -314,7 +320,7 @@ def _mkt_spark(history: list, up: bool = True, w: int = 80, h: int = 22) -> str:
     )
 
 
-def _build_market_section(snap: dict) -> str:
+def _build_market_section(snap: dict, market_states: dict | None = None) -> str:
     if not snap or not snap.get("sections"):
         return ""
 
@@ -471,6 +477,17 @@ def _build_market_section(snap: dict) -> str:
         f'<div class="mkt-panels-grid">{com_panels}</div>'
     ) if com_panels else ""
 
+    # ── Estados (Market States) sub-tab — populated only if pickle is fresh ──
+    estados_html = build_market_states_section(market_states or {})
+    estados_tab_btn = (
+        '<button class="mkt-stab" data-stab="estados" onclick="selectMktTab(\'estados\')">Estados</button>'
+        if estados_html else ""
+    )
+    estados_view = (
+        f'<div id="mkt-estados" class="mkt-view" style="display:none">{estados_html}</div>'
+        if estados_html else ""
+    )
+
     # ── Assemble ──────────────────────────────────────────────────────────────
     return f"""<div class="section-wrap" data-view="market">
   <section class="card">
@@ -481,11 +498,13 @@ def _build_market_section(snap: dict) -> str:
         <button class="mkt-stab active" data-stab="janelas" onclick="selectMktTab('janelas')">Janelas</button>
         <button class="mkt-stab" data-stab="moedas"  onclick="selectMktTab('moedas')">Moedas</button>
         <button class="mkt-stab" data-stab="commodities" onclick="selectMktTab('commodities')">Commodities</button>
+        {estados_tab_btn}
       </div>
     </div>
     <div id="mkt-janelas"     class="mkt-view">{jan_html}</div>
     <div id="mkt-moedas"      class="mkt-view" style="display:none">{moe_html}</div>
     <div id="mkt-commodities" class="mkt-view" style="display:none">{com_html}</div>
+    {estados_view}
   </section>
   <script>
   (function(){{
@@ -1279,8 +1298,10 @@ def _build_summary_view(
     by_factor_html: str, vol_regime_html: str, alerts_html: str,
     comments_html: str, movers_html: str, changes_html: str,
     top_positions_html: str, dq_compact_html: str,
+    market_states: dict | None = None,
 ) -> str:
     """Compose the Summary view section-wrap (EVO C4 headline + cards)."""
+    market_states_strip = build_market_states_summary_strip(market_states or {})
     evo_c4_headline_html = ""
     if evolution_c4_state:
         n_lit = evolution_c4_state.get("n_lit", 0)
@@ -1307,6 +1328,7 @@ def _build_summary_view(
 
     return f"""
     <div class="section-wrap" data-view="summary">
+      {market_states_strip}
       {evo_c4_headline_html}
       {briefing_html}
       {fund_grid_html}
@@ -1575,13 +1597,14 @@ def build_html(d: ReportData) -> str:
         by_factor_html=by_factor_html, vol_regime_html=vol_regime_html, alerts_html=alerts_html,
         comments_html=comments_html, movers_html=movers_html, changes_html=changes_html,
         top_positions_html=top_positions_html, dq_compact_html=dq_compact_html,
+        market_states=d.market_states,
     )
     quality_html = f'<div class="section-wrap" data-view="quality">{dq_full_html}</div>'
     # Alerts relocated into Summary view — clear the global section so it doesn't duplicate
     alerts_html = ""
 
     # ── Market tab ────────────────────────────────────────────────────────────
-    market_section_html = _build_market_section(market_snap)
+    market_section_html = _build_market_section(market_snap, d.market_states)
 
     # ── P&L tab section (house-level) ─────────────────────────────────────────
     _book_pnl_json   = json.dumps(_book_pnl,        separators=(",", ":"), ensure_ascii=False)
@@ -1751,6 +1774,7 @@ def _fetch_all_data(date_str: str, d1_str: str, d2_str: str):
         fut_peers_data       = ex.submit(fetch_peers_data, date_str, "current")
         fut_peers_data_eopm  = ex.submit(fetch_peers_data, date_str, "eopm")
         fut_market_snap = ex.submit(fetch_market_snapshot, date_str)
+        fut_market_states = ex.submit(fetch_market_states_snapshot)
 
     # ── Resolve results (sequential, with per-task fallback) ──────────────
     df_risk     = fut_risk.result()
@@ -2095,6 +2119,11 @@ def _fetch_all_data(date_str: str, d1_str: str, d2_str: str):
     except Exception as e:
         print(f"  Market snapshot fetch failed ({e})")
         market_snap = {}
+    try:
+        market_states = fut_market_states.result()
+    except Exception as e:
+        print(f"  Market states fetch failed ({e})")
+        market_states = {}
 
     print(f"  ...fetches done in {time.time()-t0:.1f}s")
 
@@ -2128,7 +2157,7 @@ def _fetch_all_data(date_str: str, d1_str: str, d2_str: str):
         vol_regime_map=vol_regime_map, pm_book_var=pm_book_var,
         expo_date_label=expo_date_label,
         book_pnl=book_pnl, peers_data=peers_data, peers_data_eopm=peers_data_eopm,
-        market_snap=market_snap,
+        market_snap=market_snap, market_states=market_states,
         df_pm_book_pnl=df_pm_book_pnl,
     )
 
@@ -2212,7 +2241,7 @@ def _build_report_data(date_str: str, d1_str: str, fd) -> "ReportData":
         vol_regime_map=fd.vol_regime_map, pm_book_var=fd.pm_book_var,
         expo_date_label=fd.expo_date_label, data_manifest=data_manifest,
         book_pnl=fd.book_pnl, peers_data=fd.peers_data, peers_data_eopm=fd.peers_data_eopm,
-        market_snap=fd.market_snap,
+        market_snap=fd.market_snap, market_states=fd.market_states,
         df_pm_book_pnl=fd.df_pm_book_pnl,
     )
 
